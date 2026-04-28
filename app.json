@@ -10,10 +10,10 @@
     "newArchEnabled": true,
     "ios": {
       "supportsTablet": true,
-      "bundleIdentifier": "com.kalel.viralcut"
+      "bundleIdentifier": "com.kalel.KalelViralCut"
     },
     "android": {
-      "package": "com.kalel.viralcut",
+      "package": "com.kalel.KalelViralCut",
       "adaptiveIcon": {
         "foregroundImage": "./assets/images/logo.png",
         "backgroundColor": "#ffffff"
