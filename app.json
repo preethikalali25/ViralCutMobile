@@ -16,7 +16,7 @@
       "package": "com.kalel.KalelViralCut",
       "adaptiveIcon": {
         "foregroundImage": "./assets/images/logo.png",
-        "backgroundColor": "#ffffff"
+        "backgroundColor": "#080a14"
       },
       "edgeToEdgeEnabled": true
     },
@@ -28,12 +28,19 @@
     "plugins": [
       "expo-router",
       [
+        "expo-image-picker",
+        {
+          "photosPermission": "ViralCut needs access to your photo library to select videos for editing and publishing.",
+          "cameraPermission": "ViralCut needs access to your camera to record videos directly."
+        }
+      ],
+      [
         "expo-splash-screen",
         {
           "image": "./assets/images/logo.png",
           "imageWidth": 200,
           "resizeMode": "contain",
-          "backgroundColor": "#ffffff"
+          "backgroundColor": "#080a14"
         }
       ],
       "expo-web-browser"
