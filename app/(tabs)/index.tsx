@@ -7,6 +7,7 @@ import { Image } from 'expo-image';
 import { MaterialIcons, MaterialCommunityIcons } from '@expo/vector-icons';
 import { useRouter } from 'expo-router';
 import { Colors, Spacing, Radius, FontSize, FontWeight } from '@/constants/theme';
+import { useAuth } from '@/template';
 import { useVideos } from '@/hooks/useVideos';
 import { formatNumber, getRelativeTime } from '@/services/formatters';
 import PlatformBadge from '@/components/ui/PlatformBadge';
@@ -14,9 +15,16 @@ import StatsCard from '@/components/ui/StatsCard';
 
 const { width } = Dimensions.get('window');
 
+function getInitials(email: string): string {
+  const parts = email.split('@')[0].split(/[._-]/);
+  return parts.slice(0, 2).map(p => p[0]?.toUpperCase() ?? '').join('') || email[0]?.toUpperCase() || 'U';
+}
+
 export default function DashboardScreen() {
   const router = useRouter();
+  const { user } = useAuth();
   const { videos } = useVideos();
+  const initials = user?.email ? getInitials(user.email) : 'U';
 
   const published = videos.filter(v => v.status === 'published');
   const scheduled = videos.filter(v => v.status === 'scheduled');
@@ -38,13 +46,21 @@ export default function DashboardScreen() {
       <ScrollView style={styles.scroll} showsVerticalScrollIndicator={false}>
         {/* Header */}
         <View style={styles.header}>
-          <View>
-            <Text style={styles.greeting}>Welcome back 👋</Text>
-            <Text style={styles.subGreeting}>
-              {processing.length > 0 ? `${processing.length} processing · ` : ''}
-              {ready.length} ready · {scheduled.length} scheduled
-            </Text>
-          </View>
+          <Pressable
+            style={({ pressed }) => [styles.avatarBtn, pressed && { opacity: 0.8 }]}
+            onPress={() => router.push('/profile')}
+          >
+            <View style={styles.avatarCircle}>
+              <Text style={styles.avatarInitials}>{initials}</Text>
+            </View>
+            <View>
+              <Text style={styles.greeting}>Welcome back</Text>
+              <Text style={styles.subGreeting}>
+                {processing.length > 0 ? `${processing.length} processing · ` : ''}
+                {ready.length} ready · {scheduled.length} scheduled
+              </Text>
+            </View>
+          </Pressable>
           <Pressable
             style={({ pressed }) => [styles.newBtn, pressed && { opacity: 0.8 }]}
             onPress={() => router.push('/upload')}
@@ -170,6 +186,28 @@ const styles = StyleSheet.create({
     paddingHorizontal: Spacing.md,
     paddingTop: Spacing.md,
     paddingBottom: Spacing.sm,
+  },
+  avatarBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: Spacing.sm,
+    flex: 1,
+  },
+  avatarCircle: {
+    width: 40,
+    height: 40,
+    borderRadius: 20,
+    backgroundColor: Colors.primary,
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderWidth: 2,
+    borderColor: Colors.primaryLight + '60',
+  },
+  avatarInitials: {
+    fontSize: FontSize.sm,
+    fontWeight: FontWeight.bold,
+    color: '#fff',
+    includeFontPadding: false,
   },
   greeting: {
     fontSize: FontSize.xl,
