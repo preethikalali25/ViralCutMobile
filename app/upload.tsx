@@ -1,10 +1,12 @@
 import React, { useState } from 'react';
 import {
-  View, Text, ScrollView, StyleSheet, Pressable,
+  View, Text, ScrollView, StyleSheet, Pressable, TextInput, KeyboardAvoidingView, Platform,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
+import { Image } from 'expo-image';
 import { MaterialIcons, MaterialCommunityIcons } from '@expo/vector-icons';
 import { useRouter } from 'expo-router';
+import * as ImagePicker from 'expo-image-picker';
 import { Colors, Spacing, Radius, FontSize, FontWeight } from '@/constants/theme';
 import { useVideos } from '@/hooks/useVideos';
 import { useAlert } from '@/template';
@@ -19,6 +21,11 @@ const MOCK_THUMBNAILS = [
   'https://images.unsplash.com/photo-1522202176988-66273c2fd55f?w=400&q=80',
 ];
 
+function getVideoDuration(asset: ImagePicker.ImagePickerAsset): number {
+  if (asset.duration && asset.duration > 0) return Math.round(asset.duration);
+  return Math.floor(Math.random() * 50) + 15;
+}
+
 export default function UploadScreen() {
   const router = useRouter();
   const { addVideo } = useVideos();
@@ -26,11 +33,33 @@ export default function UploadScreen() {
   const [title, setTitle] = useState('');
   const [platforms, setPlatforms] = useState<PlatformType[]>(['tiktok']);
   const [isUploading, setIsUploading] = useState(false);
+  const [pickedVideo, setPickedVideo] = useState<ImagePicker.ImagePickerAsset | null>(null);
 
   const togglePlatform = (p: PlatformType) => {
     setPlatforms(prev =>
       prev.includes(p) ? (prev.length > 1 ? prev.filter(x => x !== p) : prev) : [...prev, p]
     );
+  };
+
+  const handlePickVideo = async () => {
+    const { status } = await ImagePicker.requestMediaLibraryPermissionsAsync();
+    if (status !== 'granted') {
+      showAlert('Permission Required', 'Please allow access to your media library to pick a video.');
+      return;
+    }
+    const result = await ImagePicker.launchImageLibraryAsync({
+      mediaTypes: ['videos'],
+      allowsEditing: false,
+      quality: 1,
+    });
+    if (!result.canceled && result.assets.length > 0) {
+      const asset = result.assets[0];
+      setPickedVideo(asset);
+      if (!title.trim() && asset.fileName) {
+        const name = asset.fileName.replace(/\.[^.]+$/, '').replace(/[_-]/g, ' ');
+        setTitle(name);
+      }
+    }
   };
 
   const handleUpload = () => {
@@ -40,7 +69,10 @@ export default function UploadScreen() {
     }
 
     setIsUploading(true);
-    const thumb = MOCK_THUMBNAILS[Math.floor(Math.random() * MOCK_THUMBNAILS.length)];
+    const thumb = pickedVideo?.uri
+      ? pickedVideo.uri
+      : MOCK_THUMBNAILS[Math.floor(Math.random() * MOCK_THUMBNAILS.length)];
+    const duration = pickedVideo ? getVideoDuration(pickedVideo) : Math.floor(Math.random() * 50) + 15;
 
     setTimeout(() => {
       const id = `v${Date.now()}`;
@@ -48,7 +80,7 @@ export default function UploadScreen() {
         id,
         title: title.trim(),
         thumbnail: thumb,
-        duration: Math.floor(Math.random() * 50) + 15,
+        duration,
         status: 'ready',
         platforms,
         createdAt: new Date().toISOString(),
@@ -58,7 +90,7 @@ export default function UploadScreen() {
         { text: 'Edit Now', onPress: () => router.replace({ pathname: '/editor', params: { id } }) },
         { text: 'Go to Library', style: 'cancel', onPress: () => router.replace('/(tabs)/library') },
       ]);
-    }, 2000);
+    }, 1500);
   };
 
   return (
@@ -75,45 +107,63 @@ export default function UploadScreen() {
       <ScrollView showsVerticalScrollIndicator={false}>
         {/* Drop Zone */}
         <View style={styles.dropZone}>
-          <View style={styles.dropIcon}>
-            <MaterialCommunityIcons name="cloud-upload-outline" size={44} color={Colors.primary} />
-          </View>
-          <Text style={styles.dropTitle}>Select a Video</Text>
-          <Text style={styles.dropSub}>MP4, MOV — up to 4GB</Text>
-          <View style={styles.dropFormats}>
-            {['TikTok', 'Reels', 'YT Shorts'].map(f => (
-              <View key={f} style={styles.formatBadge}>
-                <Text style={styles.formatText}>{f}</Text>
+          {pickedVideo ? (
+            <View style={styles.previewWrapper}>
+              <Image
+                source={{ uri: pickedVideo.uri }}
+                style={styles.previewThumb}
+                contentFit="cover"
+                transition={200}
+              />
+              <View style={styles.previewOverlay}>
+                <MaterialIcons name="videocam" size={24} color="#fff" />
               </View>
-            ))}
-          </View>
+              <Pressable style={styles.previewChange} onPress={handlePickVideo}>
+                <MaterialIcons name="swap-horiz" size={14} color={Colors.primaryLight} />
+                <Text style={styles.previewChangeText}>Change</Text>
+              </Pressable>
+            </View>
+          ) : (
+            <View style={styles.dropIcon}>
+              <MaterialCommunityIcons name="cloud-upload-outline" size={44} color={Colors.primary} />
+            </View>
+          )}
+          <Text style={styles.dropTitle}>{pickedVideo ? 'Video Selected' : 'Select a Video'}</Text>
+          <Text style={styles.dropSub}>{pickedVideo ? 'Tap below to change' : 'MP4, MOV — up to 4GB'}</Text>
+          {!pickedVideo ? (
+            <View style={styles.dropFormats}>
+              {['TikTok', 'Reels', 'YT Shorts'].map(f => (
+                <View key={f} style={styles.formatBadge}>
+                  <Text style={styles.formatText}>{f}</Text>
+                </View>
+              ))}
+            </View>
+          ) : null}
 
           <Pressable
             style={({ pressed }) => [styles.selectBtn, pressed && { opacity: 0.8 }]}
-            onPress={() => showAlert('File Picker', 'Video picker is available in the native app build.')}
+            onPress={handlePickVideo}
           >
             <MaterialIcons name="video-library" size={18} color="#fff" />
-            <Text style={styles.selectBtnText}>Browse Files</Text>
+            <Text style={styles.selectBtnText}>{pickedVideo ? 'Change Video' : 'Browse Files'}</Text>
           </Pressable>
         </View>
 
         {/* Title */}
-        <View style={styles.field}>
-          <Text style={styles.fieldLabel}>Video Title *</Text>
-          <View style={styles.fakeInput}>
-            <Pressable
-              style={styles.fakeInputPressable}
-              onPress={() => showAlert('Enter Title', 'Title input is available in the native app build.', [
-                { text: 'Use Mock Title', onPress: () => setTitle('My Amazing Content #' + Math.floor(Math.random() * 100)) },
-                { text: 'Cancel', style: 'cancel' },
-              ])}
-            >
-              <Text style={[styles.fakeInputText, !title && { color: Colors.textMuted }]}>
-                {title || 'Tap to enter a title...'}
-              </Text>
-            </Pressable>
+        <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
+          <View style={styles.field}>
+            <Text style={styles.fieldLabel}>Video Title *</Text>
+            <TextInput
+              style={styles.titleInput}
+              value={title}
+              onChangeText={setTitle}
+              placeholder="Enter a title for your video..."
+              placeholderTextColor={Colors.textMuted}
+              returnKeyType="done"
+              maxLength={100}
+            />
           </View>
-        </View>
+        </KeyboardAvoidingView>
 
         {/* Platforms */}
         <View style={styles.field}>
@@ -283,21 +333,51 @@ const styles = StyleSheet.create({
     color: Colors.textSecondary,
     includeFontPadding: false,
   },
-  fakeInput: {
+  titleInput: {
     backgroundColor: Colors.surfaceElevated,
     borderRadius: Radius.md,
     borderWidth: 1,
     borderColor: Colors.surfaceBorder,
-    overflow: 'hidden',
-  },
-  fakeInputPressable: {
     padding: Spacing.sm + 4,
-    minHeight: 48,
-    justifyContent: 'center',
-  },
-  fakeInputText: {
     fontSize: FontSize.md,
     color: Colors.textPrimary,
+    minHeight: 48,
+    includeFontPadding: false,
+  },
+  previewWrapper: {
+    width: 120,
+    height: 160,
+    borderRadius: Radius.lg,
+    overflow: 'hidden',
+    position: 'relative',
+  },
+  previewThumb: {
+    width: '100%',
+    height: '100%',
+  },
+  previewOverlay: {
+    position: 'absolute',
+    top: 0, left: 0, right: 0, bottom: 0,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: 'rgba(0,0,0,0.3)',
+  },
+  previewChange: {
+    position: 'absolute',
+    bottom: 6,
+    alignSelf: 'center',
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 3,
+    backgroundColor: 'rgba(0,0,0,0.6)',
+    paddingHorizontal: 8,
+    paddingVertical: 3,
+    borderRadius: Radius.full,
+  },
+  previewChangeText: {
+    fontSize: FontSize.xs,
+    color: Colors.primaryLight,
+    fontWeight: FontWeight.semibold,
     includeFontPadding: false,
   },
   platformsList: {
