@@ -1,6 +1,7 @@
-import React, { useState } from 'react';
+import React, { useState, useCallback } from 'react';
 import {
-  View, Text, ScrollView, StyleSheet, Pressable, TextInput, KeyboardAvoidingView, Platform,
+  View, Text, ScrollView, StyleSheet, Pressable, TextInput,
+  KeyboardAvoidingView, Platform, ActivityIndicator,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Image } from 'expo-image';
@@ -8,22 +9,51 @@ import { MaterialIcons, MaterialCommunityIcons } from '@expo/vector-icons';
 import { useRouter, useLocalSearchParams } from 'expo-router';
 import { Colors, Spacing, Radius, FontSize, FontWeight } from '@/constants/theme';
 import { useVideos } from '@/hooks/useVideos';
-import { useAlert } from '@/template';
+import { useAlert, getSupabaseClient } from '@/template';
 import { MOCK_TRENDING_AUDIO } from '@/constants/mockData';
 import { Platform as PlatformType, HookType } from '@/types';
 import PlatformBadge from '@/components/ui/PlatformBadge';
 import StatusBadge from '@/components/ui/StatusBadge';
 import { formatDuration } from '@/services/formatters';
+import { FunctionsHttpError } from '@supabase/supabase-js';
 
 type Tab = 'hook' | 'caption' | 'audio' | 'platforms';
 
+interface AISuggestedAudio {
+  id: string;
+  title: string;
+  artist: string;
+  uses: string;
+  trending: boolean;
+  platform: string[];
+  mood: string;
+}
+
 const HOOK_TYPES: { type: HookType; label: string; desc: string; icon: string }[] = [
-  { type: 'question', label: 'Question', desc: 'Start with a curiosity hook', icon: 'help-outline' },
-  { type: 'stat', label: 'Stat', desc: 'Lead with a shocking number', icon: 'bar-chart' },
-  { type: 'visual', label: 'Visual', desc: 'Describe a visual surprise', icon: 'visibility' },
+  { type: 'question', label: 'Question', desc: 'Curiosity hook', icon: 'help-outline' },
+  { type: 'stat', label: 'Stat', desc: 'Shocking number', icon: 'bar-chart' },
+  { type: 'visual', label: 'Visual', desc: 'Visual surprise', icon: 'visibility' },
 ];
 
 const ALL_PLATFORMS: PlatformType[] = ['tiktok', 'reels', 'youtube'];
+
+async function callAIGenerator(type: string, payload: Record<string, unknown>) {
+  const client = getSupabaseClient();
+  const { data, error } = await client.functions.invoke('ai-content-generator', {
+    body: { type, ...payload },
+  });
+  if (error) {
+    let msg = error.message;
+    if (error instanceof FunctionsHttpError) {
+      try {
+        const text = await error.context?.text();
+        msg = text || msg;
+      } catch { /* ignore */ }
+    }
+    return { data: null, error: msg };
+  }
+  return { data, error: null };
+}
 
 export default function EditorScreen() {
   const router = useRouter();
@@ -41,6 +71,14 @@ export default function EditorScreen() {
   const [selectedAudioId, setSelectedAudioId] = useState(video?.audio?.id ?? '');
   const [platforms, setPlatforms] = useState<PlatformType[]>(video?.platforms ?? ['tiktok']);
 
+  // AI states
+  const [generatingHook, setGeneratingHook] = useState(false);
+  const [generatingCaption, setGeneratingCaption] = useState(false);
+  const [generatingAudio, setGeneratingAudio] = useState(false);
+  const [aiAudioList, setAiAudioList] = useState<AISuggestedAudio[]>([]);
+  const [hookSuggestions, setHookSuggestions] = useState<string[]>([]);
+  const [showHookSuggestions, setShowHookSuggestions] = useState(false);
+
   if (!video) {
     return (
       <SafeAreaView style={[styles.safe, { alignItems: 'center', justifyContent: 'center', gap: 12 }]}>
@@ -53,13 +91,70 @@ export default function EditorScreen() {
     );
   }
 
+  // AI: Generate Hook
+  const handleGenerateHook = useCallback(async () => {
+    setGeneratingHook(true);
+    setShowHookSuggestions(false);
+    // Generate 3 hook variations
+    const results: string[] = [];
+    for (let i = 0; i < 3; i++) {
+      const { data, error } = await callAIGenerator('hook', {
+        videoTitle: video.title,
+        hookType,
+        platforms,
+      });
+      if (error) {
+        showAlert('AI Error', error);
+        setGeneratingHook(false);
+        return;
+      }
+      if (data?.result) results.push(data.result);
+    }
+    setHookSuggestions(results);
+    setShowHookSuggestions(true);
+    setGeneratingHook(false);
+  }, [video.title, hookType, platforms, showAlert]);
+
+  // AI: Generate Caption
+  const handleGenerateCaption = useCallback(async () => {
+    setGeneratingCaption(true);
+    const { data, error } = await callAIGenerator('caption', {
+      videoTitle: video.title,
+      platforms,
+    });
+    setGeneratingCaption(false);
+    if (error) { showAlert('AI Error', error); return; }
+    if (data?.result) {
+      if (data.result.caption) setCaption(data.result.caption);
+      if (data.result.hashtags) setHashtags(data.result.hashtags);
+    }
+  }, [video.title, platforms, showAlert]);
+
+  // AI: Suggest Audio
+  const handleGenerateAudio = useCallback(async () => {
+    setGeneratingAudio(true);
+    const { data, error } = await callAIGenerator('audio', {
+      videoTitle: video.title,
+      platforms,
+    });
+    setGeneratingAudio(false);
+    if (error) { showAlert('AI Error', error); return; }
+    if (Array.isArray(data?.result)) {
+      setAiAudioList(data.result);
+      setSelectedAudioId('');
+    }
+  }, [video.title, platforms, showAlert]);
+
   const handleSave = () => {
     if (!video) return;
+    const audioSource = aiAudioList.length > 0
+      ? aiAudioList.find(a => a.id === selectedAudioId)
+      : MOCK_TRENDING_AUDIO.find(a => a.id === selectedAudioId);
     updateVideo(video.id, {
       hook: { type: hookType, text: hookText },
       caption,
       hashtags: hashtags.split(/\s+/).filter(Boolean),
-      audio: MOCK_TRENDING_AUDIO.find(a => a.id === selectedAudioId),
+      audio: audioSource ? { id: audioSource.id, title: audioSource.title, artist: audioSource.artist, uses: audioSource.uses, trending: audioSource.trending } : undefined,
       platforms,
     });
     showAlert('Saved', 'Your changes have been saved.');
@@ -107,6 +202,8 @@ export default function EditorScreen() {
       prev.includes(p) ? (prev.length > 1 ? prev.filter(x => x !== p) : prev) : [...prev, p]
     );
   };
+
+  const audioDisplayList = aiAudioList.length > 0 ? aiAudioList : MOCK_TRENDING_AUDIO;
 
   const TABS: { id: Tab; label: string }[] = [
     { id: 'hook', label: 'Hook' },
@@ -169,7 +266,8 @@ export default function EditorScreen() {
 
           {/* Tab Content */}
           <View style={styles.tabContent}>
-            {/* Hook Tab */}
+
+            {/* ── Hook Tab ── */}
             {tab === 'hook' ? (
               <View style={styles.section}>
                 <Text style={styles.sectionLabel}>Hook Type</Text>
@@ -178,7 +276,7 @@ export default function EditorScreen() {
                     <Pressable
                       key={h.type}
                       style={[styles.hookTypeCard, hookType === h.type && styles.hookTypeCardActive]}
-                      onPress={() => setHookType(h.type)}
+                      onPress={() => { setHookType(h.type); setShowHookSuggestions(false); }}
                     >
                       <MaterialIcons
                         name={h.icon as any}
@@ -193,12 +291,48 @@ export default function EditorScreen() {
                   ))}
                 </View>
 
-                <Text style={[styles.sectionLabel, { marginTop: Spacing.md }]}>Hook Text</Text>
+                {/* AI Generate Hook Button */}
+                <Pressable
+                  style={({ pressed }) => [styles.aiBtn, pressed && { opacity: 0.85 }, generatingHook && styles.aiBtnLoading]}
+                  onPress={handleGenerateHook}
+                  disabled={generatingHook}
+                >
+                  {generatingHook ? (
+                    <>
+                      <ActivityIndicator size="small" color={Colors.primaryLight} />
+                      <Text style={styles.aiBtnText}>Generating hooks...</Text>
+                    </>
+                  ) : (
+                    <>
+                      <MaterialCommunityIcons name="auto-fix" size={16} color={Colors.primaryLight} />
+                      <Text style={styles.aiBtnText}>AI Generate Hook</Text>
+                    </>
+                  )}
+                </Pressable>
+
+                {/* Hook Suggestions */}
+                {showHookSuggestions && hookSuggestions.length > 0 ? (
+                  <View style={styles.suggestionsBox}>
+                    <Text style={styles.suggestionsTitle}>Tap to use</Text>
+                    {hookSuggestions.map((s, i) => (
+                      <Pressable
+                        key={i}
+                        style={({ pressed }) => [styles.suggestionCard, pressed && { opacity: 0.8 }]}
+                        onPress={() => { setHookText(s); setShowHookSuggestions(false); }}
+                      >
+                        <MaterialCommunityIcons name="lightning-bolt" size={14} color={Colors.amber} />
+                        <Text style={styles.suggestionText}>{s}</Text>
+                      </Pressable>
+                    ))}
+                  </View>
+                ) : null}
+
+                <Text style={[styles.sectionLabel, { marginTop: Spacing.sm }]}>Hook Text</Text>
                 <TextInput
                   style={styles.textInput}
                   value={hookText}
                   onChangeText={setHookText}
-                  placeholder="Write a compelling hook..."
+                  placeholder="Write a compelling hook or generate with AI..."
                   placeholderTextColor={Colors.textMuted}
                   multiline
                   numberOfLines={3}
@@ -207,19 +341,38 @@ export default function EditorScreen() {
               </View>
             ) : null}
 
-            {/* Caption Tab */}
+            {/* ── Caption Tab ── */}
             {tab === 'caption' ? (
               <View style={styles.section}>
+                {/* AI Generate Caption Button */}
+                <Pressable
+                  style={({ pressed }) => [styles.aiBtn, pressed && { opacity: 0.85 }, generatingCaption && styles.aiBtnLoading]}
+                  onPress={handleGenerateCaption}
+                  disabled={generatingCaption}
+                >
+                  {generatingCaption ? (
+                    <>
+                      <ActivityIndicator size="small" color={Colors.primaryLight} />
+                      <Text style={styles.aiBtnText}>Writing caption...</Text>
+                    </>
+                  ) : (
+                    <>
+                      <MaterialCommunityIcons name="auto-fix" size={16} color={Colors.primaryLight} />
+                      <Text style={styles.aiBtnText}>AI Generate Caption & Hashtags</Text>
+                    </>
+                  )}
+                </Pressable>
+
                 <Text style={styles.sectionLabel}>Caption</Text>
                 <TextInput
                   style={[styles.textInput, { minHeight: 100 }]}
                   value={caption}
                   onChangeText={setCaption}
-                  placeholder="Write your caption..."
+                  placeholder="Write your caption or generate with AI..."
                   placeholderTextColor={Colors.textMuted}
                   multiline
                 />
-                <Text style={[styles.sectionLabel, { marginTop: Spacing.md }]}>Hashtags</Text>
+                <Text style={[styles.sectionLabel, { marginTop: Spacing.sm }]}>Hashtags</Text>
                 <TextInput
                   style={styles.textInput}
                   value={hashtags}
@@ -242,11 +395,40 @@ export default function EditorScreen() {
               </View>
             ) : null}
 
-            {/* Audio Tab */}
+            {/* ── Audio Tab ── */}
             {tab === 'audio' ? (
               <View style={styles.section}>
-                <Text style={styles.sectionLabel}>Trending Audio</Text>
-                {MOCK_TRENDING_AUDIO.map(audio => (
+                {/* AI Suggest Audio Button */}
+                <Pressable
+                  style={({ pressed }) => [styles.aiBtn, pressed && { opacity: 0.85 }, generatingAudio && styles.aiBtnLoading]}
+                  onPress={handleGenerateAudio}
+                  disabled={generatingAudio}
+                >
+                  {generatingAudio ? (
+                    <>
+                      <ActivityIndicator size="small" color={Colors.primaryLight} />
+                      <Text style={styles.aiBtnText}>Finding trending songs...</Text>
+                    </>
+                  ) : (
+                    <>
+                      <MaterialCommunityIcons name="auto-fix" size={16} color={Colors.primaryLight} />
+                      <Text style={styles.aiBtnText}>AI Suggest Trending Songs</Text>
+                    </>
+                  )}
+                </Pressable>
+
+                <View style={styles.audioHeader}>
+                  <Text style={styles.sectionLabel}>
+                    {aiAudioList.length > 0 ? 'AI Recommended for Your Video' : 'Trending Audio'}
+                  </Text>
+                  {aiAudioList.length > 0 ? (
+                    <Pressable onPress={() => { setAiAudioList([]); setSelectedAudioId(video.audio?.id ?? ''); }}>
+                      <Text style={styles.resetLink}>Reset</Text>
+                    </Pressable>
+                  ) : null}
+                </View>
+
+                {audioDisplayList.map(audio => (
                   <Pressable
                     key={audio.id}
                     style={[styles.audioRow, selectedAudioId === audio.id && styles.audioRowActive]}
@@ -258,6 +440,9 @@ export default function EditorScreen() {
                     <View style={{ flex: 1 }}>
                       <Text style={styles.audioTitle}>{audio.title}</Text>
                       <Text style={styles.audioArtist}>{audio.artist}</Text>
+                      {'mood' in audio && audio.mood ? (
+                        <Text style={styles.audioMoodTag}>{(audio as AISuggestedAudio).mood}</Text>
+                      ) : null}
                     </View>
                     <View style={styles.audioMeta}>
                       {audio.trending ? (
@@ -266,7 +451,7 @@ export default function EditorScreen() {
                           <Text style={styles.trendingText}>Hot</Text>
                         </View>
                       ) : null}
-                      <Text style={styles.audioUses}>{audio.uses} uses</Text>
+                      <Text style={styles.audioUses}>{audio.uses}</Text>
                     </View>
                     {selectedAudioId === audio.id ? (
                       <MaterialIcons name="check-circle" size={20} color={Colors.primary} />
@@ -276,7 +461,7 @@ export default function EditorScreen() {
               </View>
             ) : null}
 
-            {/* Platforms Tab */}
+            {/* ── Platforms Tab ── */}
             {tab === 'platforms' ? (
               <View style={styles.section}>
                 <Text style={styles.sectionLabel}>Target Platforms</Text>
@@ -287,7 +472,9 @@ export default function EditorScreen() {
                     onPress={() => togglePlatform(p)}
                   >
                     <PlatformBadge platform={p} size="md" />
-                    <Text style={styles.platformLabel}>{p === 'tiktok' ? 'TikTok' : p === 'reels' ? 'Instagram Reels' : 'YouTube Shorts'}</Text>
+                    <Text style={styles.platformLabel}>
+                      {p === 'tiktok' ? 'TikTok' : p === 'reels' ? 'Instagram Reels' : 'YouTube Shorts'}
+                    </Text>
                     <View style={[styles.checkbox, platforms.includes(p) && styles.checkboxActive]}>
                       {platforms.includes(p) ? <MaterialIcons name="check" size={14} color="#fff" /> : null}
                     </View>
@@ -424,9 +611,7 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     borderRadius: Radius.full,
   },
-  tabBtnActive: {
-    backgroundColor: Colors.primary,
-  },
+  tabBtnActive: { backgroundColor: Colors.primary },
   tabLabel: {
     fontSize: FontSize.sm,
     fontWeight: FontWeight.semibold,
@@ -434,9 +619,7 @@ const styles = StyleSheet.create({
     includeFontPadding: false,
   },
   tabLabelActive: { color: '#fff' },
-  tabContent: {
-    paddingTop: Spacing.md,
-  },
+  tabContent: { paddingTop: Spacing.md },
   section: {
     paddingHorizontal: Spacing.md,
     gap: Spacing.sm,
@@ -447,6 +630,68 @@ const styles = StyleSheet.create({
     color: Colors.textSecondary,
     includeFontPadding: false,
   },
+
+  // AI Button
+  aiBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 8,
+    backgroundColor: Colors.primaryGlow,
+    borderRadius: Radius.full,
+    paddingVertical: 12,
+    borderWidth: 1.5,
+    borderColor: Colors.primary,
+    minHeight: 46,
+  },
+  aiBtnLoading: {
+    opacity: 0.7,
+  },
+  aiBtnText: {
+    fontSize: FontSize.sm,
+    fontWeight: FontWeight.bold,
+    color: Colors.primaryLight,
+    includeFontPadding: false,
+  },
+
+  // Hook Suggestions
+  suggestionsBox: {
+    backgroundColor: Colors.surfaceElevated,
+    borderRadius: Radius.lg,
+    padding: Spacing.sm,
+    borderWidth: 1,
+    borderColor: Colors.primary + '44',
+    gap: Spacing.xs,
+  },
+  suggestionsTitle: {
+    fontSize: FontSize.xs,
+    fontWeight: FontWeight.bold,
+    color: Colors.textMuted,
+    textTransform: 'uppercase',
+    letterSpacing: 0.8,
+    marginBottom: 2,
+    includeFontPadding: false,
+  },
+  suggestionCard: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    gap: 8,
+    backgroundColor: Colors.surface,
+    borderRadius: Radius.md,
+    padding: Spacing.sm + 2,
+    borderWidth: 1,
+    borderColor: Colors.surfaceBorder,
+  },
+  suggestionText: {
+    flex: 1,
+    fontSize: FontSize.sm,
+    color: Colors.textPrimary,
+    fontWeight: FontWeight.medium,
+    lineHeight: 19,
+    includeFontPadding: false,
+  },
+
+  // Hook Types
   hookTypes: {
     flexDirection: 'row',
     gap: Spacing.sm,
@@ -478,6 +723,8 @@ const styles = StyleSheet.create({
     textAlign: 'center',
     includeFontPadding: false,
   },
+
+  // Text Input
   textInput: {
     backgroundColor: Colors.surfaceElevated,
     borderRadius: Radius.md,
@@ -496,6 +743,8 @@ const styles = StyleSheet.create({
     textAlign: 'right',
     includeFontPadding: false,
   },
+
+  // Hashtags
   suggestedTags: {
     flexDirection: 'row',
     flexWrap: 'wrap',
@@ -513,6 +762,19 @@ const styles = StyleSheet.create({
   tagChipText: {
     fontSize: FontSize.sm,
     color: Colors.primaryLight,
+    fontWeight: FontWeight.semibold,
+    includeFontPadding: false,
+  },
+
+  // Audio
+  audioHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+  },
+  resetLink: {
+    fontSize: FontSize.sm,
+    color: Colors.textMuted,
     fontWeight: FontWeight.semibold,
     includeFontPadding: false,
   },
@@ -549,6 +811,14 @@ const styles = StyleSheet.create({
     color: Colors.textSecondary,
     includeFontPadding: false,
   },
+  audioMoodTag: {
+    fontSize: 10,
+    color: Colors.primaryLight,
+    fontWeight: FontWeight.medium,
+    marginTop: 2,
+    includeFontPadding: false,
+    textTransform: 'capitalize',
+  },
   audioMeta: {
     alignItems: 'flex-end',
     gap: 3,
@@ -573,6 +843,8 @@ const styles = StyleSheet.create({
     color: Colors.textMuted,
     includeFontPadding: false,
   },
+
+  // Platforms
   platformRow: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -607,6 +879,8 @@ const styles = StyleSheet.create({
     backgroundColor: Colors.primary,
     borderColor: Colors.primary,
   },
+
+  // Actions
   actions: {
     flexDirection: 'row',
     gap: Spacing.sm,
