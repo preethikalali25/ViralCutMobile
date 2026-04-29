@@ -77,6 +77,74 @@ export default function EditorScreen() {
   const [generatingCaption, setGeneratingCaption] = useState(false);
   const [generatingAudio, setGeneratingAudio] = useState(false);
   const [aiPickedSong, setAiPickedSong] = useState<AISuggestedAudio | null>(null);
+  const [autoGenDone, setAutoGenDone] = useState(false);
+
+  // Auto-generate on first open when video has no hook/caption/audio
+  React.useEffect(() => {
+    if (!video || autoGenDone) return;
+    const needsHook = !hookText.trim();
+    const needsCaption = !caption.trim();
+    const needsAudio = !selectedAudioId;
+    if (!needsHook && !needsCaption && !needsAudio) return;
+    setAutoGenDone(true);
+
+    const runAll = async () => {
+      const jobs: Promise<void>[] = [];
+
+      if (needsHook) {
+        jobs.push(
+          (async () => {
+            setGeneratingHook(true);
+            const { data, error } = await callAIGenerator('hook', {
+              videoTitle: video.title,
+              hookType,
+              platforms,
+            });
+            setGeneratingHook(false);
+            if (!error && data?.result) setHookText(data.result);
+          })()
+        );
+      }
+
+      if (needsCaption) {
+        jobs.push(
+          (async () => {
+            setGeneratingCaption(true);
+            const { data, error } = await callAIGenerator('caption', {
+              videoTitle: video.title,
+              platforms,
+            });
+            setGeneratingCaption(false);
+            if (!error && data?.result) {
+              if (data.result.caption) setCaption(data.result.caption);
+              if (data.result.hashtags) setHashtags(data.result.hashtags);
+            }
+          })()
+        );
+      }
+
+      if (needsAudio) {
+        jobs.push(
+          (async () => {
+            setGeneratingAudio(true);
+            const { data, error } = await callAIGenerator('audio', {
+              videoTitle: video.title,
+              platforms,
+            });
+            setGeneratingAudio(false);
+            if (!error && data?.result?.id) {
+              setAiPickedSong(data.result);
+              setSelectedAudioId(data.result.id);
+            }
+          })()
+        );
+      }
+
+      await Promise.all(jobs);
+    };
+
+    runAll();
+  }, [video?.id]);
 
   if (!video) {
     return (
