@@ -53,14 +53,13 @@ The caption should feel authentic, drive engagement (comments/shares), and match
     } else if (type === 'audio') {
       const platformList = (platforms as string[]).join(', ');
       systemPrompt = `You are a music trend analyst for short-form video platforms (TikTok, Instagram Reels, YouTube Shorts).
-You recommend trending songs that match video content and boost discoverability.
-Return a JSON array of exactly 5 song recommendations. Each item: { "id": "ai_1" through "ai_5", "title": "Song Title", "artist": "Artist Name", "uses": "estimated uses like 2.4M", "trending": true/false, "platform": ["tiktok","reels","youtube"] (platforms where it's trending), "mood": "one word mood" }.
-Return ONLY valid JSON array, no markdown, no code blocks.`;
+You are asked to pick the single BEST trending song that maximizes virality for a given video.
+Return a single JSON object: { "id": "ai_best", "title": "Song Title", "artist": "Artist Name", "uses": "estimated uses like 2.4M", "trending": true, "platform": ["tiktok","reels","youtube"], "mood": "one word mood", "reason": "one sentence explaining why this song fits" }.
+Return ONLY valid JSON object, no markdown, no code blocks.`;
 
-      userPrompt = `Recommend 5 trending songs for a short-form video titled: "${videoTitle}".
+      userPrompt = `Pick the single BEST trending song for a short-form video titled: "${videoTitle}".
 Target platforms: ${platformList}
-Mix some viral hits (trending: true) with solid proven tracks (trending: false).
-Make the songs feel relevant to the video topic and current trends.`;
+Choose the song most likely to go viral on these platforms right now. Explain the match in one sentence.`;
     } else {
       return new Response(
         JSON.stringify({ error: 'Invalid type. Use: hook, caption, or audio' }),
