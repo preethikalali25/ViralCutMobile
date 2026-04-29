@@ -69,9 +69,9 @@ export default function UploadScreen() {
     }
 
     setIsUploading(true);
-    const thumb = pickedVideo?.uri
-      ? pickedVideo.uri
-      : MOCK_THUMBNAILS[Math.floor(Math.random() * MOCK_THUMBNAILS.length)];
+    // expo-image cannot extract video frames — use a random Unsplash thumbnail as the preview.
+    // The actual video URI is stored separately if needed for playback.
+    const thumb = MOCK_THUMBNAILS[Math.floor(Math.random() * MOCK_THUMBNAILS.length)];
     const duration = pickedVideo ? getVideoDuration(pickedVideo) : Math.floor(Math.random() * 50) + 15;
 
     setTimeout(() => {
@@ -84,7 +84,9 @@ export default function UploadScreen() {
         status: 'ready',
         platforms,
         createdAt: new Date().toISOString(),
-      });
+        // Store local video URI in a custom field for future playback use
+        ...(pickedVideo?.uri ? { videoUri: pickedVideo.uri } : {}),
+      } as any);
       setIsUploading(false);
       showAlert('Upload Complete!', 'Your video is ready to edit.', [
         { text: 'Edit Now', onPress: () => router.replace({ pathname: '/editor', params: { id } }) },
@@ -109,12 +111,12 @@ export default function UploadScreen() {
         <View style={styles.dropZone}>
           {pickedVideo ? (
             <View style={styles.previewWrapper}>
-              <Image
-                source={{ uri: pickedVideo.uri }}
-                style={styles.previewThumb}
-                contentFit="cover"
-                transition={200}
-              />
+              <View style={[styles.previewThumb, { backgroundColor: Colors.surfaceBorder, alignItems: 'center', justifyContent: 'center' }]}>
+                <MaterialCommunityIcons name="video" size={36} color={Colors.primaryLight} />
+                <Text style={{ color: Colors.textSecondary, fontSize: 10, marginTop: 4, includeFontPadding: false }}>
+                  {pickedVideo.fileName ?? 'Video Selected'}
+                </Text>
+              </View>
               <View style={styles.previewOverlay}>
                 <MaterialIcons name="videocam" size={24} color="#fff" />
               </View>
