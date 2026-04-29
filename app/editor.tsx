@@ -1,8 +1,9 @@
 import React, { useState, useCallback } from 'react';
 import {
   View, Text, ScrollView, StyleSheet, Pressable, TextInput,
-  KeyboardAvoidingView, Platform, ActivityIndicator,
+  KeyboardAvoidingView, Platform, ActivityIndicator, Modal, Dimensions,
 } from 'react-native';
+import { useVideoPlayer, VideoView } from 'expo-video';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Image } from 'expo-image';
 import { MaterialIcons, MaterialCommunityIcons } from '@expo/vector-icons';
@@ -78,6 +79,12 @@ export default function EditorScreen() {
   const [generatingAudio, setGeneratingAudio] = useState(false);
   const [aiPickedSong, setAiPickedSong] = useState<AISuggestedAudio | null>(null);
   const [autoGenDone, setAutoGenDone] = useState(false);
+  const [showPlayer, setShowPlayer] = useState(false);
+
+  const videoPlayer = useVideoPlayer(
+    video?.videoUri ? { uri: video.videoUri } : null,
+    player => { if (player) { player.loop = false; } }
+  );
 
   // Auto-generate on first open when video has no hook/caption/audio
   React.useEffect(() => {
@@ -302,9 +309,13 @@ export default function EditorScreen() {
                   <Text style={styles.hookOverlayText}>{hookText}</Text>
                 </View>
               ) : null}
-              <View style={styles.playBtn}>
+              <Pressable
+                style={styles.playBtn}
+                onPress={() => setShowPlayer(true)}
+                hitSlop={8}
+              >
                 <MaterialIcons name="play-circle-filled" size={44} color="rgba(255,255,255,0.9)" />
-              </View>
+              </Pressable>
             </View>
           </View>
 
@@ -579,6 +590,58 @@ export default function EditorScreen() {
           <View style={{ height: Spacing.xl }} />
         </ScrollView>
       </KeyboardAvoidingView>
+
+      {/* ── Video Player Modal ── */}
+      <Modal
+        visible={showPlayer}
+        animationType="fade"
+        statusBarTranslucent
+        onRequestClose={() => {
+          videoPlayer?.pause();
+          setShowPlayer(false);
+        }}
+      >
+        <View style={styles.playerModal}>
+          {/* Close */}
+          <Pressable
+            style={styles.playerClose}
+            onPress={() => {
+              videoPlayer?.pause();
+              setShowPlayer(false);
+            }}
+            hitSlop={8}
+          >
+            <MaterialIcons name="close" size={26} color="#fff" />
+          </Pressable>
+
+          {/* Title */}
+          <Text style={styles.playerTitle} numberOfLines={2}>{video.title}</Text>
+
+          {video?.videoUri ? (
+            <VideoView
+              player={videoPlayer}
+              style={styles.videoView}
+              contentFit="contain"
+              nativeControls
+            />
+          ) : (
+            /* No local file — show thumbnail with info */
+            <View style={styles.noVideoContainer}>
+              <Image
+                source={{ uri: video.thumbnail }}
+                style={styles.noVideoThumb}
+                contentFit="cover"
+                transition={200}
+              />
+              <View style={styles.noVideoOverlay}>
+                <MaterialCommunityIcons name="video-off-outline" size={44} color="rgba(255,255,255,0.7)" />
+                <Text style={styles.noVideoText}>No video file attached</Text>
+                <Text style={styles.noVideoSub}>Upload a video from your device to preview it here</Text>
+              </View>
+            </View>
+          )}
+        </View>
+      </Modal>
     </SafeAreaView>
   );
 }
@@ -987,6 +1050,74 @@ const styles = StyleSheet.create({
     fontSize: FontSize.md,
     fontWeight: FontWeight.bold,
     color: '#fff',
+    includeFontPadding: false,
+  },
+  // Player Modal
+  playerModal: {
+    flex: 1,
+    backgroundColor: '#000',
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  playerClose: {
+    position: 'absolute',
+    top: Platform.OS === 'ios' ? 56 : 40,
+    right: 20,
+    zIndex: 10,
+    width: 40,
+    height: 40,
+    borderRadius: 20,
+    backgroundColor: 'rgba(0,0,0,0.5)',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  playerTitle: {
+    position: 'absolute',
+    top: Platform.OS === 'ios' ? 56 : 40,
+    left: 20,
+    right: 70,
+    zIndex: 10,
+    fontSize: FontSize.md,
+    fontWeight: FontWeight.bold,
+    color: '#fff',
+    includeFontPadding: false,
+  },
+  videoView: {
+    width: Dimensions.get('window').width,
+    height: Dimensions.get('window').height,
+  },
+  noVideoContainer: {
+    width: Dimensions.get('window').width,
+    height: Dimensions.get('window').height * 0.65,
+    borderRadius: Radius.lg,
+    overflow: 'hidden',
+    position: 'relative',
+  },
+  noVideoThumb: {
+    width: '100%',
+    height: '100%',
+  },
+  noVideoOverlay: {
+    position: 'absolute',
+    top: 0, left: 0, right: 0, bottom: 0,
+    backgroundColor: 'rgba(0,0,0,0.65)',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 10,
+    paddingHorizontal: Spacing.lg,
+  },
+  noVideoText: {
+    fontSize: FontSize.lg,
+    fontWeight: FontWeight.bold,
+    color: '#fff',
+    textAlign: 'center',
+    includeFontPadding: false,
+  },
+  noVideoSub: {
+    fontSize: FontSize.sm,
+    color: 'rgba(255,255,255,0.65)',
+    textAlign: 'center',
+    lineHeight: 20,
     includeFontPadding: false,
   },
   emptyTitle: {
