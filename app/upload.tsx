@@ -10,7 +10,7 @@ import * as ImagePicker from 'expo-image-picker';
 import { Colors, Spacing, Radius, FontSize, FontWeight } from '@/constants/theme';
 import { useVideos } from '@/hooks/useVideos';
 import { useAlert } from '@/template';
-import { Platform as PlatformType } from '@/types';
+import { Platform as PlatformType, Video } from '@/types';
 import PlatformBadge from '@/components/ui/PlatformBadge';
 
 const ALL_PLATFORMS: PlatformType[] = ['tiktok', 'reels', 'youtube'];
@@ -70,29 +70,28 @@ export default function UploadScreen() {
 
     setIsUploading(true);
     // expo-image cannot extract video frames — use a random Unsplash thumbnail as the preview.
-    // The actual video URI is stored separately if needed for playback.
     const thumb = MOCK_THUMBNAILS[Math.floor(Math.random() * MOCK_THUMBNAILS.length)];
     const duration = pickedVideo ? getVideoDuration(pickedVideo) : Math.floor(Math.random() * 50) + 15;
+    const id = `v${Date.now()}`;
 
-    setTimeout(() => {
-      const id = `v${Date.now()}`;
-      addVideo({
-        id,
-        title: title.trim(),
-        thumbnail: thumb,
-        duration,
-        status: 'ready',
-        platforms,
-        createdAt: new Date().toISOString(),
-        // Store local video URI in a custom field for future playback use
-        ...(pickedVideo?.uri ? { videoUri: pickedVideo.uri } : {}),
-      } as any);
-      setIsUploading(false);
-      showAlert('Upload Complete!', 'Your video is ready to edit.', [
-        { text: 'Edit Now', onPress: () => router.replace({ pathname: '/editor', params: { id } }) },
-        { text: 'Go to Library', style: 'cancel', onPress: () => router.replace('/(tabs)/library') },
-      ]);
-    }, 1500);
+    const newVideo: Video = {
+      id,
+      title: title.trim(),
+      thumbnail: thumb,
+      duration,
+      status: 'ready',
+      platforms,
+      createdAt: new Date().toISOString(),
+      ...(pickedVideo?.uri ? { videoUri: pickedVideo.uri } : {}),
+    };
+
+    addVideo(newVideo);
+    setIsUploading(false);
+
+    showAlert('Upload Complete!', 'Your video is ready to edit.', [
+      { text: 'Edit Now', onPress: () => router.push({ pathname: '/editor', params: { id } }) },
+      { text: 'Go to Library', style: 'cancel', onPress: () => router.back() },
+    ]);
   };
 
   return (

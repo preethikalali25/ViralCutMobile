@@ -30,6 +30,7 @@ export interface Video {
   publishedAt?: string;
   metrics?: VideoMetrics;
   createdAt: string;
+  videoUri?: string;
 }
 
 export interface TrendingAudio {
