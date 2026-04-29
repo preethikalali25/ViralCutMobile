@@ -1,9 +1,11 @@
-import React, { useState, useCallback } from 'react';
+import React, { useState, useCallback, useRef } from 'react';
 import {
   View, Text, ScrollView, StyleSheet, Pressable, TextInput,
   KeyboardAvoidingView, Platform, ActivityIndicator, Modal, Dimensions,
 } from 'react-native';
 import { useVideoPlayer, VideoView } from 'expo-video';
+import * as VideoThumbnails from 'expo-video-thumbnails';
+import * as FileSystem from 'expo-file-system';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Image } from 'expo-image';
 import { MaterialIcons, MaterialCommunityIcons } from '@expo/vector-icons';
@@ -38,6 +40,24 @@ const HOOK_TYPES: { type: HookType; label: string; desc: string; icon: string }[
 ];
 
 const ALL_PLATFORMS: PlatformType[] = ['tiktok', 'reels', 'youtube'];
+
+/** Extract a frame from a local video URI and return it as a base64 JPEG string */
+async function extractVideoFrame(videoUri: string): Promise<{ base64: string; mime: string } | null> {
+  try {
+    const { uri } = await VideoThumbnails.getThumbnailAsync(videoUri, {
+      time: 1000, // 1 second in
+      quality: 0.6,
+    });
+    // Read the thumbnail as base64
+    const base64 = await FileSystem.readAsStringAsync(uri, {
+      encoding: FileSystem.EncodingType.Base64,
+    });
+    return { base64, mime: 'image/jpeg' };
+  } catch (e) {
+    console.warn('Frame extraction failed:', e);
+    return null;
+  }
+}
 
 async function callAIGenerator(type: string, payload: Record<string, unknown>) {
   const client = getSupabaseClient();
@@ -80,6 +100,8 @@ export default function EditorScreen() {
   const [aiPickedSong, setAiPickedSong] = useState<AISuggestedAudio | null>(null);
   const [autoGenDone, setAutoGenDone] = useState(false);
   const [showPlayer, setShowPlayer] = useState(false);
+  // Cache the extracted frame so we only extract once per session
+  const frameCache = useRef<{ base64: string; mime: string } | null | 'pending'>('pending');
 
   const videoPlayer = useVideoPlayer(
     video?.videoUri ? { uri: video.videoUri } : null,
@@ -96,6 +118,13 @@ export default function EditorScreen() {
     setAutoGenDone(true);
 
     const runAll = async () => {
+      // Try to extract a video frame once for visual analysis
+      if (frameCache.current === 'pending') {
+        frameCache.current = video.videoUri ? await extractVideoFrame(video.videoUri) : null;
+      }
+      const frame = frameCache.current !== 'pending' ? frameCache.current : null;
+      const framePayload = frame ? { videoFrameBase64: frame.base64, videoFrameMime: frame.mime } : {};
+
       const jobs: Promise<void>[] = [];
 
       if (needsHook) {
@@ -106,6 +135,7 @@ export default function EditorScreen() {
               videoTitle: video.title,
               hookType,
               platforms,
+              ...framePayload,
             });
             setGeneratingHook(false);
             if (!error && data?.result) setHookText(data.result);
@@ -120,6 +150,7 @@ export default function EditorScreen() {
             const { data, error } = await callAIGenerator('caption', {
               videoTitle: video.title,
               platforms,
+              ...framePayload,
             });
             setGeneratingCaption(false);
             if (!error && data?.result) {
@@ -137,6 +168,7 @@ export default function EditorScreen() {
             const { data, error } = await callAIGenerator('audio', {
               videoTitle: video.title,
               platforms,
+              ...framePayload,
             });
             setGeneratingAudio(false);
             if (!error && data?.result?.id) {
@@ -165,25 +197,38 @@ export default function EditorScreen() {
     );
   }
 
+  /** Ensure we have a frame cached before calling AI manually */
+  const ensureFrame = useCallback(async () => {
+    if (frameCache.current === 'pending') {
+      frameCache.current = video.videoUri ? await extractVideoFrame(video.videoUri) : null;
+    }
+    const frame = frameCache.current !== 'pending' ? frameCache.current : null;
+    return frame ? { videoFrameBase64: frame.base64, videoFrameMime: frame.mime } : {};
+  }, [video.videoUri]);
+
   // AI: Pick Best Hook — auto-apply
   const handleGenerateHook = useCallback(async () => {
     setGeneratingHook(true);
+    const framePayload = await ensureFrame();
     const { data, error } = await callAIGenerator('hook', {
       videoTitle: video.title,
       hookType,
       platforms,
+      ...framePayload,
     });
     setGeneratingHook(false);
     if (error) { showAlert('AI Error', error); return; }
     if (data?.result) setHookText(data.result);
-  }, [video.title, hookType, platforms, showAlert]);
+  }, [video.title, hookType, platforms, showAlert, ensureFrame]);
 
   // AI: Generate Caption — auto-apply
   const handleGenerateCaption = useCallback(async () => {
     setGeneratingCaption(true);
+    const framePayload = await ensureFrame();
     const { data, error } = await callAIGenerator('caption', {
       videoTitle: video.title,
       platforms,
+      ...framePayload,
     });
     setGeneratingCaption(false);
     if (error) { showAlert('AI Error', error); return; }
@@ -191,14 +236,16 @@ export default function EditorScreen() {
       if (data.result.caption) setCaption(data.result.caption);
       if (data.result.hashtags) setHashtags(data.result.hashtags);
     }
-  }, [video.title, platforms, showAlert]);
+  }, [video.title, platforms, showAlert, ensureFrame]);
 
   // AI: Pick Best Song — auto-apply
   const handleGenerateAudio = useCallback(async () => {
     setGeneratingAudio(true);
+    const framePayload = await ensureFrame();
     const { data, error } = await callAIGenerator('audio', {
       videoTitle: video.title,
       platforms,
+      ...framePayload,
     });
     setGeneratingAudio(false);
     if (error) { showAlert('AI Error', error); return; }
@@ -207,7 +254,7 @@ export default function EditorScreen() {
       setAiPickedSong(song);
       setSelectedAudioId(song.id);
     }
-  }, [video.title, platforms, showAlert]);
+  }, [video.title, platforms, showAlert, ensureFrame]);
 
   const handleSave = () => {
     if (!video) return;
