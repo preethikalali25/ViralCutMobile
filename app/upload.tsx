@@ -230,7 +230,7 @@ export default function UploadScreen() {
           <Text style={styles.tipText}>• Upload high resolution (1080p+) for quality</Text>
         </View>
 
-        {/* Action Buttons */}
+        {/* Action Button */}
         <View style={styles.actionRow}>
           <Pressable
             style={({ pressed }) => [
@@ -247,25 +247,6 @@ export default function UploadScreen() {
               <>
                 <MaterialIcons name="edit" size={18} color={Colors.primaryLight} />
                 <Text style={styles.editBtnText}>Edit Now</Text>
-              </>
-            )}
-          </Pressable>
-
-          <Pressable
-            style={({ pressed }) => [
-              styles.publishBtn,
-              (!pickedVideo || isUploading) && styles.actionBtnDisabled,
-              pressed && { opacity: 0.85 },
-            ]}
-            onPress={() => handleUpload('publish')}
-            disabled={!pickedVideo || isUploading}
-          >
-            {isUploading ? (
-              <ActivityIndicator size="small" color="#fff" />
-            ) : (
-              <>
-                <MaterialIcons name="send" size={18} color="#fff" />
-                <Text style={styles.publishBtnText}>Publish Now</Text>
               </>
             )}
           </Pressable>
@@ -497,23 +478,7 @@ const styles = StyleSheet.create({
     color: Colors.primaryLight,
     includeFontPadding: false,
   },
-  publishBtn: {
-    flex: 1,
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'center',
-    gap: 6,
-    backgroundColor: Colors.primary,
-    borderRadius: Radius.full,
-    paddingVertical: 16,
-  },
   actionBtnDisabled: {
     opacity: 0.45,
-  },
-  publishBtnText: {
-    fontSize: FontSize.md,
-    fontWeight: FontWeight.bold,
-    color: '#fff',
-    includeFontPadding: false,
   },
 });
