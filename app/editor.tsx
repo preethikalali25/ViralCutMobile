@@ -116,6 +116,8 @@ export default function EditorScreen() {
   const [aiPickedSong, setAiPickedSong] = useState<AISuggestedAudio | null>(null);
   const [autoGenDone, setAutoGenDone] = useState(false);
   const [showPlayer, setShowPlayer] = useState(false);
+  const [videoTitle, setVideoTitle] = useState('');
+  const [generatingTitle, setGeneratingTitle] = useState(false);
   const frameCache = useRef<{ base64: string; mime: string } | null | 'pending'>('pending');
 
   // useVideoPlayer MUST be called unconditionally — use empty string when no URI
@@ -127,6 +129,7 @@ export default function EditorScreen() {
   // Sync state from video when it loads
   useEffect(() => {
     if (!video) return;
+    setVideoTitle(video.title ?? '');
     setHookType(video.hook?.type ?? 'question');
     setHookText(video.hook?.text ?? '');
     setCaption(video.caption ?? '');
@@ -221,6 +224,20 @@ export default function EditorScreen() {
     );
   }
 
+  const handleGenerateTitle = useCallback(async () => {
+    setGeneratingTitle(true);
+    const framePayload = await ensureFrame();
+    const { data, error } = await callAIGenerator('title', {
+      videoTitle: cleanTitle(video?.title ?? ''), ...framePayload,
+    });
+    setGeneratingTitle(false);
+    if (error) { showAlert('AI Error', error); return; }
+    if (data?.result) {
+      setVideoTitle(data.result);
+      if (video) updateVideo(video.id, { title: data.result });
+    }
+  }, [video, showAlert]);
+
   const ensureFrame = useCallback(async () => {
     if (frameCache.current === 'pending') {
       frameCache.current = video.videoUri ? await extractVideoFrame(video.videoUri) : null;
@@ -284,7 +301,7 @@ export default function EditorScreen() {
 
   const handleSave = () => {
     const snap = snapshotEditorState();
-    updateVideo(video.id, snap);
+    updateVideo(video.id, { ...snap, title: videoTitle });
     showAlert('Saved', 'Your changes have been saved.');
   };
 
@@ -344,7 +361,7 @@ export default function EditorScreen() {
             <MaterialIcons name="arrow-back" size={20} color={Colors.textSecondary} />
           </Pressable>
           <View style={{ flex: 1 }}>
-            <Text style={styles.headerTitle} numberOfLines={1}>{video.title}</Text>
+            <Text style={styles.headerTitle} numberOfLines={1}>{videoTitle || video.title}</Text>
             <View style={styles.headerMeta}>
               <StatusBadge status={video.status} />
               <Text style={styles.duration}>{formatDuration(video.duration)}</Text>
@@ -359,6 +376,29 @@ export default function EditorScreen() {
         </View>
 
         <ScrollView showsVerticalScrollIndicator={false}>
+          {/* Smart Title */}
+          <View style={styles.titleRow}>
+            <TextInput
+              style={styles.titleInput}
+              value={videoTitle}
+              onChangeText={setVideoTitle}
+              placeholder="Video title..."
+              placeholderTextColor={Colors.textMuted}
+              returnKeyType="done"
+              maxLength={120}
+            />
+            <Pressable
+              style={({ pressed }) => [styles.titleAiBtn, pressed && { opacity: 0.8 }, generatingTitle && { opacity: 0.6 }]}
+              onPress={handleGenerateTitle}
+              disabled={generatingTitle}
+              hitSlop={6}
+            >
+              {generatingTitle
+                ? <ActivityIndicator size="small" color={Colors.primaryLight} />
+                : <MaterialCommunityIcons name="auto-fix" size={17} color={Colors.primaryLight} />}
+            </Pressable>
+          </View>
+
           {/* Thumbnail Preview */}
           <View style={styles.previewContainer}>
             <View style={styles.preview}>
@@ -697,6 +737,22 @@ const styles = StyleSheet.create({
     paddingHorizontal: 14, paddingVertical: 7, borderWidth: 1, borderColor: Colors.surfaceBorder,
   },
   saveBtnText: { fontSize: FontSize.sm, fontWeight: FontWeight.semibold, color: Colors.textPrimary, includeFontPadding: false },
+  titleRow: {
+    flexDirection: 'row', alignItems: 'center', gap: Spacing.sm,
+    paddingHorizontal: Spacing.md, paddingTop: Spacing.sm,
+  },
+  titleInput: {
+    flex: 1, backgroundColor: Colors.surfaceElevated, borderRadius: Radius.md,
+    borderWidth: 1, borderColor: Colors.surfaceBorder,
+    paddingHorizontal: Spacing.sm + 4, paddingVertical: 10,
+    fontSize: FontSize.md, fontWeight: FontWeight.semibold,
+    color: Colors.textPrimary, includeFontPadding: false,
+  },
+  titleAiBtn: {
+    width: 42, height: 42, borderRadius: Radius.full,
+    backgroundColor: Colors.primaryGlow, alignItems: 'center', justifyContent: 'center',
+    borderWidth: 1.5, borderColor: Colors.primary,
+  },
   previewContainer: { alignItems: 'center', paddingVertical: Spacing.md },
   preview: {
     width: 140, height: 200, borderRadius: Radius.lg,

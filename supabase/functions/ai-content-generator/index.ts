@@ -150,9 +150,22 @@ Consider the visual mood, energy, subject, and setting shown in the frame when c
 Target platforms: ${platformList}.
 Choose a well-known, currently popular song that fits the video's likely mood and maximises viral potential.`;
 
+    } else if (type === 'title') {
+      systemPrompt = `You are a social media content strategist who writes compelling, specific video titles for TikTok, Instagram Reels, and YouTube Shorts.
+${visualContext}
+${SAFETY_RULES}
+Return ONLY the title — concise, punchy, 4–10 words, no hashtags, no quotes, no explanation.`;
+
+      userPrompt = hasFrame
+        ? `Write a smart, descriptive video title based on what you see in this video frame.
+Current filename/title for context: "${videoTitle}".
+Describe the actual content — what's happening, who is in it, what is the subject — and turn that into a compelling, specific title that would perform well on short-form platforms. 4–10 words maximum.`
+        : `Write a smart, descriptive video title for a short-form video. Current filename: "${videoTitle}".
+Ignore any timestamp or technical noise in the filename and craft a compelling, specific title 4–10 words long that would perform well on TikTok/Reels/YouTube Shorts.`;
+
     } else {
       return new Response(
-        JSON.stringify({ error: 'Invalid type. Use: hook, caption, or audio' }),
+        JSON.stringify({ error: 'Invalid type. Use: hook, caption, audio, or title' }),
         { status: 400, headers: { ...corsHeaders, 'Content-Type': 'application/json' } },
       );
     }
@@ -190,11 +203,11 @@ Choose a well-known, currently popular song that fits the video's likely mood an
     const rawContent = (aiData.choices?.[0]?.message?.content ?? '').trim();
     console.log(`[ai-content-generator] raw response (first 200 chars): ${rawContent.slice(0, 200)}`);
 
-    if (type === 'hook') {
-      // Strip any accidental quotes the model may wrap around the hook
-      const hook = rawContent.replace(/^["']|["']$/g, '').trim();
+    if (type === 'hook' || type === 'title') {
+      // Strip any accidental quotes the model may wrap around the text
+      const text = rawContent.replace(/^["']|["']$/g, '').trim();
       return new Response(
-        JSON.stringify({ result: hook }),
+        JSON.stringify({ result: text }),
         { headers: { ...corsHeaders, 'Content-Type': 'application/json' } },
       );
     }
