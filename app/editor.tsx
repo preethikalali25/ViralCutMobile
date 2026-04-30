@@ -1,11 +1,9 @@
-import React, { useState, useCallback, useRef } from 'react';
+import React, { useState, useCallback, useRef, useEffect } from 'react';
 import {
   View, Text, ScrollView, StyleSheet, Pressable, TextInput,
   KeyboardAvoidingView, Platform, ActivityIndicator, Modal, Dimensions,
 } from 'react-native';
 import { useVideoPlayer, VideoView } from 'expo-video';
-import * as VideoThumbnails from 'expo-video-thumbnails';
-import * as FileSystem from 'expo-file-system';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Image } from 'expo-image';
 import { MaterialIcons, MaterialCommunityIcons } from '@expo/vector-icons';
@@ -41,14 +39,12 @@ const HOOK_TYPES: { type: HookType; label: string; desc: string; icon: string }[
 
 const ALL_PLATFORMS: PlatformType[] = ['tiktok', 'reels', 'youtube'];
 
-/** Extract a frame from a local video URI and return it as a base64 JPEG string */
+/** Safely extract a video frame — wrapped in try/catch, lazy-imported to avoid crashes */
 async function extractVideoFrame(videoUri: string): Promise<{ base64: string; mime: string } | null> {
   try {
-    const { uri } = await VideoThumbnails.getThumbnailAsync(videoUri, {
-      time: 1000, // 1 second in
-      quality: 0.6,
-    });
-    // Read the thumbnail as base64
+    const VideoThumbnails = await import('expo-video-thumbnails');
+    const FileSystem = await import('expo-file-system');
+    const { uri } = await VideoThumbnails.getThumbnailAsync(videoUri, { time: 1000, quality: 0.6 });
     const base64 = await FileSystem.readAsStringAsync(uri, {
       encoding: FileSystem.EncodingType.Base64,
     });
@@ -85,98 +81,102 @@ export default function EditorScreen() {
 
   const video = videos.find(v => v.id === id) ?? videos.find(v => v.status === 'ready' || v.status === 'published');
 
+  // ── All hooks MUST run unconditionally before any early return ──
   const [tab, setTab] = useState<Tab>('hook');
-  const [hookType, setHookType] = useState<HookType>(video?.hook?.type ?? 'question');
-  const [hookText, setHookText] = useState(video?.hook?.text ?? '');
-  const [caption, setCaption] = useState(video?.caption ?? '');
-  const [hashtags, setHashtags] = useState(video?.hashtags?.join(' ') ?? '');
-  const [selectedAudioId, setSelectedAudioId] = useState(video?.audio?.id ?? '');
-  const [platforms, setPlatforms] = useState<PlatformType[]>(video?.platforms ?? ['tiktok']);
-
-  // AI states
+  const [hookType, setHookType] = useState<HookType>('question');
+  const [hookText, setHookText] = useState('');
+  const [caption, setCaption] = useState('');
+  const [hashtags, setHashtags] = useState('');
+  const [selectedAudioId, setSelectedAudioId] = useState('');
+  const [platforms, setPlatforms] = useState<PlatformType[]>(['tiktok']);
   const [generatingHook, setGeneratingHook] = useState(false);
   const [generatingCaption, setGeneratingCaption] = useState(false);
   const [generatingAudio, setGeneratingAudio] = useState(false);
   const [aiPickedSong, setAiPickedSong] = useState<AISuggestedAudio | null>(null);
   const [autoGenDone, setAutoGenDone] = useState(false);
   const [showPlayer, setShowPlayer] = useState(false);
-  // Cache the extracted frame so we only extract once per session
   const frameCache = useRef<{ base64: string; mime: string } | null | 'pending'>('pending');
 
+  // useVideoPlayer MUST be called unconditionally — use empty string when no URI
   const videoPlayer = useVideoPlayer(
-    video?.videoUri ? { uri: video.videoUri } : null,
-    player => { if (player) { player.loop = false; } }
+    { uri: video?.videoUri ?? '' },
+    player => { if (player) player.loop = false; }
   );
 
+  // Sync state from video when it loads
+  useEffect(() => {
+    if (!video) return;
+    setHookType(video.hook?.type ?? 'question');
+    setHookText(video.hook?.text ?? '');
+    setCaption(video.caption ?? '');
+    setHashtags(video.hashtags?.join(' ') ?? '');
+    setSelectedAudioId(video.audio?.id ?? '');
+    setPlatforms(video.platforms ?? ['tiktok']);
+  }, [video?.id]);
+
   // Auto-generate on first open when video has no hook/caption/audio
-  React.useEffect(() => {
+  useEffect(() => {
     if (!video || autoGenDone) return;
-    const needsHook = !hookText.trim();
-    const needsCaption = !caption.trim();
-    const needsAudio = !selectedAudioId;
+    const needsHook = !(video.hook?.text?.trim());
+    const needsCaption = !(video.caption?.trim());
+    const needsAudio = !video.audio?.id;
     if (!needsHook && !needsCaption && !needsAudio) return;
     setAutoGenDone(true);
 
     const runAll = async () => {
-      // Try to extract a video frame once for visual analysis
       if (frameCache.current === 'pending') {
         frameCache.current = video.videoUri ? await extractVideoFrame(video.videoUri) : null;
       }
       const frame = frameCache.current !== 'pending' ? frameCache.current : null;
       const framePayload = frame ? { videoFrameBase64: frame.base64, videoFrameMime: frame.mime } : {};
+      const currentPlatforms = video.platforms ?? ['tiktok'];
 
       const jobs: Promise<void>[] = [];
 
       if (needsHook) {
-        jobs.push(
-          (async () => {
-            setGeneratingHook(true);
-            const { data, error } = await callAIGenerator('hook', {
-              videoTitle: video.title,
-              hookType,
-              platforms,
-              ...framePayload,
-            });
-            setGeneratingHook(false);
-            if (!error && data?.result) setHookText(data.result);
-          })()
-        );
+        jobs.push((async () => {
+          setGeneratingHook(true);
+          const { data, error } = await callAIGenerator('hook', {
+            videoTitle: video.title,
+            hookType: video.hook?.type ?? 'question',
+            platforms: currentPlatforms,
+            ...framePayload,
+          });
+          setGeneratingHook(false);
+          if (!error && data?.result) setHookText(data.result);
+        })());
       }
 
       if (needsCaption) {
-        jobs.push(
-          (async () => {
-            setGeneratingCaption(true);
-            const { data, error } = await callAIGenerator('caption', {
-              videoTitle: video.title,
-              platforms,
-              ...framePayload,
-            });
-            setGeneratingCaption(false);
-            if (!error && data?.result) {
-              if (data.result.caption) setCaption(data.result.caption);
-              if (data.result.hashtags) setHashtags(data.result.hashtags);
-            }
-          })()
-        );
+        jobs.push((async () => {
+          setGeneratingCaption(true);
+          const { data, error } = await callAIGenerator('caption', {
+            videoTitle: video.title,
+            platforms: currentPlatforms,
+            ...framePayload,
+          });
+          setGeneratingCaption(false);
+          if (!error && data?.result) {
+            if (data.result.caption) setCaption(data.result.caption);
+            if (data.result.hashtags) setHashtags(data.result.hashtags);
+          }
+        })());
       }
 
       if (needsAudio) {
-        jobs.push(
-          (async () => {
-            setGeneratingAudio(true);
-            const { data, error } = await callAIGenerator('audio', {
-              videoTitle: video.title,
-              platforms,
-              ...framePayload,
-            });
-            setGeneratingAudio(false);
-            if (!error && data?.result?.id) {
-              setAiPickedSong(data.result);
-              setSelectedAudioId(data.result.id);
-            }
-          })()
-        );
+        jobs.push((async () => {
+          setGeneratingAudio(true);
+          const { data, error } = await callAIGenerator('audio', {
+            videoTitle: video.title,
+            platforms: currentPlatforms,
+            ...framePayload,
+          });
+          setGeneratingAudio(false);
+          if (!error && data?.result?.id) {
+            setAiPickedSong(data.result);
+            setSelectedAudioId(data.result.id);
+          }
+        })());
       }
 
       await Promise.all(jobs);
@@ -185,6 +185,7 @@ export default function EditorScreen() {
     runAll();
   }, [video?.id]);
 
+  // ── Early return for missing video — AFTER all hooks ──
   if (!video) {
     return (
       <SafeAreaView style={[styles.safe, { alignItems: 'center', justifyContent: 'center', gap: 12 }]}>
@@ -197,7 +198,6 @@ export default function EditorScreen() {
     );
   }
 
-  /** Ensure we have a frame cached before calling AI manually */
   const ensureFrame = useCallback(async () => {
     if (frameCache.current === 'pending') {
       frameCache.current = video.videoUri ? await extractVideoFrame(video.videoUri) : null;
@@ -206,29 +206,22 @@ export default function EditorScreen() {
     return frame ? { videoFrameBase64: frame.base64, videoFrameMime: frame.mime } : {};
   }, [video.videoUri]);
 
-  // AI: Pick Best Hook — auto-apply
   const handleGenerateHook = useCallback(async () => {
     setGeneratingHook(true);
     const framePayload = await ensureFrame();
     const { data, error } = await callAIGenerator('hook', {
-      videoTitle: video.title,
-      hookType,
-      platforms,
-      ...framePayload,
+      videoTitle: video.title, hookType, platforms, ...framePayload,
     });
     setGeneratingHook(false);
     if (error) { showAlert('AI Error', error); return; }
     if (data?.result) setHookText(data.result);
   }, [video.title, hookType, platforms, showAlert, ensureFrame]);
 
-  // AI: Generate Caption — auto-apply
   const handleGenerateCaption = useCallback(async () => {
     setGeneratingCaption(true);
     const framePayload = await ensureFrame();
     const { data, error } = await callAIGenerator('caption', {
-      videoTitle: video.title,
-      platforms,
-      ...framePayload,
+      videoTitle: video.title, platforms, ...framePayload,
     });
     setGeneratingCaption(false);
     if (error) { showAlert('AI Error', error); return; }
@@ -238,26 +231,19 @@ export default function EditorScreen() {
     }
   }, [video.title, platforms, showAlert, ensureFrame]);
 
-  // AI: Pick Best Song — auto-apply
   const handleGenerateAudio = useCallback(async () => {
     setGeneratingAudio(true);
     const framePayload = await ensureFrame();
     const { data, error } = await callAIGenerator('audio', {
-      videoTitle: video.title,
-      platforms,
-      ...framePayload,
+      videoTitle: video.title, platforms, ...framePayload,
     });
     setGeneratingAudio(false);
     if (error) { showAlert('AI Error', error); return; }
     const song = data?.result;
-    if (song && song.id) {
-      setAiPickedSong(song);
-      setSelectedAudioId(song.id);
-    }
+    if (song && song.id) { setAiPickedSong(song); setSelectedAudioId(song.id); }
   }, [video.title, platforms, showAlert, ensureFrame]);
 
   const handleSave = () => {
-    if (!video) return;
     const audioSource = aiPickedSong && selectedAudioId === aiPickedSong.id
       ? aiPickedSong
       : MOCK_TRENDING_AUDIO.find(a => a.id === selectedAudioId);
@@ -278,12 +264,9 @@ export default function EditorScreen() {
     tomorrow.setDate(tomorrow.getDate() + 1);
     tomorrow.setHours(12, 0, 0, 0);
     updateVideo(video.id, {
-      status: 'scheduled',
-      scheduledAt: tomorrow.toISOString(),
-      hook: { type: hookType, text: hookText },
-      caption,
-      hashtags: hashtags.split(/\s+/).filter(Boolean),
-      platforms,
+      status: 'scheduled', scheduledAt: tomorrow.toISOString(),
+      hook: { type: hookType, text: hookText }, caption,
+      hashtags: hashtags.split(/\s+/).filter(Boolean), platforms,
     });
     showAlert('Scheduled!', 'Your video is scheduled for tomorrow at 12:00 PM.', [
       { text: 'View Schedule', onPress: () => router.push('/(tabs)/schedule') },
@@ -296,12 +279,9 @@ export default function EditorScreen() {
       {
         text: 'Publish', onPress: () => {
           updateVideo(video.id, {
-            status: 'published',
-            publishedAt: new Date().toISOString(),
-            hook: { type: hookType, text: hookText },
-            caption,
-            hashtags: hashtags.split(/\s+/).filter(Boolean),
-            platforms,
+            status: 'published', publishedAt: new Date().toISOString(),
+            hook: { type: hookType, text: hookText }, caption,
+            hashtags: hashtags.split(/\s+/).filter(Boolean), platforms,
           });
           router.push('/(tabs)/library');
         },
@@ -356,11 +336,7 @@ export default function EditorScreen() {
                   <Text style={styles.hookOverlayText}>{hookText}</Text>
                 </View>
               ) : null}
-              <Pressable
-                style={styles.playBtn}
-                onPress={() => setShowPlayer(true)}
-                hitSlop={8}
-              >
+              <Pressable style={styles.playBtn} onPress={() => setShowPlayer(true)} hitSlop={8}>
                 <MaterialIcons name="play-circle-filled" size={44} color="rgba(255,255,255,0.9)" />
               </Pressable>
             </View>
@@ -379,7 +355,6 @@ export default function EditorScreen() {
             ))}
           </View>
 
-          {/* Tab Content */}
           <View style={styles.tabContent}>
 
             {/* ── Hook Tab ── */}
@@ -406,7 +381,6 @@ export default function EditorScreen() {
                   ))}
                 </View>
 
-                {/* AI Hook Button — auto-applies best pick */}
                 <Pressable
                   style={({ pressed }) => [styles.aiBtn, pressed && { opacity: 0.85 }, generatingHook && styles.aiBtnLoading]}
                   onPress={handleGenerateHook}
@@ -442,7 +416,6 @@ export default function EditorScreen() {
             {/* ── Caption Tab ── */}
             {tab === 'caption' ? (
               <View style={styles.section}>
-                {/* AI Caption Button — auto-applies */}
                 <Pressable
                   style={({ pressed }) => [styles.aiBtn, pressed && { opacity: 0.85 }, generatingCaption && styles.aiBtnLoading]}
                   onPress={handleGenerateCaption}
@@ -496,7 +469,6 @@ export default function EditorScreen() {
             {/* ── Audio Tab ── */}
             {tab === 'audio' ? (
               <View style={styles.section}>
-                {/* AI Song Button — auto-picks best */}
                 <Pressable
                   style={({ pressed }) => [styles.aiBtn, pressed && { opacity: 0.85 }, generatingAudio && styles.aiBtnLoading]}
                   onPress={handleGenerateAudio}
@@ -515,16 +487,12 @@ export default function EditorScreen() {
                   )}
                 </Pressable>
 
-                {/* AI Picked Song — shown prominently */}
                 {aiPickedSong ? (
                   <View style={styles.aiPickedCard}>
                     <View style={styles.aiPickedHeader}>
                       <MaterialCommunityIcons name="auto-fix" size={13} color={Colors.primaryLight} />
                       <Text style={styles.aiPickedLabel}>AI Best Pick</Text>
-                      <Pressable
-                        onPress={() => { setAiPickedSong(null); setSelectedAudioId(video.audio?.id ?? ''); }}
-                        hitSlop={8}
-                      >
+                      <Pressable onPress={() => { setAiPickedSong(null); setSelectedAudioId(video.audio?.id ?? ''); }} hitSlop={8}>
                         <MaterialIcons name="close" size={14} color={Colors.textMuted} />
                       </Pressable>
                     </View>
@@ -535,9 +503,7 @@ export default function EditorScreen() {
                       <View style={{ flex: 1 }}>
                         <Text style={styles.audioTitle}>{aiPickedSong.title}</Text>
                         <Text style={styles.audioArtist}>{aiPickedSong.artist}</Text>
-                        {aiPickedSong.mood ? (
-                          <Text style={styles.audioMoodTag}>{aiPickedSong.mood}</Text>
-                        ) : null}
+                        {aiPickedSong.mood ? <Text style={styles.audioMoodTag}>{aiPickedSong.mood}</Text> : null}
                       </View>
                       <View style={styles.audioMeta}>
                         <View style={styles.trendingBadge}>
@@ -548,18 +514,13 @@ export default function EditorScreen() {
                       </View>
                       <MaterialIcons name="check-circle" size={20} color={Colors.primary} />
                     </View>
-                    {aiPickedSong.reason ? (
-                      <Text style={styles.aiReasonText}>{aiPickedSong.reason}</Text>
-                    ) : null}
+                    {aiPickedSong.reason ? <Text style={styles.aiReasonText}>{aiPickedSong.reason}</Text> : null}
                   </View>
                 ) : null}
 
-                {/* Manual list */}
                 <View style={styles.audioHeader}>
                   <Text style={styles.sectionLabel}>Trending Audio</Text>
-                  {aiPickedSong ? (
-                    <Text style={styles.orPickText}>or pick manually below</Text>
-                  ) : null}
+                  {aiPickedSong ? <Text style={styles.orPickText}>or pick manually below</Text> : null}
                 </View>
 
                 {MOCK_TRENDING_AUDIO.map(audio => {
@@ -643,28 +604,19 @@ export default function EditorScreen() {
         visible={showPlayer}
         animationType="fade"
         statusBarTranslucent
-        onRequestClose={() => {
-          videoPlayer?.pause();
-          setShowPlayer(false);
-        }}
+        onRequestClose={() => { videoPlayer?.pause(); setShowPlayer(false); }}
       >
         <View style={styles.playerModal}>
-          {/* Close */}
           <Pressable
             style={styles.playerClose}
-            onPress={() => {
-              videoPlayer?.pause();
-              setShowPlayer(false);
-            }}
+            onPress={() => { videoPlayer?.pause(); setShowPlayer(false); }}
             hitSlop={8}
           >
             <MaterialIcons name="close" size={26} color="#fff" />
           </Pressable>
-
-          {/* Title */}
           <Text style={styles.playerTitle} numberOfLines={2}>{video.title}</Text>
 
-          {video?.videoUri ? (
+          {video.videoUri ? (
             <VideoView
               player={videoPlayer}
               style={styles.videoView}
@@ -672,14 +624,8 @@ export default function EditorScreen() {
               nativeControls
             />
           ) : (
-            /* No local file — show thumbnail with info */
             <View style={styles.noVideoContainer}>
-              <Image
-                source={{ uri: video.thumbnail }}
-                style={styles.noVideoThumb}
-                contentFit="cover"
-                transition={200}
-              />
+              <Image source={{ uri: video.thumbnail }} style={styles.noVideoThumb} contentFit="cover" transition={200} />
               <View style={styles.noVideoOverlay}>
                 <MaterialCommunityIcons name="video-off-outline" size={44} color="rgba(255,255,255,0.7)" />
                 <Text style={styles.noVideoText}>No video file attached</Text>
@@ -696,493 +642,152 @@ export default function EditorScreen() {
 const styles = StyleSheet.create({
   safe: { flex: 1, backgroundColor: Colors.background },
   header: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: Spacing.sm,
-    paddingHorizontal: Spacing.md,
-    paddingVertical: Spacing.sm + 4,
-    borderBottomWidth: 1,
-    borderBottomColor: Colors.surfaceBorder,
+    flexDirection: 'row', alignItems: 'center', gap: Spacing.sm,
+    paddingHorizontal: Spacing.md, paddingVertical: Spacing.sm + 4,
+    borderBottomWidth: 1, borderBottomColor: Colors.surfaceBorder,
   },
   backBtn: {
-    width: 36,
-    height: 36,
-    borderRadius: Radius.full,
-    backgroundColor: Colors.surfaceElevated,
-    alignItems: 'center',
-    justifyContent: 'center',
-    borderWidth: 1,
-    borderColor: Colors.surfaceBorder,
+    width: 36, height: 36, borderRadius: Radius.full,
+    backgroundColor: Colors.surfaceElevated, alignItems: 'center', justifyContent: 'center',
+    borderWidth: 1, borderColor: Colors.surfaceBorder,
   },
-  headerTitle: {
-    fontSize: FontSize.md,
-    fontWeight: FontWeight.bold,
-    color: Colors.textPrimary,
-    includeFontPadding: false,
-  },
-  headerMeta: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: Spacing.sm,
-    marginTop: 4,
-  },
-  duration: {
-    fontSize: FontSize.xs,
-    color: Colors.textMuted,
-    includeFontPadding: false,
-  },
+  headerTitle: { fontSize: FontSize.md, fontWeight: FontWeight.bold, color: Colors.textPrimary, includeFontPadding: false },
+  headerMeta: { flexDirection: 'row', alignItems: 'center', gap: Spacing.sm, marginTop: 4 },
+  duration: { fontSize: FontSize.xs, color: Colors.textMuted, includeFontPadding: false },
   saveBtn: {
-    backgroundColor: Colors.surfaceElevated,
-    borderRadius: Radius.full,
-    paddingHorizontal: 14,
-    paddingVertical: 7,
-    borderWidth: 1,
-    borderColor: Colors.surfaceBorder,
+    backgroundColor: Colors.surfaceElevated, borderRadius: Radius.full,
+    paddingHorizontal: 14, paddingVertical: 7, borderWidth: 1, borderColor: Colors.surfaceBorder,
   },
-  saveBtnText: {
-    fontSize: FontSize.sm,
-    fontWeight: FontWeight.semibold,
-    color: Colors.textPrimary,
-    includeFontPadding: false,
-  },
-  previewContainer: {
-    alignItems: 'center',
-    paddingVertical: Spacing.md,
-  },
+  saveBtnText: { fontSize: FontSize.sm, fontWeight: FontWeight.semibold, color: Colors.textPrimary, includeFontPadding: false },
+  previewContainer: { alignItems: 'center', paddingVertical: Spacing.md },
   preview: {
-    width: 140,
-    height: 200,
-    borderRadius: Radius.lg,
-    overflow: 'hidden',
-    position: 'relative',
-    backgroundColor: Colors.surface,
+    width: 140, height: 200, borderRadius: Radius.lg,
+    overflow: 'hidden', position: 'relative', backgroundColor: Colors.surface,
   },
   previewImg: { width: '100%', height: '100%' },
   hookOverlay: {
-    position: 'absolute',
-    bottom: 16,
-    left: 8,
-    right: 8,
-    backgroundColor: 'rgba(0,0,0,0.7)',
-    borderRadius: Radius.sm,
-    padding: 6,
+    position: 'absolute', bottom: 16, left: 8, right: 8,
+    backgroundColor: 'rgba(0,0,0,0.7)', borderRadius: Radius.sm, padding: 6,
   },
-  hookOverlayText: {
-    fontSize: FontSize.xs,
-    fontWeight: FontWeight.bold,
-    color: '#fff',
-    textAlign: 'center',
-    includeFontPadding: false,
-  },
-  playBtn: {
-    position: 'absolute',
-    top: 0, left: 0, right: 0, bottom: 0,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
+  hookOverlayText: { fontSize: FontSize.xs, fontWeight: FontWeight.bold, color: '#fff', textAlign: 'center', includeFontPadding: false },
+  playBtn: { position: 'absolute', top: 0, left: 0, right: 0, bottom: 0, alignItems: 'center', justifyContent: 'center' },
   tabBar: {
-    flexDirection: 'row',
-    marginHorizontal: Spacing.md,
-    backgroundColor: Colors.surfaceElevated,
-    borderRadius: Radius.full,
-    padding: 4,
-    borderWidth: 1,
-    borderColor: Colors.surfaceBorder,
+    flexDirection: 'row', marginHorizontal: Spacing.md,
+    backgroundColor: Colors.surfaceElevated, borderRadius: Radius.full,
+    padding: 4, borderWidth: 1, borderColor: Colors.surfaceBorder,
   },
-  tabBtn: {
-    flex: 1,
-    paddingVertical: 8,
-    alignItems: 'center',
-    borderRadius: Radius.full,
-  },
+  tabBtn: { flex: 1, paddingVertical: 8, alignItems: 'center', borderRadius: Radius.full },
   tabBtnActive: { backgroundColor: Colors.primary },
-  tabLabel: {
-    fontSize: FontSize.sm,
-    fontWeight: FontWeight.semibold,
-    color: Colors.textSecondary,
-    includeFontPadding: false,
-  },
+  tabLabel: { fontSize: FontSize.sm, fontWeight: FontWeight.semibold, color: Colors.textSecondary, includeFontPadding: false },
   tabLabelActive: { color: '#fff' },
   tabContent: { paddingTop: Spacing.md },
-  section: {
-    paddingHorizontal: Spacing.md,
-    gap: Spacing.sm,
-  },
-  sectionLabel: {
-    fontSize: FontSize.sm,
-    fontWeight: FontWeight.semibold,
-    color: Colors.textSecondary,
-    includeFontPadding: false,
-  },
-
-  // AI Button
+  section: { paddingHorizontal: Spacing.md, gap: Spacing.sm },
+  sectionLabel: { fontSize: FontSize.sm, fontWeight: FontWeight.semibold, color: Colors.textSecondary, includeFontPadding: false },
   aiBtn: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'center',
-    gap: 8,
-    backgroundColor: Colors.primaryGlow,
-    borderRadius: Radius.full,
-    paddingVertical: 12,
-    borderWidth: 1.5,
-    borderColor: Colors.primary,
-    minHeight: 46,
+    flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8,
+    backgroundColor: Colors.primaryGlow, borderRadius: Radius.full, paddingVertical: 12,
+    borderWidth: 1.5, borderColor: Colors.primary, minHeight: 46,
   },
   aiBtnLoading: { opacity: 0.7 },
-  aiBtnText: {
-    fontSize: FontSize.sm,
-    fontWeight: FontWeight.bold,
-    color: Colors.primaryLight,
-    includeFontPadding: false,
-  },
-
-  // AI Picked Song Card
+  aiBtnText: { fontSize: FontSize.sm, fontWeight: FontWeight.bold, color: Colors.primaryLight, includeFontPadding: false },
   aiPickedCard: {
-    backgroundColor: Colors.primaryGlow,
-    borderRadius: Radius.lg,
-    padding: Spacing.sm,
-    borderWidth: 1,
-    borderColor: Colors.primary + '55',
-    gap: Spacing.xs,
+    backgroundColor: Colors.primaryGlow, borderRadius: Radius.lg, padding: Spacing.sm,
+    borderWidth: 1, borderColor: Colors.primary + '55', gap: Spacing.xs,
   },
-  aiPickedHeader: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 5,
-    marginBottom: 2,
-  },
+  aiPickedHeader: { flexDirection: 'row', alignItems: 'center', gap: 5, marginBottom: 2 },
   aiPickedLabel: {
-    flex: 1,
-    fontSize: FontSize.xs,
-    fontWeight: FontWeight.bold,
-    color: Colors.primaryLight,
-    textTransform: 'uppercase',
-    letterSpacing: 0.8,
-    includeFontPadding: false,
+    flex: 1, fontSize: FontSize.xs, fontWeight: FontWeight.bold, color: Colors.primaryLight,
+    textTransform: 'uppercase', letterSpacing: 0.8, includeFontPadding: false,
   },
-  aiReasonText: {
-    fontSize: FontSize.xs,
-    color: Colors.textSecondary,
-    lineHeight: 16,
-    fontStyle: 'italic',
-    marginTop: 2,
-    includeFontPadding: false,
-  },
-  orPickText: {
-    fontSize: FontSize.xs,
-    color: Colors.textMuted,
-    fontWeight: FontWeight.medium,
-    includeFontPadding: false,
-  },
-
-  // Hook Types
-  hookTypes: {
-    flexDirection: 'row',
-    gap: Spacing.sm,
-  },
+  aiReasonText: { fontSize: FontSize.xs, color: Colors.textSecondary, lineHeight: 16, fontStyle: 'italic', marginTop: 2, includeFontPadding: false },
+  orPickText: { fontSize: FontSize.xs, color: Colors.textMuted, fontWeight: FontWeight.medium, includeFontPadding: false },
+  hookTypes: { flexDirection: 'row', gap: Spacing.sm },
   hookTypeCard: {
-    flex: 1,
-    backgroundColor: Colors.surfaceElevated,
-    borderRadius: Radius.md,
-    padding: Spacing.sm,
-    alignItems: 'center',
-    gap: 4,
-    borderWidth: 1.5,
-    borderColor: Colors.surfaceBorder,
+    flex: 1, backgroundColor: Colors.surfaceElevated, borderRadius: Radius.md,
+    padding: Spacing.sm, alignItems: 'center', gap: 4, borderWidth: 1.5, borderColor: Colors.surfaceBorder,
   },
-  hookTypeCardActive: {
-    borderColor: Colors.primary,
-    backgroundColor: Colors.primaryGlow,
-  },
-  hookTypeLabel: {
-    fontSize: FontSize.sm,
-    fontWeight: FontWeight.bold,
-    color: Colors.textSecondary,
-    includeFontPadding: false,
-  },
+  hookTypeCardActive: { borderColor: Colors.primary, backgroundColor: Colors.primaryGlow },
+  hookTypeLabel: { fontSize: FontSize.sm, fontWeight: FontWeight.bold, color: Colors.textSecondary, includeFontPadding: false },
   hookTypeLabelActive: { color: Colors.primaryLight },
-  hookTypeDesc: {
-    fontSize: 10,
-    color: Colors.textMuted,
-    textAlign: 'center',
-    includeFontPadding: false,
-  },
-
-  // Text Input
+  hookTypeDesc: { fontSize: 10, color: Colors.textMuted, textAlign: 'center', includeFontPadding: false },
   textInput: {
-    backgroundColor: Colors.surfaceElevated,
-    borderRadius: Radius.md,
-    borderWidth: 1,
-    borderColor: Colors.surfaceBorder,
-    padding: Spacing.sm + 4,
-    fontSize: FontSize.md,
-    color: Colors.textPrimary,
-    textAlignVertical: 'top',
-    minHeight: 80,
-    includeFontPadding: false,
+    backgroundColor: Colors.surfaceElevated, borderRadius: Radius.md, borderWidth: 1,
+    borderColor: Colors.surfaceBorder, padding: Spacing.sm + 4, fontSize: FontSize.md,
+    color: Colors.textPrimary, textAlignVertical: 'top', minHeight: 80, includeFontPadding: false,
   },
-  charCount: {
-    fontSize: FontSize.xs,
-    color: Colors.textMuted,
-    textAlign: 'right',
-    includeFontPadding: false,
-  },
-
-  // Hashtags
-  suggestedTags: {
-    flexDirection: 'row',
-    flexWrap: 'wrap',
-    gap: Spacing.sm,
-    marginTop: 4,
-  },
+  charCount: { fontSize: FontSize.xs, color: Colors.textMuted, textAlign: 'right', includeFontPadding: false },
+  suggestedTags: { flexDirection: 'row', flexWrap: 'wrap', gap: Spacing.sm, marginTop: 4 },
   tagChip: {
-    backgroundColor: Colors.primaryGlow,
-    borderRadius: Radius.full,
-    paddingHorizontal: 12,
-    paddingVertical: 5,
-    borderWidth: 1,
-    borderColor: Colors.primary + '44',
+    backgroundColor: Colors.primaryGlow, borderRadius: Radius.full,
+    paddingHorizontal: 12, paddingVertical: 5, borderWidth: 1, borderColor: Colors.primary + '44',
   },
-  tagChipText: {
-    fontSize: FontSize.sm,
-    color: Colors.primaryLight,
-    fontWeight: FontWeight.semibold,
-    includeFontPadding: false,
-  },
-
-  // Audio
-  audioHeader: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-  },
+  tagChipText: { fontSize: FontSize.sm, color: Colors.primaryLight, fontWeight: FontWeight.semibold, includeFontPadding: false },
+  audioHeader: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },
   audioRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: Spacing.sm,
-    backgroundColor: Colors.surfaceElevated,
-    borderRadius: Radius.md,
-    padding: Spacing.sm + 4,
-    borderWidth: 1.5,
-    borderColor: Colors.surfaceBorder,
+    flexDirection: 'row', alignItems: 'center', gap: Spacing.sm,
+    backgroundColor: Colors.surfaceElevated, borderRadius: Radius.md,
+    padding: Spacing.sm + 4, borderWidth: 1.5, borderColor: Colors.surfaceBorder,
   },
-  audioRowActive: {
-    borderColor: Colors.primary,
-    backgroundColor: Colors.primaryGlow,
-  },
+  audioRowActive: { borderColor: Colors.primary, backgroundColor: Colors.primaryGlow },
   audioIcon: {
-    width: 36,
-    height: 36,
-    borderRadius: Radius.full,
-    backgroundColor: Colors.surfaceBorder,
-    alignItems: 'center',
-    justifyContent: 'center',
+    width: 36, height: 36, borderRadius: Radius.full,
+    backgroundColor: Colors.surfaceBorder, alignItems: 'center', justifyContent: 'center',
   },
-  audioTitle: {
-    fontSize: FontSize.sm,
-    fontWeight: FontWeight.semibold,
-    color: Colors.textPrimary,
-    includeFontPadding: false,
-  },
-  audioArtist: {
-    fontSize: FontSize.xs,
-    color: Colors.textSecondary,
-    includeFontPadding: false,
-  },
-  audioMoodTag: {
-    fontSize: 10,
-    color: Colors.primaryLight,
-    fontWeight: FontWeight.medium,
-    marginTop: 2,
-    includeFontPadding: false,
-    textTransform: 'capitalize',
-  },
-  audioMeta: {
-    alignItems: 'flex-end',
-    gap: 3,
-  },
+  audioTitle: { fontSize: FontSize.sm, fontWeight: FontWeight.semibold, color: Colors.textPrimary, includeFontPadding: false },
+  audioArtist: { fontSize: FontSize.xs, color: Colors.textSecondary, includeFontPadding: false },
+  audioMoodTag: { fontSize: 10, color: Colors.primaryLight, fontWeight: FontWeight.medium, marginTop: 2, includeFontPadding: false, textTransform: 'capitalize' },
+  audioMeta: { alignItems: 'flex-end', gap: 3 },
   trendingBadge: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 2,
-    backgroundColor: Colors.primaryGlow,
-    borderRadius: Radius.full,
-    paddingHorizontal: 5,
-    paddingVertical: 2,
+    flexDirection: 'row', alignItems: 'center', gap: 2,
+    backgroundColor: Colors.primaryGlow, borderRadius: Radius.full, paddingHorizontal: 5, paddingVertical: 2,
   },
-  trendingText: {
-    fontSize: 10,
-    color: Colors.primaryLight,
-    fontWeight: FontWeight.bold,
-    includeFontPadding: false,
-  },
-  audioUses: {
-    fontSize: 10,
-    color: Colors.textMuted,
-    includeFontPadding: false,
-  },
-
-  // Platforms
+  trendingText: { fontSize: 10, color: Colors.primaryLight, fontWeight: FontWeight.bold, includeFontPadding: false },
+  audioUses: { fontSize: 10, color: Colors.textMuted, includeFontPadding: false },
   platformRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: Spacing.sm,
-    backgroundColor: Colors.surfaceElevated,
-    borderRadius: Radius.md,
-    padding: Spacing.sm + 4,
-    borderWidth: 1.5,
-    borderColor: Colors.surfaceBorder,
+    flexDirection: 'row', alignItems: 'center', gap: Spacing.sm,
+    backgroundColor: Colors.surfaceElevated, borderRadius: Radius.md,
+    padding: Spacing.sm + 4, borderWidth: 1.5, borderColor: Colors.surfaceBorder,
   },
-  platformRowActive: {
-    borderColor: Colors.primary,
-    backgroundColor: Colors.primaryGlow,
-  },
-  platformLabel: {
-    flex: 1,
-    fontSize: FontSize.md,
-    fontWeight: FontWeight.semibold,
-    color: Colors.textPrimary,
-    includeFontPadding: false,
-  },
-  checkbox: {
-    width: 22,
-    height: 22,
-    borderRadius: Radius.sm,
-    borderWidth: 2,
-    borderColor: Colors.surfaceBorder,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  checkboxActive: {
-    backgroundColor: Colors.primary,
-    borderColor: Colors.primary,
-  },
-
-  // Actions
-  actions: {
-    flexDirection: 'row',
-    gap: Spacing.sm,
-    paddingHorizontal: Spacing.md,
-    paddingTop: Spacing.lg,
-  },
+  platformRowActive: { borderColor: Colors.primary, backgroundColor: Colors.primaryGlow },
+  platformLabel: { flex: 1, fontSize: FontSize.md, fontWeight: FontWeight.semibold, color: Colors.textPrimary, includeFontPadding: false },
+  checkbox: { width: 22, height: 22, borderRadius: Radius.sm, borderWidth: 2, borderColor: Colors.surfaceBorder, alignItems: 'center', justifyContent: 'center' },
+  checkboxActive: { backgroundColor: Colors.primary, borderColor: Colors.primary },
+  actions: { flexDirection: 'row', gap: Spacing.sm, paddingHorizontal: Spacing.md, paddingTop: Spacing.lg },
   scheduleBtn: {
-    flex: 1,
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'center',
-    gap: 6,
-    backgroundColor: Colors.surfaceElevated,
-    borderRadius: Radius.full,
-    paddingVertical: 14,
-    borderWidth: 1.5,
-    borderColor: Colors.primary,
+    flex: 1, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 6,
+    backgroundColor: Colors.surfaceElevated, borderRadius: Radius.full, paddingVertical: 14,
+    borderWidth: 1.5, borderColor: Colors.primary,
   },
-  scheduleBtnText: {
-    fontSize: FontSize.md,
-    fontWeight: FontWeight.bold,
-    color: Colors.primaryLight,
-    includeFontPadding: false,
-  },
+  scheduleBtnText: { fontSize: FontSize.md, fontWeight: FontWeight.bold, color: Colors.primaryLight, includeFontPadding: false },
   publishBtn: {
-    flex: 1,
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'center',
-    gap: 6,
-    backgroundColor: Colors.primary,
-    borderRadius: Radius.full,
-    paddingVertical: 14,
+    flex: 1, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 6,
+    backgroundColor: Colors.primary, borderRadius: Radius.full, paddingVertical: 14,
   },
-  publishBtnText: {
-    fontSize: FontSize.md,
-    fontWeight: FontWeight.bold,
-    color: '#fff',
-    includeFontPadding: false,
-  },
-  // Player Modal
-  playerModal: {
-    flex: 1,
-    backgroundColor: '#000',
-    justifyContent: 'center',
-    alignItems: 'center',
-  },
+  publishBtnText: { fontSize: FontSize.md, fontWeight: FontWeight.bold, color: '#fff', includeFontPadding: false },
+  playerModal: { flex: 1, backgroundColor: '#000', justifyContent: 'center', alignItems: 'center' },
   playerClose: {
-    position: 'absolute',
-    top: Platform.OS === 'ios' ? 56 : 40,
-    right: 20,
-    zIndex: 10,
-    width: 40,
-    height: 40,
-    borderRadius: 20,
-    backgroundColor: 'rgba(0,0,0,0.5)',
-    alignItems: 'center',
-    justifyContent: 'center',
+    position: 'absolute', top: Platform.OS === 'ios' ? 56 : 40, right: 20, zIndex: 10,
+    width: 40, height: 40, borderRadius: 20, backgroundColor: 'rgba(0,0,0,0.5)',
+    alignItems: 'center', justifyContent: 'center',
   },
   playerTitle: {
-    position: 'absolute',
-    top: Platform.OS === 'ios' ? 56 : 40,
-    left: 20,
-    right: 70,
-    zIndex: 10,
-    fontSize: FontSize.md,
-    fontWeight: FontWeight.bold,
-    color: '#fff',
-    includeFontPadding: false,
+    position: 'absolute', top: Platform.OS === 'ios' ? 56 : 40, left: 20, right: 70, zIndex: 10,
+    fontSize: FontSize.md, fontWeight: FontWeight.bold, color: '#fff', includeFontPadding: false,
   },
-  videoView: {
-    width: Dimensions.get('window').width,
-    height: Dimensions.get('window').height,
-  },
+  videoView: { width: Dimensions.get('window').width, height: Dimensions.get('window').height },
   noVideoContainer: {
-    width: Dimensions.get('window').width,
-    height: Dimensions.get('window').height * 0.65,
-    borderRadius: Radius.lg,
-    overflow: 'hidden',
-    position: 'relative',
+    width: Dimensions.get('window').width, height: Dimensions.get('window').height * 0.65,
+    borderRadius: Radius.lg, overflow: 'hidden', position: 'relative',
   },
-  noVideoThumb: {
-    width: '100%',
-    height: '100%',
-  },
+  noVideoThumb: { width: '100%', height: '100%' },
   noVideoOverlay: {
-    position: 'absolute',
-    top: 0, left: 0, right: 0, bottom: 0,
-    backgroundColor: 'rgba(0,0,0,0.65)',
-    alignItems: 'center',
-    justifyContent: 'center',
-    gap: 10,
-    paddingHorizontal: Spacing.lg,
+    position: 'absolute', top: 0, left: 0, right: 0, bottom: 0,
+    backgroundColor: 'rgba(0,0,0,0.65)', alignItems: 'center', justifyContent: 'center',
+    gap: 10, paddingHorizontal: Spacing.lg,
   },
-  noVideoText: {
-    fontSize: FontSize.lg,
-    fontWeight: FontWeight.bold,
-    color: '#fff',
-    textAlign: 'center',
-    includeFontPadding: false,
-  },
-  noVideoSub: {
-    fontSize: FontSize.sm,
-    color: 'rgba(255,255,255,0.65)',
-    textAlign: 'center',
-    lineHeight: 20,
-    includeFontPadding: false,
-  },
-  emptyTitle: {
-    fontSize: FontSize.lg,
-    fontWeight: FontWeight.bold,
-    color: Colors.textPrimary,
-    includeFontPadding: false,
-  },
-  uploadBtn: {
-    backgroundColor: Colors.primary,
-    paddingHorizontal: 24,
-    paddingVertical: 12,
-    borderRadius: Radius.full,
-  },
-  uploadBtnText: {
-    color: '#fff',
-    fontSize: FontSize.md,
-    fontWeight: FontWeight.bold,
-    includeFontPadding: false,
-  },
+  noVideoText: { fontSize: FontSize.lg, fontWeight: FontWeight.bold, color: '#fff', textAlign: 'center', includeFontPadding: false },
+  noVideoSub: { fontSize: FontSize.sm, color: 'rgba(255,255,255,0.65)', textAlign: 'center', lineHeight: 20, includeFontPadding: false },
+  emptyTitle: { fontSize: FontSize.lg, fontWeight: FontWeight.bold, color: Colors.textPrimary, includeFontPadding: false },
+  uploadBtn: { backgroundColor: Colors.primary, paddingHorizontal: 24, paddingVertical: 12, borderRadius: Radius.full },
+  uploadBtnText: { color: '#fff', fontSize: FontSize.md, fontWeight: FontWeight.bold, includeFontPadding: false },
 });
