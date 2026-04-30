@@ -15,15 +15,41 @@ import PlatformBadge from '@/components/ui/PlatformBadge';
 
 const ALL_PLATFORMS: PlatformType[] = ['tiktok', 'reels', 'youtube'];
 
-const MOCK_THUMBNAILS = [
-  'https://images.unsplash.com/photo-1614624532983-4ce03382d63d?w=400&q=80',
-  'https://images.unsplash.com/photo-1512941937669-90a1b58e7e9c?w=400&q=80',
-  'https://images.unsplash.com/photo-1522202176988-66273c2fd55f?w=400&q=80',
-];
+/**
+ * Try extracting a thumbnail at multiple seek positions to avoid black/dark frames.
+ * iOS videos often have dark/empty first frames — seeking into the video yields real content.
+ */
+async function extractBestThumbnail(videoUri: string, durationMs: number): Promise<string | null> {
+  try {
+    const VideoThumbnails = await import('expo-video-thumbnails');
 
-/** True if this is a local file URI (extracted thumbnail) vs a remote URL */
-function isLocalUri(uri: string) {
-  return uri.startsWith('file://') || uri.startsWith('/');
+    // Candidate seek times: 20% in, 10% in, 2s, 1s, 500ms, 0
+    const dur = durationMs > 0 ? durationMs : 5000;
+    const candidates = [
+      Math.floor(dur * 0.2),
+      Math.floor(dur * 0.1),
+      2000,
+      1000,
+      500,
+      0,
+    ].filter((t, i, arr) => arr.indexOf(t) === i); // deduplicate
+
+    for (const seekMs of candidates) {
+      try {
+        const { uri } = await VideoThumbnails.getThumbnailAsync(videoUri, {
+          time: seekMs,
+          quality: 0.85,
+        });
+        if (uri) return uri;
+      } catch {
+        // try next candidate
+      }
+    }
+    return null;
+  } catch (e) {
+    console.warn('Thumbnail extraction failed:', e);
+    return null;
+  }
 }
 
 function getVideoDuration(asset: ImagePicker.ImagePickerAsset): number {
@@ -66,15 +92,10 @@ export default function UploadScreen() {
         const name = asset.fileName.replace(/\.[^.]+$/, '').replace(/[_-]/g, ' ');
         setTitle(name);
       }
-      // Extract thumbnail immediately so the preview shows a real frame
+      // Extract thumbnail at 20% through the video to avoid black first frames
       if (asset.uri) {
-        try {
-          const VideoThumbnails = await import('expo-video-thumbnails');
-          const { uri } = await VideoThumbnails.getThumbnailAsync(asset.uri, { time: 0, quality: 0.8 });
-          setPickedThumbnail(uri);
-        } catch (e) {
-          console.warn('Preview thumbnail extraction failed:', e);
-        }
+        const thumbUri = await extractBestThumbnail(asset.uri, asset.duration ?? 0);
+        if (thumbUri) setPickedThumbnail(thumbUri);
       }
     }
   };
@@ -89,16 +110,10 @@ export default function UploadScreen() {
     const id = `v${Date.now()}`;
     const duration = pickedVideo ? getVideoDuration(pickedVideo) : Math.floor(Math.random() * 50) + 15;
 
-    // Use already-extracted thumbnail from pick step; re-extract only if that failed
+    // Use already-extracted thumbnail; re-extract only if that failed
     let thumb = pickedThumbnail ?? '';
     if (!pickedThumbnail && pickedVideo?.uri) {
-      try {
-        const VideoThumbnails = await import('expo-video-thumbnails');
-        const { uri } = await VideoThumbnails.getThumbnailAsync(pickedVideo.uri, { time: 0, quality: 0.8 });
-        thumb = uri;
-      } catch (e) {
-        console.warn('Thumbnail extraction failed, using placeholder:', e);
-      }
+      thumb = (await extractBestThumbnail(pickedVideo.uri, pickedVideo.duration ?? 0)) ?? '';
     }
 
     const newVideo: Video = {

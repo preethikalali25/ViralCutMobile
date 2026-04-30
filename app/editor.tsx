@@ -39,13 +39,24 @@ const HOOK_TYPES: { type: HookType; label: string; desc: string; icon: string }[
 
 const ALL_PLATFORMS: PlatformType[] = ['tiktok', 'reels', 'youtube'];
 
-/** Safely extract a video frame — wrapped in try/catch, lazy-imported to avoid crashes */
+/** Safely extract a video frame — tries multiple seek positions to avoid dark/black frames */
 async function extractVideoFrame(videoUri: string): Promise<{ base64: string; mime: string } | null> {
   try {
     const VideoThumbnails = await import('expo-video-thumbnails');
     const FileSystem = await import('expo-file-system');
-    const { uri } = await VideoThumbnails.getThumbnailAsync(videoUri, { time: 1000, quality: 0.6 });
-    const base64 = await FileSystem.readAsStringAsync(uri, {
+
+    // Try several seek positions; first non-null result wins
+    const seekCandidates = [2000, 1000, 500, 0];
+    let frameUri: string | null = null;
+    for (const seekMs of seekCandidates) {
+      try {
+        const { uri } = await VideoThumbnails.getThumbnailAsync(videoUri, { time: seekMs, quality: 0.6 });
+        if (uri) { frameUri = uri; break; }
+      } catch { /* try next */ }
+    }
+    if (!frameUri) return null;
+
+    const base64 = await FileSystem.readAsStringAsync(frameUri, {
       encoding: FileSystem.EncodingType.Base64,
     });
     return { base64, mime: 'image/jpeg' };
