@@ -10,7 +10,7 @@ import { MaterialIcons, MaterialCommunityIcons } from '@expo/vector-icons';
 import { useRouter, useLocalSearchParams } from 'expo-router';
 import { Colors, Spacing, Radius, FontSize, FontWeight } from '@/constants/theme';
 import { useVideos } from '@/hooks/useVideos';
-import { useAlert, getSupabaseClient } from '@/template';
+import { useAlert, getSupabaseClient, useAuth } from '@/template';
 import { MOCK_TRENDING_AUDIO } from '@/constants/mockData';
 import { Platform as PlatformType, HookType } from '@/types';
 import PlatformBadge from '@/components/ui/PlatformBadge';
@@ -18,6 +18,7 @@ import StatusBadge from '@/components/ui/StatusBadge';
 import { formatDuration } from '@/services/formatters';
 import { FunctionsHttpError } from '@supabase/supabase-js';
 import { useTikTok } from '@/hooks/useTikTok';
+import { uploadVideoToStorage } from '@/services/tiktokService';
 
 type Tab = 'hook' | 'caption' | 'audio' | 'platforms';
 
@@ -100,6 +101,7 @@ export default function EditorScreen() {
   const { id } = useLocalSearchParams<{ id?: string }>();
   const { videos, updateVideo } = useVideos();
   const { showAlert } = useAlert();
+  const { user } = useAuth();
 
   const video = videos.find(v => v.id === id) ?? videos.find(v => v.status === 'ready' || v.status === 'published');
 
@@ -121,6 +123,8 @@ export default function EditorScreen() {
   const [generatingTitle, setGeneratingTitle] = useState(false);
   const [showTikTokSheet, setShowTikTokSheet] = useState(false);
   const [tiktokPrivacy, setTiktokPrivacy] = useState('SELF_ONLY');
+  const [uploadingToStorage, setUploadingToStorage] = useState(false);
+  const [uploadProgress, setUploadProgress] = useState(0);
   const frameCache = useRef<{ base64: string; mime: string } | null | 'pending'>('pending');
   const tiktok = useTikTok();
 
@@ -327,8 +331,8 @@ export default function EditorScreen() {
 
   const handlePublish = () => {
     const snap = snapshotEditorState();
-    // If TikTok is selected and connected, offer TikTok direct publish
-    if (platforms.includes('tiktok') && tiktok.status.connected && video?.videoUri) {
+    // If TikTok is selected and connected, open TikTok publish sheet
+    if (platforms.includes('tiktok') && tiktok.status.connected) {
       setShowTikTokSheet(true);
       return;
     }
@@ -349,21 +353,39 @@ export default function EditorScreen() {
 
   const handleTikTokPublish = async () => {
     const snap = snapshotEditorState();
-    const videoUrl = video?.videoUri ?? '';
+    let videoUrl = video?.videoUri ?? '';
+
     if (!videoUrl) {
-      showAlert('No Video File', 'Attach a video file before publishing to TikTok.');
+      showAlert('No Video File', 'Select a video before publishing to TikTok.');
       return;
     }
-    // Note: TikTok requires a public URL. Local file:// URIs won't work — user must upload first.
+
+    // Local file — upload to Supabase Storage first to get a public URL
     if (videoUrl.startsWith('file://') || videoUrl.startsWith('ph://')) {
-      showAlert(
-        'Public URL Required',
-        'TikTok requires a publicly accessible video URL. Please save your video to storage first, or publish via the TikTok app directly.',
+      setUploadingToStorage(true);
+      setUploadProgress(0);
+      const { publicUrl, error } = await uploadVideoToStorage(
+        videoUrl,
+        user?.id ?? 'unknown',
+        video.id,
+        (pct) => setUploadProgress(pct),
       );
-      return;
+      setUploadingToStorage(false);
+      if (error || !publicUrl) {
+        showAlert('Upload Failed', error ?? 'Could not upload video to storage.');
+        return;
+      }
+      videoUrl = publicUrl;
+      // Persist the public URL so re-publish doesn't need to re-upload
+      updateVideo(video.id, { videoUri: publicUrl });
     }
+
     updateVideo(video.id, { ...snap, title: videoTitle });
-    const { publishId, error } = await tiktok.publish(videoUrl, videoTitle || snap.hook.text || 'ViralCut video', tiktokPrivacy);
+    const { publishId, error } = await tiktok.publish(
+      videoUrl,
+      videoTitle || snap.hook.text || 'ViralCut video',
+      tiktokPrivacy,
+    );
     if (error) {
       showAlert('TikTok Error', error);
     }
@@ -717,7 +739,7 @@ export default function EditorScreen() {
         <View style={styles.sheetOverlay}>
           <Pressable
             style={StyleSheet.absoluteFillObject}
-            onPress={() => { if (tiktok.publishState.phase === 'idle') { setShowTikTokSheet(false); } }}
+            onPress={() => { if (tiktok.publishState.phase === 'idle' && !uploadingToStorage) { setShowTikTokSheet(false); } }}
           />
           <View style={styles.tiktokSheet}>
             <View style={styles.sheetHandle} />
@@ -739,7 +761,7 @@ export default function EditorScreen() {
             </View>
 
             {/* Phase: idle — show privacy picker */}
-            {tiktok.publishState.phase === 'idle' ? (
+            {tiktok.publishState.phase === 'idle' && !uploadingToStorage ? (
               <>
                 <Text style={styles.sheetSectionLabel}>Privacy</Text>
                 {[
@@ -783,8 +805,24 @@ export default function EditorScreen() {
               </>
             ) : null}
 
+            {/* Phase: uploading to storage */}
+            {uploadingToStorage ? (
+              <View style={styles.sheetPhase}>
+                <ActivityIndicator size="large" color={Colors.primaryLight} />
+                <Text style={styles.sheetPhaseTitle}>Uploading video...</Text>
+                <Text style={styles.sheetPhaseSub}>
+                  Preparing your video for TikTok. This may take a moment depending on file size.
+                </Text>
+                {uploadProgress > 0 ? (
+                  <View style={styles.progressBarBg}>
+                    <View style={[styles.progressBarFill, { width: `${uploadProgress}%` as any }]} />
+                  </View>
+                ) : null}
+              </View>
+            ) : null}
+
             {/* Phase: uploading / processing */}
-            {tiktok.publishState.phase === 'uploading' || tiktok.publishState.phase === 'processing' ? (
+            {!uploadingToStorage && (tiktok.publishState.phase === 'uploading' || tiktok.publishState.phase === 'processing') ? (
               <View style={styles.sheetPhase}>
                 <ActivityIndicator size="large" color={Colors.primaryLight} />
                 <Text style={styles.sheetPhaseTitle}>
@@ -1046,6 +1084,14 @@ const styles = StyleSheet.create({
   uploadBtn: { backgroundColor: Colors.primary, paddingHorizontal: 24, paddingVertical: 12, borderRadius: Radius.full },
   uploadBtnText: { color: '#fff', fontSize: FontSize.md, fontWeight: FontWeight.bold, includeFontPadding: false },
 
+  progressBarBg: {
+    width: '80%', height: 6, borderRadius: 3,
+    backgroundColor: Colors.surfaceBorder, overflow: 'hidden', marginTop: 4,
+  },
+  progressBarFill: {
+    height: '100%', borderRadius: 3,
+    backgroundColor: Colors.primaryLight,
+  },
   // TikTok sheet
   sheetOverlay: { flex: 1, justifyContent: 'flex-end', backgroundColor: 'rgba(0,0,0,0.6)' },
   tiktokSheet: {

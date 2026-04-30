@@ -92,6 +92,51 @@ export async function publishToTikTok(
   return { publishId: data.publishId };
 }
 
+/**
+ * Upload a local video file to Supabase Storage and return its public URL.
+ * On mobile, file:// URIs must be read as base64 since fetch() can't access them.
+ */
+export async function uploadVideoToStorage(
+  localUri: string,
+  userId: string,
+  videoId: string,
+  onProgress?: (pct: number) => void,
+): Promise<{ publicUrl?: string; error?: string }> {
+  try {
+    const client = getSupabaseClient();
+    const fileName = `${userId}/${videoId}.mp4`;
+
+    // React Native: read as base64, convert to ArrayBuffer
+    const FileSystem = await import('expo-file-system');
+    const base64 = await FileSystem.readAsStringAsync(localUri, {
+      encoding: FileSystem.EncodingType.Base64,
+    });
+
+    // Decode base64 → Uint8Array
+    const binaryString = atob(base64);
+    const bytes = new Uint8Array(binaryString.length);
+    for (let i = 0; i < binaryString.length; i++) {
+      bytes[i] = binaryString.charCodeAt(i);
+    }
+    onProgress?.(30);
+
+    const { error } = await client.storage
+      .from('videos')
+      .upload(fileName, bytes.buffer as ArrayBuffer, {
+        contentType: 'video/mp4',
+        upsert: true,
+      });
+
+    if (error) return { error: error.message };
+    onProgress?.(100);
+
+    const { data } = client.storage.from('videos').getPublicUrl(fileName);
+    return { publicUrl: data.publicUrl };
+  } catch (e: any) {
+    return { error: String(e?.message ?? e) };
+  }
+}
+
 /** Poll publish status by publish_id */
 export async function getTikTokPublishStatus(
   userId: string,
