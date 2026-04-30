@@ -39,6 +39,7 @@ export default function UploadScreen() {
   const [platforms, setPlatforms] = useState<PlatformType[]>(['tiktok']);
   const [isUploading, setIsUploading] = useState(false);
   const [pickedVideo, setPickedVideo] = useState<ImagePicker.ImagePickerAsset | null>(null);
+  const [pickedThumbnail, setPickedThumbnail] = useState<string | null>(null);
 
   const togglePlatform = (p: PlatformType) => {
     setPlatforms(prev =>
@@ -60,9 +61,20 @@ export default function UploadScreen() {
     if (!result.canceled && result.assets.length > 0) {
       const asset = result.assets[0];
       setPickedVideo(asset);
+      setPickedThumbnail(null);
       if (!title.trim() && asset.fileName) {
         const name = asset.fileName.replace(/\.[^.]+$/, '').replace(/[_-]/g, ' ');
         setTitle(name);
+      }
+      // Extract thumbnail immediately so the preview shows a real frame
+      if (asset.uri) {
+        try {
+          const VideoThumbnails = await import('expo-video-thumbnails');
+          const { uri } = await VideoThumbnails.getThumbnailAsync(asset.uri, { time: 1000, quality: 0.8 });
+          setPickedThumbnail(uri);
+        } catch (e) {
+          console.warn('Preview thumbnail extraction failed:', e);
+        }
       }
     }
   };
@@ -77,13 +89,13 @@ export default function UploadScreen() {
     const id = `v${Date.now()}`;
     const duration = pickedVideo ? getVideoDuration(pickedVideo) : Math.floor(Math.random() * 50) + 15;
 
-    // Try to extract a real frame from the picked video; fall back to Unsplash thumbnail
-    let thumb = MOCK_THUMBNAILS[Math.floor(Math.random() * MOCK_THUMBNAILS.length)];
-    if (pickedVideo?.uri) {
+    // Use already-extracted thumbnail from pick step; re-extract only if that failed
+    let thumb = pickedThumbnail ?? MOCK_THUMBNAILS[Math.floor(Math.random() * MOCK_THUMBNAILS.length)];
+    if (!pickedThumbnail && pickedVideo?.uri) {
       try {
         const VideoThumbnails = await import('expo-video-thumbnails');
         const { uri } = await VideoThumbnails.getThumbnailAsync(pickedVideo.uri, { time: 1000, quality: 0.8 });
-        thumb = uri; // local file URI — expo-image handles this fine as a source
+        thumb = uri;
       } catch (e) {
         console.warn('Thumbnail extraction failed, using placeholder:', e);
       }
@@ -123,15 +135,24 @@ export default function UploadScreen() {
         <View style={styles.dropZone}>
           {pickedVideo ? (
             <View style={styles.previewWrapper}>
-              <View style={[styles.previewThumb, { backgroundColor: Colors.surfaceBorder, alignItems: 'center', justifyContent: 'center' }]}>
-                <MaterialCommunityIcons name="video" size={36} color={Colors.primaryLight} />
-                <Text style={{ color: Colors.textSecondary, fontSize: 10, marginTop: 4, includeFontPadding: false }}>
-                  {pickedVideo.fileName ?? 'Video Selected'}
-                </Text>
-              </View>
+              {pickedThumbnail ? (
+                <Image
+                  source={{ uri: pickedThumbnail }}
+                  style={styles.previewThumb}
+                  contentFit="cover"
+                  transition={200}
+                />
+              ) : (
+                <View style={[styles.previewThumb, { backgroundColor: Colors.surfaceBorder, alignItems: 'center', justifyContent: 'center' }]}>
+                  <MaterialCommunityIcons name="video" size={36} color={Colors.primaryLight} />
+                  <Text style={{ color: Colors.textSecondary, fontSize: 10, marginTop: 4, includeFontPadding: false }}>
+                    {pickedVideo.fileName ?? 'Video Selected'}
+                  </Text>
+                </View>
+              )}
 
               <View style={styles.previewOverlay}>
-                <MaterialIcons name="videocam" size={24} color="#fff" />
+                <MaterialIcons name="play-circle-filled" size={36} color="rgba(255,255,255,0.85)" />
               </View>
               <Pressable style={styles.previewChange} onPress={handlePickVideo}>
                 <MaterialIcons name="swap-horiz" size={14} color={Colors.primaryLight} />
