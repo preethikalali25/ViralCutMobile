@@ -88,10 +88,8 @@ export default function UploadScreen() {
     addVideo(newVideo);
     setIsUploading(false);
 
-    showAlert('Upload Complete!', 'Your video is ready to edit.', [
-      { text: 'Edit Now', onPress: () => router.push({ pathname: '/editor', params: { id } }) },
-      { text: 'Go to Library', style: 'cancel', onPress: () => router.back() },
-    ]);
+    // Navigate directly to avoid timing issues with alert button callbacks
+    router.push({ pathname: '/editor', params: { id } });
   };
 
   return (
