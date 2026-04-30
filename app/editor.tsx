@@ -55,6 +55,16 @@ async function extractVideoFrame(videoUri: string): Promise<{ base64: string; mi
   }
 }
 
+/** Strip file extensions, underscores, and timestamp noise from raw filenames */
+function cleanTitle(raw: string): string {
+  return raw
+    .replace(/\.[a-zA-Z0-9]{2,5}$/, '')
+    .replace(/[_\-]+/g, ' ')
+    .replace(/\b\d{4,}\b/g, '')
+    .replace(/\s{2,}/g, ' ')
+    .trim() || 'my video';
+}
+
 async function callAIGenerator(type: string, payload: Record<string, unknown>) {
   const client = getSupabaseClient();
   const { data, error } = await client.functions.invoke('ai-content-generator', {
@@ -133,11 +143,13 @@ export default function EditorScreen() {
 
       const jobs: Promise<void>[] = [];
 
+      const cleanedTitle = cleanTitle(video.title);
+
       if (needsHook) {
         jobs.push((async () => {
           setGeneratingHook(true);
           const { data, error } = await callAIGenerator('hook', {
-            videoTitle: video.title,
+            videoTitle: cleanedTitle,
             hookType: video.hook?.type ?? 'question',
             platforms: currentPlatforms,
             ...framePayload,
@@ -151,7 +163,7 @@ export default function EditorScreen() {
         jobs.push((async () => {
           setGeneratingCaption(true);
           const { data, error } = await callAIGenerator('caption', {
-            videoTitle: video.title,
+            videoTitle: cleanedTitle,
             platforms: currentPlatforms,
             ...framePayload,
           });
@@ -167,7 +179,7 @@ export default function EditorScreen() {
         jobs.push((async () => {
           setGeneratingAudio(true);
           const { data, error } = await callAIGenerator('audio', {
-            videoTitle: video.title,
+            videoTitle: cleanedTitle,
             platforms: currentPlatforms,
             ...framePayload,
           });
@@ -210,7 +222,7 @@ export default function EditorScreen() {
     setGeneratingHook(true);
     const framePayload = await ensureFrame();
     const { data, error } = await callAIGenerator('hook', {
-      videoTitle: video.title, hookType, platforms, ...framePayload,
+      videoTitle: cleanTitle(video.title), hookType, platforms, ...framePayload,
     });
     setGeneratingHook(false);
     if (error) { showAlert('AI Error', error); return; }
@@ -221,7 +233,7 @@ export default function EditorScreen() {
     setGeneratingCaption(true);
     const framePayload = await ensureFrame();
     const { data, error } = await callAIGenerator('caption', {
-      videoTitle: video.title, platforms, ...framePayload,
+      videoTitle: cleanTitle(video.title), platforms, ...framePayload,
     });
     setGeneratingCaption(false);
     if (error) { showAlert('AI Error', error); return; }
@@ -235,7 +247,7 @@ export default function EditorScreen() {
     setGeneratingAudio(true);
     const framePayload = await ensureFrame();
     const { data, error } = await callAIGenerator('audio', {
-      videoTitle: video.title, platforms, ...framePayload,
+      videoTitle: cleanTitle(video.title), platforms, ...framePayload,
     });
     setGeneratingAudio(false);
     if (error) { showAlert('AI Error', error); return; }
