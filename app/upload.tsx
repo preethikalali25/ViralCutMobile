@@ -92,7 +92,7 @@ export default function UploadScreen() {
     }
   };
 
-  const handlePublish = async () => {
+  const handleUpload = async (action: 'edit' | 'publish') => {
     if (!pickedVideo) {
       showAlert('No Video', 'Please select a video first.');
       return;
@@ -112,16 +112,21 @@ export default function UploadScreen() {
       title: '',
       thumbnail: thumb,
       duration,
-      status: 'published',
+      status: action === 'publish' ? 'published' : 'ready',
       platforms,
       createdAt: new Date().toISOString(),
-      publishedAt: new Date().toISOString(),
+      ...(action === 'publish' ? { publishedAt: new Date().toISOString() } : {}),
       ...(pickedVideo?.uri ? { videoUri: pickedVideo.uri } : {}),
     };
 
     addVideo(newVideo);
     setIsUploading(false);
-    router.push('/(tabs)/library');
+
+    if (action === 'edit') {
+      router.push({ pathname: '/editor', params: { id } });
+    } else {
+      router.push('/(tabs)/library');
+    }
   };
 
   return (
@@ -225,28 +230,46 @@ export default function UploadScreen() {
           <Text style={styles.tipText}>• Upload high resolution (1080p+) for quality</Text>
         </View>
 
-        {/* Publish Button */}
-        <Pressable
-          style={({ pressed }) => [
-            styles.publishBtn,
-            (!pickedVideo || isUploading) && styles.publishBtnDisabled,
-            pressed && { opacity: 0.85 },
-          ]}
-          onPress={handlePublish}
-          disabled={!pickedVideo || isUploading}
-        >
-          {isUploading ? (
-            <>
+        {/* Action Buttons */}
+        <View style={styles.actionRow}>
+          <Pressable
+            style={({ pressed }) => [
+              styles.editBtn,
+              (!pickedVideo || isUploading) && styles.actionBtnDisabled,
+              pressed && { opacity: 0.85 },
+            ]}
+            onPress={() => handleUpload('edit')}
+            disabled={!pickedVideo || isUploading}
+          >
+            {isUploading ? (
+              <ActivityIndicator size="small" color={Colors.primaryLight} />
+            ) : (
+              <>
+                <MaterialIcons name="edit" size={18} color={Colors.primaryLight} />
+                <Text style={styles.editBtnText}>Edit Now</Text>
+              </>
+            )}
+          </Pressable>
+
+          <Pressable
+            style={({ pressed }) => [
+              styles.publishBtn,
+              (!pickedVideo || isUploading) && styles.actionBtnDisabled,
+              pressed && { opacity: 0.85 },
+            ]}
+            onPress={() => handleUpload('publish')}
+            disabled={!pickedVideo || isUploading}
+          >
+            {isUploading ? (
               <ActivityIndicator size="small" color="#fff" />
-              <Text style={styles.publishBtnText}>Publishing...</Text>
-            </>
-          ) : (
-            <>
-              <MaterialIcons name="send" size={20} color="#fff" />
-              <Text style={styles.publishBtnText}>Publish Now</Text>
-            </>
-          )}
-        </Pressable>
+            ) : (
+              <>
+                <MaterialIcons name="send" size={18} color="#fff" />
+                <Text style={styles.publishBtnText}>Publish Now</Text>
+              </>
+            )}
+          </Pressable>
+        </View>
 
         <View style={{ height: Spacing.xl }} />
       </ScrollView>
@@ -451,21 +474,44 @@ const styles = StyleSheet.create({
     color: Colors.textSecondary,
     includeFontPadding: false,
   },
-  publishBtn: {
+  actionRow: {
+    flexDirection: 'row',
+    gap: Spacing.sm,
+    marginHorizontal: Spacing.md,
+  },
+  editBtn: {
+    flex: 1,
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'center',
-    gap: 8,
+    gap: 6,
+    backgroundColor: Colors.surfaceElevated,
+    borderRadius: Radius.full,
+    paddingVertical: 16,
+    borderWidth: 1.5,
+    borderColor: Colors.primary,
+  },
+  editBtnText: {
+    fontSize: FontSize.md,
+    fontWeight: FontWeight.bold,
+    color: Colors.primaryLight,
+    includeFontPadding: false,
+  },
+  publishBtn: {
+    flex: 1,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 6,
     backgroundColor: Colors.primary,
-    marginHorizontal: Spacing.md,
     borderRadius: Radius.full,
     paddingVertical: 16,
   },
-  publishBtnDisabled: {
-    backgroundColor: Colors.primary + '55',
+  actionBtnDisabled: {
+    opacity: 0.45,
   },
   publishBtnText: {
-    fontSize: FontSize.lg,
+    fontSize: FontSize.md,
     fontWeight: FontWeight.bold,
     color: '#fff',
     includeFontPadding: false,
