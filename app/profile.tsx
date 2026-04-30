@@ -5,19 +5,22 @@ import {
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useRouter } from 'expo-router';
-import { MaterialIcons, MaterialCommunityIcons, FontAwesome5 } from '@expo/vector-icons';
+import { MaterialIcons, MaterialCommunityIcons } from '@expo/vector-icons';
 import { useAuth, useAlert } from '@/template';
 import { Colors, Spacing, Radius, FontSize, FontWeight } from '@/constants/theme';
 import { useSocialAccounts } from '@/hooks/useSocialAccounts';
+import { useTikTok } from '@/hooks/useTikTok';
 
 type PlatformMeta = {
   id: 'tiktok' | 'reels' | 'youtube';
   label: string;
   color: string;
   bgColor: string;
-  icon: React.ReactNode;
+  iconName: string;
+  iconLib: 'MaterialCommunityIcons';
   handlePrefix: string;
   placeholder: string;
+  supportsOAuth: boolean;
 };
 
 const PLATFORMS: PlatformMeta[] = [
@@ -26,27 +29,33 @@ const PLATFORMS: PlatformMeta[] = [
     label: 'TikTok',
     color: '#fff',
     bgColor: '#010101',
-    icon: <MaterialCommunityIcons name="music-note" size={20} color="#fff" />,
+    iconName: 'music-note',
+    iconLib: 'MaterialCommunityIcons',
     handlePrefix: '@',
     placeholder: '@yourchannel',
+    supportsOAuth: true,
   },
   {
     id: 'reels',
     label: 'Instagram Reels',
     color: '#fff',
     bgColor: '#e1306c',
-    icon: <MaterialCommunityIcons name="instagram" size={20} color="#fff" />,
+    iconName: 'instagram',
+    iconLib: 'MaterialCommunityIcons',
     handlePrefix: '@',
     placeholder: '@yourprofile',
+    supportsOAuth: false,
   },
   {
     id: 'youtube',
     label: 'YouTube Shorts',
     color: '#fff',
     bgColor: '#ff0000',
-    icon: <MaterialCommunityIcons name="youtube" size={20} color="#fff" />,
+    iconName: 'youtube',
+    iconLib: 'MaterialCommunityIcons',
     handlePrefix: '@',
     placeholder: '@yourchannel',
+    supportsOAuth: false,
   },
 ];
 
@@ -66,6 +75,7 @@ export default function ProfileScreen() {
   const { user, logout } = useAuth();
   const { showAlert } = useAlert();
   const { accounts, loading, load, connect, disconnect, getAccount } = useSocialAccounts();
+  const tiktok = useTikTok();
 
   const [connectModal, setConnectModal] = useState<PlatformMeta | null>(null);
   const [handle, setHandle] = useState('');
@@ -95,6 +105,35 @@ export default function ProfileScreen() {
     ]);
   };
 
+  // ── TikTok OAuth Connect ────────────────────────────────────────────────
+  const handleTikTokConnect = async () => {
+    const { error } = await tiktok.connect();
+    if (error) {
+      showAlert('TikTok Connect Failed', error);
+    } else {
+      showAlert('TikTok Connected!', `Welcome, ${tiktok.status.creatorName || 'creator'}! You can now publish directly to TikTok.`);
+    }
+  };
+
+  const handleTikTokDisconnect = () => {
+    showAlert(
+      'Disconnect TikTok?',
+      'Your TikTok access will be removed. You can reconnect anytime.',
+      [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: 'Disconnect',
+          style: 'destructive',
+          onPress: async () => {
+            const { error } = await tiktok.disconnect();
+            if (error) showAlert('Error', error);
+          },
+        },
+      ],
+    );
+  };
+
+  // ── Manual account connect (Instagram / YouTube) ────────────────────────
   const openConnect = (platform: PlatformMeta) => {
     const existing = getAccount(platform.id);
     setHandle(existing?.handle ?? '');
@@ -136,7 +175,7 @@ export default function ProfileScreen() {
             if (error) showAlert('Error', error);
           },
         },
-      ]
+      ],
     );
   };
 
@@ -145,7 +184,8 @@ export default function ProfileScreen() {
     ? new Date(user.created_at).toLocaleDateString('en', { year: 'numeric', month: 'long' })
     : '';
 
-  const totalFollowers = accounts.reduce((s, a) => s + (a.followers ?? 0), 0);
+  const manualAccounts = accounts.filter(a => a.platform !== 'tiktok');
+  const totalFollowers = manualAccounts.reduce((s, a) => s + (a.followers ?? 0), 0);
 
   return (
     <SafeAreaView style={styles.safe} edges={['top']}>
@@ -181,35 +221,103 @@ export default function ProfileScreen() {
           ) : null}
         </View>
 
-        {/* Total reach pill */}
-        {accounts.length > 0 ? (
+        {/* Reach pill */}
+        {totalFollowers > 0 ? (
           <View style={styles.reachPill}>
             <MaterialIcons name="people" size={16} color={Colors.primaryLight} />
             <Text style={styles.reachText}>
-              {formatFollowers(totalFollowers)} total reach across {accounts.length} platform{accounts.length > 1 ? 's' : ''}
+              {formatFollowers(totalFollowers)} total reach
             </Text>
           </View>
         ) : null}
 
-        {/* Connected Platforms */}
-        <Text style={styles.sectionLabel}>Connected Platforms</Text>
+        {/* ── TikTok OAuth Card ─────────────────────────────────────────── */}
+        <Text style={styles.sectionLabel}>TikTok</Text>
+        <View style={styles.tiktokCard}>
+          <View style={[styles.platformIcon, { backgroundColor: '#010101' }]}>
+            <MaterialCommunityIcons name="music-note" size={20} color="#fff" />
+          </View>
+
+          <View style={styles.platformInfo}>
+            <Text style={styles.platformCardLabel}>TikTok</Text>
+            {tiktok.loadingStatus ? (
+              <ActivityIndicator size="small" color={Colors.primaryLight} />
+            ) : tiktok.status.connected ? (
+              <View style={styles.connectedMeta}>
+                <Text style={styles.platformHandle}>
+                  {tiktok.status.creatorName || 'Connected'}
+                </Text>
+                {tiktok.status.expired ? (
+                  <View style={styles.expiredBadge}>
+                    <MaterialIcons name="warning" size={10} color={Colors.amber} />
+                    <Text style={styles.expiredText}>Token expired — reconnect</Text>
+                  </View>
+                ) : (
+                  <View style={styles.connectedBadge}>
+                    <MaterialIcons name="check-circle" size={11} color={Colors.emerald} />
+                    <Text style={styles.connectedBadgeText}>Live API connected</Text>
+                  </View>
+                )}
+              </View>
+            ) : (
+              <Text style={styles.notConnected}>Not connected</Text>
+            )}
+          </View>
+
+          {tiktok.status.connected ? (
+            <Pressable
+              style={({ pressed }) => [styles.disconnectBtn, pressed && { opacity: 0.7 }]}
+              onPress={handleTikTokDisconnect}
+            >
+              <MaterialIcons name="link-off" size={14} color={Colors.error} />
+            </Pressable>
+          ) : (
+            <Pressable
+              style={({ pressed }) => [styles.oauthBtn, tiktok.connectingOAuth && styles.oauthBtnLoading, pressed && { opacity: 0.85 }]}
+              onPress={handleTikTokConnect}
+              disabled={tiktok.connectingOAuth}
+            >
+              {tiktok.connectingOAuth ? (
+                <ActivityIndicator size="small" color="#fff" />
+              ) : (
+                <>
+                  <MaterialIcons name="link" size={14} color="#fff" />
+                  <Text style={styles.oauthBtnText}>Connect via TikTok</Text>
+                </>
+              )}
+            </Pressable>
+          )}
+        </View>
+
+        {/* TikTok info note */}
+        {!tiktok.status.connected ? (
+          <View style={styles.infoNote}>
+            <MaterialIcons name="info-outline" size={13} color={Colors.textMuted} />
+            <Text style={styles.infoText}>
+              Connecting via OAuth lets ViralCut publish directly to your TikTok account using the official TikTok Content Posting API.
+            </Text>
+          </View>
+        ) : null}
+
+        {/* ── Other Platforms (manual) ──────────────────────────────────── */}
+        <Text style={[styles.sectionLabel, { marginTop: Spacing.md }]}>Other Platforms</Text>
 
         {loading ? (
           <ActivityIndicator color={Colors.primaryLight} style={{ marginVertical: 24 }} />
         ) : (
           <View style={styles.platformList}>
-            {PLATFORMS.map(platform => {
+            {PLATFORMS.filter(p => !p.supportsOAuth).map(platform => {
               const account = getAccount(platform.id);
               const isConnected = !!account;
 
               return (
                 <View key={platform.id} style={styles.platformCard}>
                   <View style={[styles.platformIcon, { backgroundColor: platform.bgColor }]}>
-                    {platform.icon}
+                    <MaterialCommunityIcons name={platform.iconName as any} size={20} color={platform.color} />
                   </View>
 
                   <View style={styles.platformInfo}>
-                    <Text style={styles.platformLabel}>{platform.label}</Text>
+                    <Text style={styles.platformCardLabel}>{platform.label}</Text>
                     {isConnected ? (
                       <View style={styles.connectedMeta}>
                         <Text style={styles.platformHandle}>{account.handle}</Text>
@@ -276,7 +384,7 @@ export default function ProfileScreen() {
         <View style={{ height: Spacing.xxl }} />
       </ScrollView>
 
-      {/* Connect Modal */}
+      {/* Manual Connect Modal (Instagram / YouTube) */}
       <Modal
         visible={!!connectModal}
         animationType="slide"
@@ -293,8 +401,8 @@ export default function ProfileScreen() {
               <>
                 <View style={styles.modalHandle} />
                 <View style={styles.modalHeader}>
-                  <View style={[styles.modalIcon, { backgroundColor: connectModal.bgColor }]}>
-                    {connectModal.icon}
+                  <View style={[styles.platformIcon, { backgroundColor: connectModal.bgColor }]}>
+                    <MaterialCommunityIcons name={connectModal.iconName as any} size={20} color={connectModal.color} />
                   </View>
                   <View style={{ flex: 1 }}>
                     <Text style={styles.modalTitle}>Connect {connectModal.label}</Text>
@@ -355,310 +463,122 @@ export default function ProfileScreen() {
 const styles = StyleSheet.create({
   safe: { flex: 1, backgroundColor: Colors.background },
   topBar: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    paddingHorizontal: Spacing.md,
-    paddingVertical: Spacing.sm + 4,
-    borderBottomWidth: 1,
-    borderBottomColor: Colors.surfaceBorder,
+    flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between',
+    paddingHorizontal: Spacing.md, paddingVertical: Spacing.sm + 4,
+    borderBottomWidth: 1, borderBottomColor: Colors.surfaceBorder,
   },
   backBtn: {
-    width: 36,
-    height: 36,
-    borderRadius: 18,
-    backgroundColor: Colors.surfaceElevated,
-    alignItems: 'center',
-    justifyContent: 'center',
+    width: 36, height: 36, borderRadius: 18,
+    backgroundColor: Colors.surfaceElevated, alignItems: 'center', justifyContent: 'center',
   },
-  topBarTitle: {
-    fontSize: FontSize.lg,
-    fontWeight: FontWeight.bold,
-    color: Colors.textPrimary,
-    includeFontPadding: false,
-  },
-  content: {
-    paddingHorizontal: Spacing.md,
-    paddingTop: Spacing.xl,
-  },
-
-  // Avatar
-  avatarSection: {
-    alignItems: 'center',
-    marginBottom: Spacing.lg,
-  },
+  topBarTitle: { fontSize: FontSize.lg, fontWeight: FontWeight.bold, color: Colors.textPrimary, includeFontPadding: false },
+  content: { paddingHorizontal: Spacing.md, paddingTop: Spacing.xl },
+  avatarSection: { alignItems: 'center', marginBottom: Spacing.lg },
   avatarCircle: {
-    width: 80,
-    height: 80,
-    borderRadius: 40,
-    backgroundColor: Colors.primary,
-    alignItems: 'center',
-    justifyContent: 'center',
-    marginBottom: Spacing.md,
-    position: 'relative',
+    width: 80, height: 80, borderRadius: 40, backgroundColor: Colors.primary,
+    alignItems: 'center', justifyContent: 'center', marginBottom: Spacing.md, position: 'relative',
   },
   avatarGlow: {
-    position: 'absolute',
-    width: 80,
-    height: 80,
-    borderRadius: 40,
-    backgroundColor: 'transparent',
-    borderWidth: 2,
-    borderColor: Colors.primaryLight + '60',
+    position: 'absolute', width: 80, height: 80, borderRadius: 40,
+    backgroundColor: 'transparent', borderWidth: 2, borderColor: Colors.primaryLight + '60',
     transform: [{ scale: 1.2 }],
   },
-  avatarInitials: {
-    fontSize: FontSize.xxl,
-    fontWeight: FontWeight.bold,
-    color: '#fff',
-    includeFontPadding: false,
-  },
-  emailText: {
-    fontSize: FontSize.md,
-    fontWeight: FontWeight.semibold,
-    color: Colors.textPrimary,
-    includeFontPadding: false,
-  },
-  usernameText: {
-    fontSize: FontSize.sm,
-    color: Colors.primaryLight,
-    marginTop: 2,
-    includeFontPadding: false,
-  },
-  memberRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 4,
-    marginTop: Spacing.xs,
-  },
-  memberText: {
-    fontSize: FontSize.xs,
-    color: Colors.textMuted,
-    includeFontPadding: false,
-  },
-
-  // Reach pill
+  avatarInitials: { fontSize: FontSize.xxl, fontWeight: FontWeight.bold, color: '#fff', includeFontPadding: false },
+  emailText: { fontSize: FontSize.md, fontWeight: FontWeight.semibold, color: Colors.textPrimary, includeFontPadding: false },
+  usernameText: { fontSize: FontSize.sm, color: Colors.primaryLight, marginTop: 2, includeFontPadding: false },
+  memberRow: { flexDirection: 'row', alignItems: 'center', gap: 4, marginTop: Spacing.xs },
+  memberText: { fontSize: FontSize.xs, color: Colors.textMuted, includeFontPadding: false },
   reachPill: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 6,
-    backgroundColor: Colors.primaryGlow,
-    borderRadius: Radius.full,
-    paddingHorizontal: Spacing.md,
-    paddingVertical: 8,
-    alignSelf: 'center',
-    marginBottom: Spacing.lg,
-    borderWidth: 1,
-    borderColor: Colors.primary + '44',
+    flexDirection: 'row', alignItems: 'center', gap: 6,
+    backgroundColor: Colors.primaryGlow, borderRadius: Radius.full,
+    paddingHorizontal: Spacing.md, paddingVertical: 8, alignSelf: 'center',
+    marginBottom: Spacing.lg, borderWidth: 1, borderColor: Colors.primary + '44',
   },
-  reachText: {
-    fontSize: FontSize.sm,
-    color: Colors.primaryLight,
-    fontWeight: FontWeight.semibold,
-    includeFontPadding: false,
-  },
-
-  // Section
+  reachText: { fontSize: FontSize.sm, color: Colors.primaryLight, fontWeight: FontWeight.semibold, includeFontPadding: false },
   sectionLabel: {
-    fontSize: FontSize.xs,
-    fontWeight: FontWeight.bold,
-    color: Colors.textMuted,
-    letterSpacing: 1,
-    textTransform: 'uppercase',
-    marginBottom: Spacing.sm,
-    marginTop: Spacing.sm,
-    includeFontPadding: false,
+    fontSize: FontSize.xs, fontWeight: FontWeight.bold, color: Colors.textMuted,
+    letterSpacing: 1, textTransform: 'uppercase', marginBottom: Spacing.sm,
+    marginTop: Spacing.sm, includeFontPadding: false,
   },
 
-  // Platform cards
-  platformList: {
-    gap: Spacing.sm,
-    marginBottom: Spacing.lg,
-  },
-  platformCard: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: Spacing.sm,
-    backgroundColor: Colors.surfaceElevated,
-    borderRadius: Radius.lg,
-    padding: Spacing.md,
-    borderWidth: 1,
-    borderColor: Colors.surfaceBorder,
-  },
-  platformIcon: {
-    width: 40,
-    height: 40,
-    borderRadius: Radius.sm,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  platformInfo: { flex: 1 },
-  platformLabel: {
-    fontSize: FontSize.sm,
-    fontWeight: FontWeight.semibold,
-    color: Colors.textPrimary,
-    includeFontPadding: false,
-  },
-  connectedMeta: { gap: 2 },
-  platformHandle: {
-    fontSize: FontSize.sm,
-    color: Colors.primaryLight,
-    fontWeight: FontWeight.medium,
-    includeFontPadding: false,
-  },
-  platformFollowers: {
-    fontSize: FontSize.xs,
-    color: Colors.textMuted,
-    includeFontPadding: false,
-  },
-  notConnected: {
-    fontSize: FontSize.xs,
-    color: Colors.textMuted,
-    marginTop: 2,
-    includeFontPadding: false,
-  },
-  platformActions: {
-    flexDirection: 'row',
-    gap: 6,
-    alignItems: 'center',
-  },
-  connectBtn: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 4,
-    backgroundColor: Colors.primary,
-    borderRadius: Radius.full,
-    paddingHorizontal: 12,
-    paddingVertical: 6,
-    minHeight: 32,
-  },
-  connectBtnText: {
-    fontSize: FontSize.xs,
-    fontWeight: FontWeight.bold,
-    color: '#fff',
-    includeFontPadding: false,
-  },
-  editBtn: {
-    width: 32,
-    height: 32,
-    borderRadius: 16,
-    backgroundColor: Colors.primaryGlow,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  disconnectBtn: {
-    width: 32,
-    height: 32,
-    borderRadius: 16,
-    backgroundColor: Colors.error + '18',
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-
-  // Account
-  accountCard: {
-    backgroundColor: Colors.surfaceElevated,
-    borderRadius: Radius.lg,
-    borderWidth: 1,
-    borderColor: Colors.surfaceBorder,
-    overflow: 'hidden',
-    marginBottom: Spacing.lg,
-  },
-  accountRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: Spacing.sm,
-    padding: Spacing.md,
-    minHeight: 52,
-  },
-  signOutText: {
-    fontSize: FontSize.md,
-    fontWeight: FontWeight.semibold,
-    color: Colors.error,
-    includeFontPadding: false,
-  },
-
-  // Modal
-  modalOverlay: {
-    flex: 1,
-    justifyContent: 'flex-end',
-  },
-  modalBackdrop: {
-    ...StyleSheet.absoluteFillObject,
-    backgroundColor: 'rgba(0,0,0,0.6)',
-  },
-  modalSheet: {
-    backgroundColor: Colors.surface,
-    borderTopLeftRadius: Radius.xl,
-    borderTopRightRadius: Radius.xl,
-    padding: Spacing.lg,
-    paddingBottom: Spacing.xxl,
-    gap: Spacing.md,
-    borderTopWidth: 1,
-    borderColor: Colors.surfaceBorder,
-  },
-  modalHandle: {
-    width: 36,
-    height: 4,
-    borderRadius: 2,
-    backgroundColor: Colors.surfaceBorder,
-    alignSelf: 'center',
+  // TikTok OAuth card
+  tiktokCard: {
+    flexDirection: 'row', alignItems: 'center', gap: Spacing.sm,
+    backgroundColor: Colors.surfaceElevated, borderRadius: Radius.lg,
+    padding: Spacing.md, borderWidth: 1.5, borderColor: '#010101',
     marginBottom: Spacing.xs,
   },
-  modalHeader: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: Spacing.sm,
+  infoNote: {
+    flexDirection: 'row', gap: 6, alignItems: 'flex-start',
+    paddingHorizontal: 2, marginBottom: Spacing.sm,
   },
-  modalIcon: {
-    width: 40,
-    height: 40,
-    borderRadius: Radius.sm,
-    alignItems: 'center',
-    justifyContent: 'center',
+  infoText: { flex: 1, fontSize: FontSize.xs, color: Colors.textMuted, lineHeight: 16, includeFontPadding: false },
+  oauthBtn: {
+    flexDirection: 'row', alignItems: 'center', gap: 5,
+    backgroundColor: '#010101', borderRadius: Radius.full,
+    paddingHorizontal: 12, paddingVertical: 8, minHeight: 36,
   },
-  modalTitle: {
-    fontSize: FontSize.lg,
-    fontWeight: FontWeight.bold,
-    color: Colors.textPrimary,
-    includeFontPadding: false,
+  oauthBtnLoading: { opacity: 0.7 },
+  oauthBtnText: { fontSize: FontSize.xs, fontWeight: FontWeight.bold, color: '#fff', includeFontPadding: false },
+  connectedBadge: { flexDirection: 'row', alignItems: 'center', gap: 3, marginTop: 2 },
+  connectedBadgeText: { fontSize: FontSize.xs, color: Colors.emerald, fontWeight: FontWeight.semibold, includeFontPadding: false },
+  expiredBadge: { flexDirection: 'row', alignItems: 'center', gap: 3, marginTop: 2 },
+  expiredText: { fontSize: FontSize.xs, color: Colors.amber, fontWeight: FontWeight.semibold, includeFontPadding: false },
+
+  // Shared platform styles
+  platformList: { gap: Spacing.sm, marginBottom: Spacing.lg },
+  platformCard: {
+    flexDirection: 'row', alignItems: 'center', gap: Spacing.sm,
+    backgroundColor: Colors.surfaceElevated, borderRadius: Radius.lg,
+    padding: Spacing.md, borderWidth: 1, borderColor: Colors.surfaceBorder,
   },
-  modalSub: {
-    fontSize: FontSize.xs,
-    color: Colors.textMuted,
-    includeFontPadding: false,
+  platformIcon: { width: 40, height: 40, borderRadius: Radius.sm, alignItems: 'center', justifyContent: 'center' },
+  platformInfo: { flex: 1 },
+  platformCardLabel: { fontSize: FontSize.sm, fontWeight: FontWeight.semibold, color: Colors.textPrimary, includeFontPadding: false },
+  connectedMeta: { gap: 2 },
+  platformHandle: { fontSize: FontSize.sm, color: Colors.primaryLight, fontWeight: FontWeight.medium, includeFontPadding: false },
+  platformFollowers: { fontSize: FontSize.xs, color: Colors.textMuted, includeFontPadding: false },
+  notConnected: { fontSize: FontSize.xs, color: Colors.textMuted, marginTop: 2, includeFontPadding: false },
+  platformActions: { flexDirection: 'row', gap: 6, alignItems: 'center' },
+  connectBtn: {
+    flexDirection: 'row', alignItems: 'center', gap: 4,
+    backgroundColor: Colors.primary, borderRadius: Radius.full,
+    paddingHorizontal: 12, paddingVertical: 6, minHeight: 32,
   },
+  connectBtnText: { fontSize: FontSize.xs, fontWeight: FontWeight.bold, color: '#fff', includeFontPadding: false },
+  editBtn: { width: 32, height: 32, borderRadius: 16, backgroundColor: Colors.primaryGlow, alignItems: 'center', justifyContent: 'center' },
+  disconnectBtn: { width: 32, height: 32, borderRadius: 16, backgroundColor: Colors.error + '18', alignItems: 'center', justifyContent: 'center' },
+
+  // Account section
+  accountCard: {
+    backgroundColor: Colors.surfaceElevated, borderRadius: Radius.lg,
+    borderWidth: 1, borderColor: Colors.surfaceBorder, overflow: 'hidden', marginBottom: Spacing.lg,
+  },
+  accountRow: { flexDirection: 'row', alignItems: 'center', gap: Spacing.sm, padding: Spacing.md, minHeight: 52 },
+  signOutText: { fontSize: FontSize.md, fontWeight: FontWeight.semibold, color: Colors.error, includeFontPadding: false },
+
+  // Modal
+  modalOverlay: { flex: 1, justifyContent: 'flex-end' },
+  modalBackdrop: { ...StyleSheet.absoluteFillObject, backgroundColor: 'rgba(0,0,0,0.6)' },
+  modalSheet: {
+    backgroundColor: Colors.surface, borderTopLeftRadius: Radius.xl, borderTopRightRadius: Radius.xl,
+    padding: Spacing.lg, paddingBottom: Spacing.xxl, gap: Spacing.md,
+    borderTopWidth: 1, borderColor: Colors.surfaceBorder,
+  },
+  modalHandle: { width: 36, height: 4, borderRadius: 2, backgroundColor: Colors.surfaceBorder, alignSelf: 'center', marginBottom: Spacing.xs },
+  modalHeader: { flexDirection: 'row', alignItems: 'center', gap: Spacing.sm },
+  modalTitle: { fontSize: FontSize.lg, fontWeight: FontWeight.bold, color: Colors.textPrimary, includeFontPadding: false },
+  modalSub: { fontSize: FontSize.xs, color: Colors.textMuted, includeFontPadding: false },
   fieldGroup: { gap: 6 },
-  fieldLabel: {
-    fontSize: FontSize.sm,
-    fontWeight: FontWeight.semibold,
-    color: Colors.textSecondary,
-    includeFontPadding: false,
-  },
+  fieldLabel: { fontSize: FontSize.sm, fontWeight: FontWeight.semibold, color: Colors.textSecondary, includeFontPadding: false },
   fieldInput: {
-    backgroundColor: Colors.surfaceElevated,
-    borderRadius: Radius.md,
-    borderWidth: 1,
-    borderColor: Colors.surfaceBorder,
-    padding: Spacing.sm + 4,
-    fontSize: FontSize.md,
-    color: Colors.textPrimary,
-    minHeight: 48,
-    includeFontPadding: false,
+    backgroundColor: Colors.surfaceElevated, borderRadius: Radius.md, borderWidth: 1,
+    borderColor: Colors.surfaceBorder, padding: Spacing.sm + 4,
+    fontSize: FontSize.md, color: Colors.textPrimary, minHeight: 48, includeFontPadding: false,
   },
   saveBtn: {
-    backgroundColor: Colors.primary,
-    borderRadius: Radius.full,
-    paddingVertical: 15,
-    alignItems: 'center',
-    justifyContent: 'center',
-    minHeight: 50,
-    marginTop: Spacing.xs,
+    backgroundColor: Colors.primary, borderRadius: Radius.full, paddingVertical: 15,
+    alignItems: 'center', justifyContent: 'center', minHeight: 50, marginTop: Spacing.xs,
   },
-  saveBtnText: {
-    fontSize: FontSize.md,
-    fontWeight: FontWeight.bold,
-    color: '#fff',
-    includeFontPadding: false,
-  },
+  saveBtnText: { fontSize: FontSize.md, fontWeight: FontWeight.bold, color: '#fff', includeFontPadding: false },
 });

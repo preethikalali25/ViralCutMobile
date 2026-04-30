@@ -17,6 +17,7 @@ import PlatformBadge from '@/components/ui/PlatformBadge';
 import StatusBadge from '@/components/ui/StatusBadge';
 import { formatDuration } from '@/services/formatters';
 import { FunctionsHttpError } from '@supabase/supabase-js';
+import { useTikTok } from '@/hooks/useTikTok';
 
 type Tab = 'hook' | 'caption' | 'audio' | 'platforms';
 
@@ -118,7 +119,10 @@ export default function EditorScreen() {
   const [showPlayer, setShowPlayer] = useState(false);
   const [videoTitle, setVideoTitle] = useState('');
   const [generatingTitle, setGeneratingTitle] = useState(false);
+  const [showTikTokSheet, setShowTikTokSheet] = useState(false);
+  const [tiktokPrivacy, setTiktokPrivacy] = useState('SELF_ONLY');
   const frameCache = useRef<{ base64: string; mime: string } | null | 'pending'>('pending');
+  const tiktok = useTikTok();
 
   // useVideoPlayer MUST be called unconditionally — use empty string when no URI
   const videoPlayer = useVideoPlayer(
@@ -322,9 +326,13 @@ export default function EditorScreen() {
   };
 
   const handlePublish = () => {
-    // Capture state NOW — before the alert renders and the callback fires asynchronously
     const snap = snapshotEditorState();
-    showAlert('Publish Now?', 'This will publish your video immediately.', [
+    // If TikTok is selected and connected, offer TikTok direct publish
+    if (platforms.includes('tiktok') && tiktok.status.connected && video?.videoUri) {
+      setShowTikTokSheet(true);
+      return;
+    }
+    showAlert('Publish Now?', 'This will publish your video locally.', [
       {
         text: 'Publish', onPress: () => {
           updateVideo(video.id, {
@@ -337,6 +345,28 @@ export default function EditorScreen() {
       },
       { text: 'Cancel', style: 'cancel' },
     ]);
+  };
+
+  const handleTikTokPublish = async () => {
+    const snap = snapshotEditorState();
+    const videoUrl = video?.videoUri ?? '';
+    if (!videoUrl) {
+      showAlert('No Video File', 'Attach a video file before publishing to TikTok.');
+      return;
+    }
+    // Note: TikTok requires a public URL. Local file:// URIs won't work — user must upload first.
+    if (videoUrl.startsWith('file://') || videoUrl.startsWith('ph://')) {
+      showAlert(
+        'Public URL Required',
+        'TikTok requires a publicly accessible video URL. Please save your video to storage first, or publish via the TikTok app directly.',
+      );
+      return;
+    }
+    updateVideo(video.id, { ...snap, title: videoTitle });
+    const { publishId, error } = await tiktok.publish(videoUrl, videoTitle || snap.hook.text || 'ViralCut video', tiktokPrivacy);
+    if (error) {
+      showAlert('TikTok Error', error);
+    }
   };
 
   const togglePlatform = (p: PlatformType) => {
@@ -677,6 +707,137 @@ export default function EditorScreen() {
         </ScrollView>
       </KeyboardAvoidingView>
 
+      {/* ── TikTok Publish Sheet ── */}
+      <Modal
+        visible={showTikTokSheet}
+        animationType="slide"
+        transparent
+        onRequestClose={() => { setShowTikTokSheet(false); tiktok.resetPublish(); }}
+      >
+        <View style={styles.sheetOverlay}>
+          <Pressable
+            style={StyleSheet.absoluteFillObject}
+            onPress={() => { if (tiktok.publishState.phase === 'idle') { setShowTikTokSheet(false); } }}
+          />
+          <View style={styles.tiktokSheet}>
+            <View style={styles.sheetHandle} />
+
+            {/* Header */}
+            <View style={styles.sheetHeader}>
+              <View style={[styles.sheetIcon, { backgroundColor: '#010101' }]}>
+                <MaterialCommunityIcons name="music-note" size={22} color="#fff" />
+              </View>
+              <View style={{ flex: 1 }}>
+                <Text style={styles.sheetTitle}>Publish to TikTok</Text>
+                <Text style={styles.sheetSub}>@{tiktok.status.creatorName || 'your account'}</Text>
+              </View>
+              {tiktok.publishState.phase === 'idle' ? (
+                <Pressable onPress={() => setShowTikTokSheet(false)} hitSlop={8}>
+                  <MaterialIcons name="close" size={20} color={Colors.textMuted} />
+                </Pressable>
+              ) : null}
+            </View>
+
+            {/* Phase: idle — show privacy picker */}
+            {tiktok.publishState.phase === 'idle' ? (
+              <>
+                <Text style={styles.sheetSectionLabel}>Privacy</Text>
+                {[
+                  { value: 'SELF_ONLY', label: 'Only Me', icon: 'lock' },
+                  { value: 'FRIENDS_ONLY', label: 'Friends Only', icon: 'people' },
+                  { value: 'PUBLIC_TO_EVERYONE', label: 'Public', icon: 'public' },
+                ].map(opt => (
+                  <Pressable
+                    key={opt.value}
+                    style={[styles.privacyRow, tiktokPrivacy === opt.value && styles.privacyRowActive]}
+                    onPress={() => setTiktokPrivacy(opt.value)}
+                  >
+                    <MaterialIcons
+                      name={opt.icon as any}
+                      size={18}
+                      color={tiktokPrivacy === opt.value ? Colors.primaryLight : Colors.textSecondary}
+                    />
+                    <Text style={[styles.privacyLabel, tiktokPrivacy === opt.value && styles.privacyLabelActive]}>
+                      {opt.label}
+                    </Text>
+                    {tiktokPrivacy === opt.value ? (
+                      <MaterialIcons name="check-circle" size={18} color={Colors.primary} />
+                    ) : null}
+                  </Pressable>
+                ))}
+
+                <View style={styles.sheetNote}>
+                  <MaterialIcons name="info-outline" size={13} color={Colors.textMuted} />
+                  <Text style={styles.sheetNoteText}>
+                    Start with "Only Me" to review before making it public.
+                  </Text>
+                </View>
+
+                <Pressable
+                  style={({ pressed }) => [styles.tiktokPublishBtn, pressed && { opacity: 0.85 }]}
+                  onPress={handleTikTokPublish}
+                >
+                  <MaterialCommunityIcons name="music-note" size={18} color="#fff" />
+                  <Text style={styles.tiktokPublishBtnText}>Post to TikTok</Text>
+                </Pressable>
+              </>
+            ) : null}
+
+            {/* Phase: uploading / processing */}
+            {tiktok.publishState.phase === 'uploading' || tiktok.publishState.phase === 'processing' ? (
+              <View style={styles.sheetPhase}>
+                <ActivityIndicator size="large" color={Colors.primaryLight} />
+                <Text style={styles.sheetPhaseTitle}>
+                  {tiktok.publishState.phase === 'uploading' ? 'Sending to TikTok...' : 'TikTok is processing your video...'}
+                </Text>
+                <Text style={styles.sheetPhaseSub}>
+                  {tiktok.publishState.phase === 'processing'
+                    ? 'This can take up to 2 minutes. The app will notify you when done.'
+                    : 'Connecting to TikTok API...'}
+                </Text>
+              </View>
+            ) : null}
+
+            {/* Phase: success */}
+            {tiktok.publishState.phase === 'success' ? (
+              <View style={styles.sheetPhase}>
+                <MaterialIcons name="check-circle" size={56} color={Colors.emerald} />
+                <Text style={styles.sheetPhaseTitle}>Posted to TikTok!</Text>
+                <Text style={styles.sheetPhaseSub}>
+                  Your video is live. Open TikTok to view it.
+                </Text>
+                <Pressable
+                  style={[styles.tiktokPublishBtn, { marginTop: Spacing.md }]}
+                  onPress={() => {
+                    tiktok.resetPublish();
+                    setShowTikTokSheet(false);
+                    updateVideo(video.id, { status: 'published', publishedAt: new Date().toISOString() });
+                    router.push('/(tabs)/library');
+                  }}
+                >
+                  <Text style={styles.tiktokPublishBtnText}>Done</Text>
+                </Pressable>
+              </View>
+            ) : null}
+
+            {/* Phase: error */}
+            {tiktok.publishState.phase === 'error' ? (
+              <View style={styles.sheetPhase}>
+                <MaterialIcons name="error-outline" size={52} color={Colors.error} />
+                <Text style={styles.sheetPhaseTitle}>Publish Failed</Text>
+                <Text style={styles.sheetPhaseSub}>{tiktok.publishState.errorMessage}</Text>
+                <Pressable
+                  style={[styles.tiktokPublishBtn, { marginTop: Spacing.md, backgroundColor: Colors.error }]}
+                  onPress={() => tiktok.resetPublish()}
+                >
+                  <Text style={styles.tiktokPublishBtnText}>Try Again</Text>
+                </Pressable>
+              </View>
+            ) : null}
+          </View>
+        </View>
+      </Modal>
+
       {/* ── Video Player Modal ── */}
       <Modal
         visible={showPlayer}
@@ -884,4 +1045,36 @@ const styles = StyleSheet.create({
   emptyTitle: { fontSize: FontSize.lg, fontWeight: FontWeight.bold, color: Colors.textPrimary, includeFontPadding: false },
   uploadBtn: { backgroundColor: Colors.primary, paddingHorizontal: 24, paddingVertical: 12, borderRadius: Radius.full },
   uploadBtnText: { color: '#fff', fontSize: FontSize.md, fontWeight: FontWeight.bold, includeFontPadding: false },
+
+  // TikTok sheet
+  sheetOverlay: { flex: 1, justifyContent: 'flex-end', backgroundColor: 'rgba(0,0,0,0.6)' },
+  tiktokSheet: {
+    backgroundColor: Colors.surface, borderTopLeftRadius: Radius.xl, borderTopRightRadius: Radius.xl,
+    padding: Spacing.lg, paddingBottom: Spacing.xxl, gap: Spacing.md,
+    borderTopWidth: 1, borderColor: Colors.surfaceBorder,
+  },
+  sheetHandle: { width: 36, height: 4, borderRadius: 2, backgroundColor: Colors.surfaceBorder, alignSelf: 'center', marginBottom: Spacing.xs },
+  sheetHeader: { flexDirection: 'row', alignItems: 'center', gap: Spacing.sm, marginBottom: 4 },
+  sheetIcon: { width: 44, height: 44, borderRadius: Radius.md, alignItems: 'center', justifyContent: 'center' },
+  sheetTitle: { fontSize: FontSize.lg, fontWeight: FontWeight.bold, color: Colors.textPrimary, includeFontPadding: false },
+  sheetSub: { fontSize: FontSize.xs, color: Colors.textMuted, includeFontPadding: false },
+  sheetSectionLabel: { fontSize: FontSize.xs, fontWeight: FontWeight.bold, color: Colors.textMuted, textTransform: 'uppercase', letterSpacing: 0.8, includeFontPadding: false },
+  privacyRow: {
+    flexDirection: 'row', alignItems: 'center', gap: Spacing.sm,
+    backgroundColor: Colors.surfaceElevated, borderRadius: Radius.md,
+    padding: Spacing.sm + 4, borderWidth: 1.5, borderColor: Colors.surfaceBorder,
+  },
+  privacyRowActive: { borderColor: Colors.primary, backgroundColor: Colors.primaryGlow },
+  privacyLabel: { flex: 1, fontSize: FontSize.md, fontWeight: FontWeight.semibold, color: Colors.textSecondary, includeFontPadding: false },
+  privacyLabelActive: { color: Colors.textPrimary },
+  sheetNote: { flexDirection: 'row', gap: 6, alignItems: 'flex-start', paddingHorizontal: 2 },
+  sheetNoteText: { flex: 1, fontSize: FontSize.xs, color: Colors.textMuted, lineHeight: 16, includeFontPadding: false },
+  tiktokPublishBtn: {
+    backgroundColor: '#010101', borderRadius: Radius.full, paddingVertical: 16,
+    alignItems: 'center', justifyContent: 'center', flexDirection: 'row', gap: 8,
+  },
+  tiktokPublishBtnText: { fontSize: FontSize.md, fontWeight: FontWeight.bold, color: '#fff', includeFontPadding: false },
+  sheetPhase: { alignItems: 'center', gap: 12, paddingVertical: Spacing.lg },
+  sheetPhaseTitle: { fontSize: FontSize.lg, fontWeight: FontWeight.bold, color: Colors.textPrimary, textAlign: 'center', includeFontPadding: false },
+  sheetPhaseSub: { fontSize: FontSize.sm, color: Colors.textSecondary, textAlign: 'center', lineHeight: 20, paddingHorizontal: Spacing.md, includeFontPadding: false },
 });
