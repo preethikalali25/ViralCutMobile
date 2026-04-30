@@ -11,7 +11,7 @@ import {
   generateCodeVerifier,
 } from '@/services/tiktokService';
 import * as WebBrowser from 'expo-web-browser';
-import { Platform, Linking } from 'react-native';
+import { Linking } from 'react-native';
 
 // The redirect URI registered in TikTok Developer portal.
 // TikTok redirects here → backend forwards to viralcut://tiktok-callback.
@@ -53,71 +53,96 @@ export function useTikTok() {
   }, [loadStatus]);
 
   // ── OAuth Connect Flow ────────────────────────────────────────────────────
-  const connect = useCallback(async (): Promise<{ error?: string }> => {
-    if (!user?.id) return { error: 'Not logged in' };
+  const connect = useCallback((): Promise<{ error?: string }> => {
+    return new Promise(async (resolve) => {
+      if (!user?.id) return resolve({ error: 'Not logged in' });
 
-    setConnectingOAuth(true);
+      setConnectingOAuth(true);
 
-    try {
-      // Generate PKCE
-      const codeVerifier = generateCodeVerifier();
-      codeVerifierRef.current = codeVerifier;
+      let subscription: ReturnType<typeof Linking.addEventListener> | null = null;
 
-      // Get auth URL from Edge Function
-      const result = await getTikTokAuthUrl(TIKTOK_REDIRECT_URI, codeVerifier);
-      if ('error' in result) {
+      const cleanup = () => {
+        subscription?.remove();
+        WebBrowser.dismissBrowser();
+      };
+
+      try {
+        // Generate PKCE
+        const codeVerifier = generateCodeVerifier();
+        codeVerifierRef.current = codeVerifier;
+
+        // Get auth URL from Edge Function
+        const result = await getTikTokAuthUrl(TIKTOK_REDIRECT_URI, codeVerifier);
+        if ('error' in result) {
+          setConnectingOAuth(false);
+          return resolve({ error: result.error });
+        }
+
+        // Listen for the deep-link BEFORE opening the browser
+        // iOS/Android will fire Linking event when viralcut://tiktok-callback is hit
+        subscription = Linking.addEventListener('url', async ({ url }) => {
+          if (!url.startsWith('viralcut://tiktok-callback')) return;
+          cleanup();
+
+          try {
+            const urlObj = new URL(url);
+            const code = urlObj.searchParams.get('code');
+            const errorParam = urlObj.searchParams.get('error');
+
+            if (errorParam) {
+              setConnectingOAuth(false);
+              return resolve({ error: `TikTok denied access: ${errorParam}` });
+            }
+            if (!code) {
+              setConnectingOAuth(false);
+              return resolve({ error: 'No authorization code received from TikTok' });
+            }
+
+            const exchangeResult = await exchangeTikTokCode(
+              code,
+              TIKTOK_REDIRECT_URI,
+              codeVerifierRef.current,
+              user!.id,
+            );
+
+            if ('error' in exchangeResult) {
+              setConnectingOAuth(false);
+              return resolve({ error: exchangeResult.error });
+            }
+
+            await loadStatus();
+            setConnectingOAuth(false);
+            resolve({});
+          } catch (e: any) {
+            setConnectingOAuth(false);
+            resolve({ error: String(e?.message ?? e) });
+          }
+        });
+
+        // Open TikTok OAuth in system browser — don't await the result
+        // because on mobile the browser closes via the deep-link, not via return URL capture
+        WebBrowser.openBrowserAsync(result.authUrl, {
+          showTitle: false,
+          enableBarCollapsing: true,
+        }).then((browserResult) => {
+          // Browser dismissed without a deep-link (user cancelled manually)
+          if (browserResult.type === 'cancel' || browserResult.type === 'dismiss') {
+            cleanup();
+            setConnectingOAuth(false);
+            resolve({ error: 'OAuth cancelled' });
+          }
+        }).catch(() => {
+          cleanup();
+          setConnectingOAuth(false);
+          resolve({ error: 'Failed to open browser' });
+        });
+
+      } catch (e: any) {
+        cleanup();
         setConnectingOAuth(false);
-        return { error: result.error };
+        resolve({ error: String(e?.message ?? e) });
       }
-
-      // Open TikTok OAuth in system browser
-      const browserResult = await WebBrowser.openAuthSessionAsync(
-        result.authUrl,
-        'viralcut://tiktok-callback',
-        { showInRecents: true },
-      );
-
-      if (browserResult.type !== 'success') {
-        setConnectingOAuth(false);
-        return { error: 'OAuth cancelled or failed' };
-      }
-
-      // Parse code from redirect URL
-      const returnUrl = browserResult.url;
-      const urlObj = new URL(returnUrl);
-      const code = urlObj.searchParams.get('code');
-      const errorParam = urlObj.searchParams.get('error');
-
-      if (errorParam) {
-        setConnectingOAuth(false);
-        return { error: `TikTok denied access: ${errorParam}` };
-      }
-
-      if (!code) {
-        setConnectingOAuth(false);
-        return { error: 'No authorization code received from TikTok' };
-      }
-
-      // Exchange code for tokens
-      const exchangeResult = await exchangeTikTokCode(
-        code,
-        TIKTOK_REDIRECT_URI,
-        codeVerifierRef.current,
-        user.id,
-      );
-
-      if ('error' in exchangeResult) {
-        setConnectingOAuth(false);
-        return { error: exchangeResult.error };
-      }
-
-      await loadStatus();
-      setConnectingOAuth(false);
-      return {};
-    } catch (e: any) {
-      setConnectingOAuth(false);
-      return { error: String(e?.message ?? e) };
-    }
+    });
   }, [user?.id, loadStatus]);
 
   // ── Disconnect ────────────────────────────────────────────────────────────
