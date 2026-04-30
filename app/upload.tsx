@@ -21,6 +21,11 @@ const MOCK_THUMBNAILS = [
   'https://images.unsplash.com/photo-1522202176988-66273c2fd55f?w=400&q=80',
 ];
 
+/** True if this is a local file URI (extracted thumbnail) vs a remote URL */
+function isLocalUri(uri: string) {
+  return uri.startsWith('file://') || uri.startsWith('/');
+}
+
 function getVideoDuration(asset: ImagePicker.ImagePickerAsset): number {
   if (asset.duration && asset.duration > 0) return Math.round(asset.duration);
   return Math.floor(Math.random() * 50) + 15;
@@ -62,17 +67,27 @@ export default function UploadScreen() {
     }
   };
 
-  const handleUpload = () => {
+  const handleUpload = async () => {
     if (!title.trim()) {
       showAlert('Missing Title', 'Please add a title for your video.');
       return;
     }
 
     setIsUploading(true);
-    // expo-image cannot extract video frames — use a random Unsplash thumbnail as the preview.
-    const thumb = MOCK_THUMBNAILS[Math.floor(Math.random() * MOCK_THUMBNAILS.length)];
-    const duration = pickedVideo ? getVideoDuration(pickedVideo) : Math.floor(Math.random() * 50) + 15;
     const id = `v${Date.now()}`;
+    const duration = pickedVideo ? getVideoDuration(pickedVideo) : Math.floor(Math.random() * 50) + 15;
+
+    // Try to extract a real frame from the picked video; fall back to Unsplash thumbnail
+    let thumb = MOCK_THUMBNAILS[Math.floor(Math.random() * MOCK_THUMBNAILS.length)];
+    if (pickedVideo?.uri) {
+      try {
+        const VideoThumbnails = await import('expo-video-thumbnails');
+        const { uri } = await VideoThumbnails.getThumbnailAsync(pickedVideo.uri, { time: 1000, quality: 0.8 });
+        thumb = uri; // local file URI — expo-image handles this fine as a source
+      } catch (e) {
+        console.warn('Thumbnail extraction failed, using placeholder:', e);
+      }
+    }
 
     const newVideo: Video = {
       id,
@@ -114,6 +129,7 @@ export default function UploadScreen() {
                   {pickedVideo.fileName ?? 'Video Selected'}
                 </Text>
               </View>
+
               <View style={styles.previewOverlay}>
                 <MaterialIcons name="videocam" size={24} color="#fff" />
               </View>
