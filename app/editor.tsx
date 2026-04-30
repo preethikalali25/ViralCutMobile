@@ -255,30 +255,37 @@ export default function EditorScreen() {
     if (song && song.id) { setAiPickedSong(song); setSelectedAudioId(song.id); }
   }, [video.title, platforms, showAlert, ensureFrame]);
 
-  const handleSave = () => {
+  /** Snapshot current editor state into a plain object — safe to close over in alert callbacks */
+  const snapshotEditorState = () => {
     const audioSource = aiPickedSong && selectedAudioId === aiPickedSong.id
       ? aiPickedSong
       : MOCK_TRENDING_AUDIO.find(a => a.id === selectedAudioId);
-    updateVideo(video.id, {
+    return {
       hook: { type: hookType, text: hookText },
       caption,
       hashtags: hashtags.split(/\s+/).filter(Boolean),
+      platforms,
       audio: audioSource
         ? { id: audioSource.id, title: audioSource.title, artist: audioSource.artist, uses: audioSource.uses, trending: audioSource.trending }
         : undefined,
-      platforms,
-    });
+    };
+  };
+
+  const handleSave = () => {
+    const snap = snapshotEditorState();
+    updateVideo(video.id, snap);
     showAlert('Saved', 'Your changes have been saved.');
   };
 
   const handleSchedule = () => {
+    const snap = snapshotEditorState();
     const tomorrow = new Date();
     tomorrow.setDate(tomorrow.getDate() + 1);
     tomorrow.setHours(12, 0, 0, 0);
     updateVideo(video.id, {
-      status: 'scheduled', scheduledAt: tomorrow.toISOString(),
-      hook: { type: hookType, text: hookText }, caption,
-      hashtags: hashtags.split(/\s+/).filter(Boolean), platforms,
+      ...snap,
+      status: 'scheduled',
+      scheduledAt: tomorrow.toISOString(),
     });
     showAlert('Scheduled!', 'Your video is scheduled for tomorrow at 12:00 PM.', [
       { text: 'View Schedule', onPress: () => router.push('/(tabs)/schedule') },
@@ -287,13 +294,15 @@ export default function EditorScreen() {
   };
 
   const handlePublish = () => {
+    // Capture state NOW — before the alert renders and the callback fires asynchronously
+    const snap = snapshotEditorState();
     showAlert('Publish Now?', 'This will publish your video immediately.', [
       {
         text: 'Publish', onPress: () => {
           updateVideo(video.id, {
-            status: 'published', publishedAt: new Date().toISOString(),
-            hook: { type: hookType, text: hookText }, caption,
-            hashtags: hashtags.split(/\s+/).filter(Boolean), platforms,
+            ...snap,
+            status: 'published',
+            publishedAt: new Date().toISOString(),
           });
           router.push('/(tabs)/library');
         },
