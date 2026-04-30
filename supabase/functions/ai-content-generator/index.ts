@@ -104,13 +104,13 @@ ${SAFETY_RULES}
 Return ONLY the hook text — no quotes, no labels, no explanation.`;
 
       userPrompt = hasFrame
-        ? `Write ${hookStyle} based on what you see in this video frame.
+        ? `Look at this video frame and identify the specific subject (person, child, pet, etc.) and action.
+Write ${hookStyle} that references the ACTUAL content — e.g. if you see a toddler jumping, write a hook about that specifically.
 Video title for context: "${videoTitle}". Hook style: ${hookType}.
-Describe the visual content — scene, mood, action — and craft the most engaging, brand-safe hook possible.
-Under 80 characters. No offensive content.`
+Under 80 characters. No offensive content. No generic phrases like "You won't believe this" unless truly warranted.`
         : `Write ${hookStyle} for a short-form video titled: "${videoTitle}".
 Hook style: ${hookType}. Keep it under 80 characters.
-Make it curious, bold, and scroll-stopping — but always positive and brand-safe.`;
+Be specific to the title's subject — avoid generic filler phrases. Make it curious, bold, and scroll-stopping.`;
 
     } else if (type === 'caption') {
       const platformList = (platforms as string[]).join(', ');
@@ -151,17 +151,28 @@ Target platforms: ${platformList}.
 Choose a well-known, currently popular song that fits the video's likely mood and maximises viral potential.`;
 
     } else if (type === 'title') {
-      systemPrompt = `You are a social media content strategist who writes compelling, specific video titles for TikTok, Instagram Reels, and YouTube Shorts.
+      systemPrompt = `You are a social media content strategist who writes hyper-specific, descriptive video titles for TikTok, Instagram Reels, and YouTube Shorts.
+Your titles name the ACTUAL subject: the person (e.g. "My Daughter", "Baby", "Toddler", "My Dog"), the exact action they are doing (e.g. "Hopping", "Dancing", "Trying Sushi for the First Time"), and any notable detail.
+NEVER write vague titles like "Fun Video", "Amazing Moment", "Check This Out", "Incredible Clip".
+Always write as if you are the creator sharing a personal moment.
 ${visualContext}
 ${SAFETY_RULES}
-Return ONLY the title — concise, punchy, 4–10 words, no hashtags, no quotes, no explanation.`;
+Return ONLY the title — 4–10 words, no hashtags, no quotes, no explanation.`;
 
       userPrompt = hasFrame
-        ? `Write a smart, descriptive video title based on what you see in this video frame.
-Current filename/title for context: "${videoTitle}".
-Describe the actual content — what's happening, who is in it, what is the subject — and turn that into a compelling, specific title that would perform well on short-form platforms. 4–10 words maximum.`
-        : `Write a smart, descriptive video title for a short-form video. Current filename: "${videoTitle}".
-Ignore any timestamp or technical noise in the filename and craft a compelling, specific title 4–10 words long that would perform well on TikTok/Reels/YouTube Shorts.`;
+        ? `Look carefully at this video frame and identify:
+1. WHO is in the video (child, baby, adult, dog, cat, etc.)
+2. WHAT they are doing (exact action — jumping, laughing, eating, dancing, etc.)
+3. WHERE or any notable context (outdoors, kitchen, park, etc.)
+
+Write a specific, personal title that captures exactly what is happening in this video.
+Examples of good titles: "My Daughter Hopping Around the Backyard", "Baby's First Taste of Ice Cream", "Our Dog Refuses to Move Off the Couch".
+Current filename for extra context: "${videoTitle}".
+Return ONLY the title, 4–10 words.`
+        : `Write a specific, personal video title for a short-form video. Current filename: "${videoTitle}".
+Infer the likely subject and action from the filename if possible. Use personal framing like "My...", "Our...", or the subject directly.
+Examples: "My Daughter Hopping for Fun", "Toddler Tries Broccoli for the First Time".
+Return ONLY the title, 4–10 words.`;
 
     } else {
       return new Response(
