@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
 import {
-  View, Text, ScrollView, StyleSheet, Pressable, TextInput, KeyboardAvoidingView, Platform,
+  View, Text, ScrollView, StyleSheet, Pressable, TextInput, KeyboardAvoidingView, Platform, ActivityIndicator,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Image } from 'expo-image';
@@ -9,8 +9,9 @@ import { useRouter } from 'expo-router';
 import * as ImagePicker from 'expo-image-picker';
 import { Colors, Spacing, Radius, FontSize, FontWeight } from '@/constants/theme';
 import { useVideos } from '@/hooks/useVideos';
-import { useAlert } from '@/template';
+import { useAlert, getSupabaseClient } from '@/template';
 import { Platform as PlatformType, Video } from '@/types';
+import { FunctionsHttpError } from '@supabase/supabase-js';
 import PlatformBadge from '@/components/ui/PlatformBadge';
 
 const ALL_PLATFORMS: PlatformType[] = ['tiktok', 'reels', 'youtube'];
@@ -52,6 +53,47 @@ async function extractBestThumbnail(videoUri: string, durationMs: number): Promi
   }
 }
 
+/** Extract a base64 frame from the video for AI analysis */
+async function extractFrameForAI(videoUri: string, durationMs: number): Promise<{ base64: string; mime: string } | null> {
+  try {
+    const VideoThumbnails = await import('expo-video-thumbnails');
+    const FileSystem = await import('expo-file-system');
+    const dur = durationMs > 0 ? durationMs : 5000;
+    const seekCandidates = [Math.floor(dur * 0.2), Math.floor(dur * 0.1), 2000, 1000, 500, 0];
+    let frameUri: string | null = null;
+    for (const seekMs of seekCandidates) {
+      try {
+        const { uri } = await VideoThumbnails.getThumbnailAsync(videoUri, { time: seekMs, quality: 0.6 });
+        if (uri) { frameUri = uri; break; }
+      } catch { /* try next */ }
+    }
+    if (!frameUri) return null;
+    const base64 = await FileSystem.readAsStringAsync(frameUri, { encoding: FileSystem.EncodingType.Base64 });
+    return { base64, mime: 'image/jpeg' };
+  } catch {
+    return null;
+  }
+}
+
+/** Call the AI content generator edge function */
+async function callAITitle(rawFilename: string, frame: { base64: string; mime: string } | null): Promise<string | null> {
+  try {
+    const client = getSupabaseClient();
+    const body: Record<string, unknown> = { type: 'title', videoTitle: rawFilename };
+    if (frame) { body.videoFrameBase64 = frame.base64; body.videoFrameMime = frame.mime; }
+    const { data, error } = await client.functions.invoke('ai-content-generator', { body });
+    if (error) {
+      if (error instanceof FunctionsHttpError) {
+        try { await error.context?.text(); } catch { /* ignore */ }
+      }
+      return null;
+    }
+    return data?.result ?? null;
+  } catch {
+    return null;
+  }
+}
+
 function getVideoDuration(asset: ImagePicker.ImagePickerAsset): number {
   if (asset.duration && asset.duration > 0) return Math.round(asset.duration);
   return Math.floor(Math.random() * 50) + 15;
@@ -66,6 +108,7 @@ export default function UploadScreen() {
   const [isUploading, setIsUploading] = useState(false);
   const [pickedVideo, setPickedVideo] = useState<ImagePicker.ImagePickerAsset | null>(null);
   const [pickedThumbnail, setPickedThumbnail] = useState<string | null>(null);
+  const [generatingTitle, setGeneratingTitle] = useState(false);
 
   const togglePlatform = (p: PlatformType) => {
     setPlatforms(prev =>
@@ -88,14 +131,30 @@ export default function UploadScreen() {
       const asset = result.assets[0];
       setPickedVideo(asset);
       setPickedThumbnail(null);
-      if (!title.trim() && asset.fileName) {
-        const name = asset.fileName.replace(/\.[^.]+$/, '').replace(/[_-]/g, ' ');
-        setTitle(name);
-      }
-      // Extract thumbnail at 20% through the video to avoid black first frames
+
+      // Start thumbnail extraction and AI title generation in parallel
+      const durationMs = asset.duration ?? 0;
+
+      // Kick off thumbnail extraction immediately (non-blocking)
       if (asset.uri) {
-        const thumbUri = await extractBestThumbnail(asset.uri, asset.duration ?? 0);
-        if (thumbUri) setPickedThumbnail(thumbUri);
+        extractBestThumbnail(asset.uri, durationMs).then(thumbUri => {
+          if (thumbUri) setPickedThumbnail(thumbUri);
+        });
+      }
+
+      // Generate AI smart title from video frame
+      setGeneratingTitle(true);
+      setTitle('Analyzing video...');
+      try {
+        const frame = asset.uri ? await extractFrameForAI(asset.uri, durationMs) : null;
+        const rawName = asset.fileName ?? asset.uri?.split('/').pop() ?? 'my video';
+        const aiTitle = await callAITitle(rawName, frame);
+        setTitle(aiTitle ?? rawName.replace(/\.[^.]+$/, '').replace(/[_-]/g, ' '));
+      } catch {
+        const fallback = asset.fileName ?? '';
+        setTitle(fallback.replace(/\.[^.]+$/, '').replace(/[_-]/g, ' '));
+      } finally {
+        setGeneratingTitle(false);
       }
     }
   };
@@ -203,15 +262,24 @@ export default function UploadScreen() {
         {/* Title */}
         <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
           <View style={styles.field}>
-            <Text style={styles.fieldLabel}>Video Title *</Text>
+            <View style={styles.titleLabelRow}>
+              <Text style={styles.fieldLabel}>Video Title *</Text>
+              {generatingTitle ? (
+                <View style={styles.aiTitleBadge}>
+                  <ActivityIndicator size="small" color={Colors.primaryLight} style={{ transform: [{ scale: 0.7 }] }} />
+                  <Text style={styles.aiTitleBadgeText}>AI writing title...</Text>
+                </View>
+              ) : null}
+            </View>
             <TextInput
-              style={styles.titleInput}
+              style={[styles.titleInput, generatingTitle && { color: Colors.textMuted }]}
               value={title}
               onChangeText={setTitle}
               placeholder="Enter a title for your video..."
               placeholderTextColor={Colors.textMuted}
               returnKeyType="done"
               maxLength={100}
+              editable={!generatingTitle}
             />
           </View>
         </KeyboardAvoidingView>
@@ -377,6 +445,28 @@ const styles = StyleSheet.create({
     paddingHorizontal: Spacing.md,
     marginBottom: Spacing.lg,
     gap: Spacing.sm,
+  },
+  titleLabelRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+  },
+  aiTitleBadge: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+    backgroundColor: Colors.primaryGlow,
+    borderRadius: Radius.full,
+    paddingHorizontal: 8,
+    paddingVertical: 3,
+    borderWidth: 1,
+    borderColor: Colors.primary + '55',
+  },
+  aiTitleBadgeText: {
+    fontSize: 10,
+    color: Colors.primaryLight,
+    fontWeight: FontWeight.semibold,
+    includeFontPadding: false,
   },
   fieldLabel: {
     fontSize: FontSize.sm,
