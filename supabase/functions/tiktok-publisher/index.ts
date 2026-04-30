@@ -7,6 +7,9 @@ const TIKTOK_USER_URL = 'https://open.tiktokapis.com/v2/user/info/?fields=open_i
 const TIKTOK_INIT_URL = 'https://open.tiktokapis.com/v2/post/publish/video/init/';
 const TIKTOK_STATUS_URL = 'https://open.tiktokapis.com/v2/post/publish/status/fetch/';
 
+// Deep-link scheme the mobile app intercepts after OAuth
+const APP_DEEP_LINK = 'viralcut://tiktok-callback';
+
 function getEnv(key: string): string {
   const v = Deno.env.get(key);
   if (!v) throw new Error(`Missing env: ${key}`);
@@ -19,7 +22,34 @@ Deno.serve(async (req) => {
   }
 
   const url = new URL(req.url);
-  const action = url.searchParams.get('action') ?? (await req.json().then((b: any) => b?.action).catch(() => null));
+
+  // ─── OAuth Callback (GET — TikTok redirects here) ─────────────────────────
+  // Registered redirect URI in TikTok Developer portal points to this endpoint.
+  // We forward the code/state to the app via deep link.
+  if (req.method === 'GET' && url.searchParams.get('action') === 'callback') {
+    const code = url.searchParams.get('code') ?? '';
+    const state = url.searchParams.get('state') ?? '';
+    const error = url.searchParams.get('error') ?? '';
+
+    if (error) {
+      const redirect = `${APP_DEEP_LINK}?error=${encodeURIComponent(error)}`;
+      return new Response(null, { status: 302, headers: { Location: redirect } });
+    }
+
+    const redirect = `${APP_DEEP_LINK}?code=${encodeURIComponent(code)}&state=${encodeURIComponent(state)}`;
+    return new Response(null, { status: 302, headers: { Location: redirect } });
+  }
+
+  // ─── All other actions come as POST with JSON body ────────────────────────
+  // Parse the body ONCE so it can be used inside handlers without re-reading.
+  let body: Record<string, unknown> = {};
+  try {
+    body = await req.json();
+  } catch {
+    // GET requests or empty bodies — body stays {}
+  }
+
+  const action = (url.searchParams.get('action') ?? body?.action ?? '') as string;
 
   try {
     const clientKey = getEnv('TIKTOK_CLIENT_KEY');
@@ -31,8 +61,7 @@ Deno.serve(async (req) => {
 
     // ─── 1. Generate OAuth URL ────────────────────────────────────────────────
     if (action === 'oauth_url') {
-      const body = await req.json();
-      const { redirectUri, codeVerifier } = body;
+      const { redirectUri, codeVerifier } = body as { redirectUri: string; codeVerifier: string };
 
       // PKCE: hash the verifier to get challenge
       const encoder = new TextEncoder();
@@ -60,8 +89,9 @@ Deno.serve(async (req) => {
 
     // ─── 2. Exchange Code for Tokens ─────────────────────────────────────────
     if (action === 'exchange_token') {
-      const body = await req.json();
-      const { code, redirectUri, codeVerifier, userId } = body;
+      const { code, redirectUri, codeVerifier, userId } = body as {
+        code: string; redirectUri: string; codeVerifier: string; userId: string;
+      };
 
       const tokenRes = await fetch(TIKTOK_TOKEN_URL, {
         method: 'POST',
@@ -139,8 +169,7 @@ Deno.serve(async (req) => {
 
     // ─── 3. Refresh Token ─────────────────────────────────────────────────────
     if (action === 'refresh_token') {
-      const body = await req.json();
-      const { userId } = body;
+      const { userId } = body as { userId: string };
 
       const { data: tokenRow, error: fetchErr } = await supabase
         .from('tiktok_tokens')
@@ -191,8 +220,7 @@ Deno.serve(async (req) => {
 
     // ─── 4. Get TikTok connection status ──────────────────────────────────────
     if (action === 'get_status') {
-      const body = await req.json();
-      const { userId } = body;
+      const { userId } = body as { userId: string };
 
       const { data: tokenRow } = await supabase
         .from('tiktok_tokens')
@@ -222,8 +250,7 @@ Deno.serve(async (req) => {
 
     // ─── 5. Disconnect TikTok ─────────────────────────────────────────────────
     if (action === 'disconnect') {
-      const body = await req.json();
-      const { userId } = body;
+      const { userId } = body as { userId: string };
       await supabase.from('tiktok_tokens').delete().eq('user_id', userId);
       return new Response(
         JSON.stringify({ success: true }),
@@ -233,8 +260,9 @@ Deno.serve(async (req) => {
 
     // ─── 6. Publish Video to TikTok ───────────────────────────────────────────
     if (action === 'publish') {
-      const body = await req.json();
-      const { userId, videoUrl, title, privacyLevel = 'SELF_ONLY' } = body;
+      const { userId, videoUrl, title, privacyLevel = 'SELF_ONLY' } = body as {
+        userId: string; videoUrl: string; title: string; privacyLevel?: string;
+      };
 
       if (!videoUrl || !title) {
         return new Response(
@@ -267,8 +295,8 @@ Deno.serve(async (req) => {
 
       const accessToken = tokenRow.access_token;
 
-      // Step 1 — Initialize upload (FILE_UPLOAD source type for URL-based videos)
-      const initPayload: Record<string, unknown> = {
+      // Initialize upload using PULL_FROM_URL
+      const initPayload = {
         post_info: {
           title: title.slice(0, 150),
           privacy_level: privacyLevel,
@@ -320,8 +348,7 @@ Deno.serve(async (req) => {
 
     // ─── 7. Check publish status ──────────────────────────────────────────────
     if (action === 'publish_status') {
-      const body = await req.json();
-      const { userId, publishId } = body;
+      const { userId, publishId } = body as { userId: string; publishId: string };
 
       const { data: tokenRow } = await supabase
         .from('tiktok_tokens')

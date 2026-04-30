@@ -13,9 +13,9 @@ import {
 import * as WebBrowser from 'expo-web-browser';
 import { Platform, Linking } from 'react-native';
 
-// The redirect URI registered in TikTok Developer portal
-// For Expo Go / development: use your backend URL as the callback
-// For production: use your deep link e.g. viralcut://tiktok-callback
+// The redirect URI registered in TikTok Developer portal.
+// TikTok redirects here → backend forwards to viralcut://tiktok-callback.
+// Register exactly this URL in TikTok Developer Portal → your app → Redirect URI.
 export const TIKTOK_REDIRECT_URI = 'https://mrsvovoywukechawmrsv.backend.onspace.ai/functions/v1/tiktok-publisher?action=callback';
 
 export type PublishPhase =
