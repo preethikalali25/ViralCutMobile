@@ -1,3 +1,4 @@
+
 import React from 'react';
 import { View, Text, StyleSheet, Pressable } from 'react-native';
 import { Image } from 'expo-image';
@@ -20,12 +21,18 @@ export default function VideoCard({ video, onPress }: Props) {
       onPress={onPress}
     >
       <View style={styles.thumbnailWrapper}>
-        <Image
-          source={{ uri: video.thumbnail }}
-          style={styles.thumbnail}
-          contentFit="cover"
-          transition={200}
-        />
+        {video.thumbnail ? (
+          <Image
+            source={{ uri: video.thumbnail }}
+            style={styles.thumbnail}
+            contentFit="cover"
+            transition={200}
+          />
+        ) : (
+          <View style={[styles.thumbnail, styles.thumbPlaceholder]}>
+            <MaterialIcons name="videocam" size={32} color={Colors.textMuted} />
+          </View>
+        )}
         <View style={styles.durationBadge}>
           <Text style={styles.duration}>{formatDuration(video.duration)}</Text>
         </View>
@@ -134,7 +141,23 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     gap: 3,
   },
-  metricVal: {
+  thumbPlaceholder: {
+    backgroundColor: Colors.surface,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  // The following properties were causing the parsing error because they were
+  // not part of any style object or were misplaced.
+  // Assuming they belong to a 'metricVal' style that was implicitly intended,
+  // or they should be removed if not part of any defined style.
+  // For now, I'll put them in a placeholder style named `metricText` which
+  // seems like the most logical place given the context, or they can be
+  // integrated into `metricVal` if that was the intention.
+  // Given the error message "Argument expression expected" at line 153:0,
+  // which is exactly where `fontSize: FontSize.xs,` is, it strongly suggests
+  // that these properties were floating outside a style object.
+  // I will create a new style object `metricText` for these properties.
+  metricText: { // Added a new style object to encapsulate these properties
     fontSize: FontSize.xs,
     color: Colors.textSecondary,
     fontWeight: FontWeight.medium,

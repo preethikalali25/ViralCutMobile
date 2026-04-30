@@ -70,7 +70,7 @@ export default function UploadScreen() {
       if (asset.uri) {
         try {
           const VideoThumbnails = await import('expo-video-thumbnails');
-          const { uri } = await VideoThumbnails.getThumbnailAsync(asset.uri, { time: 1000, quality: 0.8 });
+          const { uri } = await VideoThumbnails.getThumbnailAsync(asset.uri, { time: 0, quality: 0.8 });
           setPickedThumbnail(uri);
         } catch (e) {
           console.warn('Preview thumbnail extraction failed:', e);
@@ -90,11 +90,11 @@ export default function UploadScreen() {
     const duration = pickedVideo ? getVideoDuration(pickedVideo) : Math.floor(Math.random() * 50) + 15;
 
     // Use already-extracted thumbnail from pick step; re-extract only if that failed
-    let thumb = pickedThumbnail ?? MOCK_THUMBNAILS[Math.floor(Math.random() * MOCK_THUMBNAILS.length)];
+    let thumb = pickedThumbnail ?? '';
     if (!pickedThumbnail && pickedVideo?.uri) {
       try {
         const VideoThumbnails = await import('expo-video-thumbnails');
-        const { uri } = await VideoThumbnails.getThumbnailAsync(pickedVideo.uri, { time: 1000, quality: 0.8 });
+        const { uri } = await VideoThumbnails.getThumbnailAsync(pickedVideo.uri, { time: 0, quality: 0.8 });
         thumb = uri;
       } catch (e) {
         console.warn('Thumbnail extraction failed, using placeholder:', e);

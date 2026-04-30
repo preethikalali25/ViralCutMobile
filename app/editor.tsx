@@ -351,7 +351,13 @@ export default function EditorScreen() {
           {/* Thumbnail Preview */}
           <View style={styles.previewContainer}>
             <View style={styles.preview}>
-              <Image source={{ uri: video.thumbnail }} style={styles.previewImg} contentFit="cover" transition={200} />
+              {video.thumbnail ? (
+                <Image source={{ uri: video.thumbnail }} style={styles.previewImg} contentFit="cover" transition={200} />
+              ) : (
+                <View style={[styles.previewImg, { backgroundColor: Colors.surface, alignItems: 'center', justifyContent: 'center' }]}>
+                  <MaterialIcons name="videocam" size={36} color={Colors.textMuted} />
+                </View>
+              )}
               {hookText ? (
                 <View style={styles.hookOverlay}>
                   <Text style={styles.hookOverlayText}>{hookText}</Text>
