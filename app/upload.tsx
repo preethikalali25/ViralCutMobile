@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
 import {
-  View, Text, ScrollView, StyleSheet, Pressable, TextInput, KeyboardAvoidingView, Platform, ActivityIndicator,
+  View, Text, ScrollView, StyleSheet, Pressable, ActivityIndicator,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Image } from 'expo-image';
@@ -9,22 +9,16 @@ import { useRouter } from 'expo-router';
 import * as ImagePicker from 'expo-image-picker';
 import { Colors, Spacing, Radius, FontSize, FontWeight } from '@/constants/theme';
 import { useVideos } from '@/hooks/useVideos';
-import { useAlert, getSupabaseClient } from '@/template';
+import { useAlert } from '@/template';
 import { Platform as PlatformType, Video } from '@/types';
-import { FunctionsHttpError } from '@supabase/supabase-js';
 import PlatformBadge from '@/components/ui/PlatformBadge';
 
 const ALL_PLATFORMS: PlatformType[] = ['tiktok', 'reels', 'youtube'];
 
-/**
- * Try extracting a thumbnail at multiple seek positions to avoid black/dark frames.
- * iOS videos often have dark/empty first frames — seeking into the video yields real content.
- */
+/** Try extracting a thumbnail at multiple seek positions to avoid black/dark frames. */
 async function extractBestThumbnail(videoUri: string, durationMs: number): Promise<string | null> {
   try {
     const VideoThumbnails = await import('expo-video-thumbnails');
-
-    // Candidate seek times: 20% in, 10% in, 2s, 1s, 500ms, 0
     const dur = durationMs > 0 ? durationMs : 5000;
     const candidates = [
       Math.floor(dur * 0.2),
@@ -33,7 +27,7 @@ async function extractBestThumbnail(videoUri: string, durationMs: number): Promi
       1000,
       500,
       0,
-    ].filter((t, i, arr) => arr.indexOf(t) === i); // deduplicate
+    ].filter((t, i, arr) => arr.indexOf(t) === i);
 
     for (const seekMs of candidates) {
       try {
@@ -42,54 +36,11 @@ async function extractBestThumbnail(videoUri: string, durationMs: number): Promi
           quality: 0.85,
         });
         if (uri) return uri;
-      } catch {
-        // try next candidate
-      }
+      } catch { /* try next */ }
     }
     return null;
   } catch (e) {
     console.warn('Thumbnail extraction failed:', e);
-    return null;
-  }
-}
-
-/** Extract a base64 frame from the video for AI analysis */
-async function extractFrameForAI(videoUri: string, durationMs: number): Promise<{ base64: string; mime: string } | null> {
-  try {
-    const VideoThumbnails = await import('expo-video-thumbnails');
-    const FileSystem = await import('expo-file-system');
-    const dur = durationMs > 0 ? durationMs : 5000;
-    const seekCandidates = [Math.floor(dur * 0.2), Math.floor(dur * 0.1), 2000, 1000, 500, 0];
-    let frameUri: string | null = null;
-    for (const seekMs of seekCandidates) {
-      try {
-        const { uri } = await VideoThumbnails.getThumbnailAsync(videoUri, { time: seekMs, quality: 0.6 });
-        if (uri) { frameUri = uri; break; }
-      } catch { /* try next */ }
-    }
-    if (!frameUri) return null;
-    const base64 = await FileSystem.readAsStringAsync(frameUri, { encoding: FileSystem.EncodingType.Base64 });
-    return { base64, mime: 'image/jpeg' };
-  } catch {
-    return null;
-  }
-}
-
-/** Call the AI content generator edge function */
-async function callAITitle(rawFilename: string, frame: { base64: string; mime: string } | null): Promise<string | null> {
-  try {
-    const client = getSupabaseClient();
-    const body: Record<string, unknown> = { type: 'title', videoTitle: rawFilename };
-    if (frame) { body.videoFrameBase64 = frame.base64; body.videoFrameMime = frame.mime; }
-    const { data, error } = await client.functions.invoke('ai-content-generator', { body });
-    if (error) {
-      if (error instanceof FunctionsHttpError) {
-        try { await error.context?.text(); } catch { /* ignore */ }
-      }
-      return null;
-    }
-    return data?.result ?? null;
-  } catch {
     return null;
   }
 }
@@ -103,12 +54,11 @@ export default function UploadScreen() {
   const router = useRouter();
   const { addVideo } = useVideos();
   const { showAlert } = useAlert();
-  const [title, setTitle] = useState('');
   const [platforms, setPlatforms] = useState<PlatformType[]>(['tiktok']);
   const [isUploading, setIsUploading] = useState(false);
   const [pickedVideo, setPickedVideo] = useState<ImagePicker.ImagePickerAsset | null>(null);
   const [pickedThumbnail, setPickedThumbnail] = useState<string | null>(null);
-  const [generatingTitle, setGeneratingTitle] = useState(false);
+  const [extractingThumb, setExtractingThumb] = useState(false);
 
   const togglePlatform = (p: PlatformType) => {
     setPlatforms(prev =>
@@ -132,44 +82,26 @@ export default function UploadScreen() {
       setPickedVideo(asset);
       setPickedThumbnail(null);
 
-      // Start thumbnail extraction and AI title generation in parallel
-      const durationMs = asset.duration ?? 0;
-
-      // Kick off thumbnail extraction immediately (non-blocking)
       if (asset.uri) {
-        extractBestThumbnail(asset.uri, durationMs).then(thumbUri => {
+        setExtractingThumb(true);
+        extractBestThumbnail(asset.uri, asset.duration ?? 0).then(thumbUri => {
           if (thumbUri) setPickedThumbnail(thumbUri);
+          setExtractingThumb(false);
         });
-      }
-
-      // Generate AI smart title from video frame
-      setGeneratingTitle(true);
-      setTitle('Analyzing video...');
-      try {
-        const frame = asset.uri ? await extractFrameForAI(asset.uri, durationMs) : null;
-        const rawName = asset.fileName ?? asset.uri?.split('/').pop() ?? 'my video';
-        const aiTitle = await callAITitle(rawName, frame);
-        setTitle(aiTitle ?? rawName.replace(/\.[^.]+$/, '').replace(/[_-]/g, ' '));
-      } catch {
-        const fallback = asset.fileName ?? '';
-        setTitle(fallback.replace(/\.[^.]+$/, '').replace(/[_-]/g, ' '));
-      } finally {
-        setGeneratingTitle(false);
       }
     }
   };
 
-  const handleUpload = async () => {
-    if (!title.trim()) {
-      showAlert('Missing Title', 'Please add a title for your video.');
+  const handlePublish = async () => {
+    if (!pickedVideo) {
+      showAlert('No Video', 'Please select a video first.');
       return;
     }
 
     setIsUploading(true);
     const id = `v${Date.now()}`;
-    const duration = pickedVideo ? getVideoDuration(pickedVideo) : Math.floor(Math.random() * 50) + 15;
+    const duration = getVideoDuration(pickedVideo);
 
-    // Use already-extracted thumbnail; re-extract only if that failed
     let thumb = pickedThumbnail ?? '';
     if (!pickedThumbnail && pickedVideo?.uri) {
       thumb = (await extractBestThumbnail(pickedVideo.uri, pickedVideo.duration ?? 0)) ?? '';
@@ -177,20 +109,19 @@ export default function UploadScreen() {
 
     const newVideo: Video = {
       id,
-      title: title.trim(),
+      title: '',
       thumbnail: thumb,
       duration,
-      status: 'ready',
+      status: 'published',
       platforms,
       createdAt: new Date().toISOString(),
+      publishedAt: new Date().toISOString(),
       ...(pickedVideo?.uri ? { videoUri: pickedVideo.uri } : {}),
     };
 
     addVideo(newVideo);
     setIsUploading(false);
-
-    // Navigate directly to avoid timing issues with alert button callbacks
-    router.push({ pathname: '/editor', params: { id } });
+    router.push('/(tabs)/library');
   };
 
   return (
@@ -200,7 +131,7 @@ export default function UploadScreen() {
         <Pressable style={styles.backBtn} onPress={() => router.back()}>
           <MaterialIcons name="arrow-back" size={20} color={Colors.textSecondary} />
         </Pressable>
-        <Text style={styles.title}>Upload Video</Text>
+        <Text style={styles.headerTitle}>Upload Video</Text>
         <View style={{ width: 36 }} />
       </View>
 
@@ -217,14 +148,14 @@ export default function UploadScreen() {
                   transition={200}
                 />
               ) : (
-                <View style={[styles.previewThumb, { backgroundColor: Colors.surfaceBorder, alignItems: 'center', justifyContent: 'center' }]}>
-                  <MaterialCommunityIcons name="video" size={36} color={Colors.primaryLight} />
-                  <Text style={{ color: Colors.textSecondary, fontSize: 10, marginTop: 4, includeFontPadding: false }}>
-                    {pickedVideo.fileName ?? 'Video Selected'}
-                  </Text>
+                <View style={[styles.previewThumb, styles.previewPlaceholder]}>
+                  {extractingThumb ? (
+                    <ActivityIndicator color={Colors.primaryLight} />
+                  ) : (
+                    <MaterialCommunityIcons name="video" size={36} color={Colors.primaryLight} />
+                  )}
                 </View>
               )}
-
               <View style={styles.previewOverlay}>
                 <MaterialIcons name="play-circle-filled" size={36} color="rgba(255,255,255,0.85)" />
               </View>
@@ -258,31 +189,6 @@ export default function UploadScreen() {
             <Text style={styles.selectBtnText}>{pickedVideo ? 'Change Video' : 'Browse Files'}</Text>
           </Pressable>
         </View>
-
-        {/* Title */}
-        <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
-          <View style={styles.field}>
-            <View style={styles.titleLabelRow}>
-              <Text style={styles.fieldLabel}>Video Title *</Text>
-              {generatingTitle ? (
-                <View style={styles.aiTitleBadge}>
-                  <ActivityIndicator size="small" color={Colors.primaryLight} style={{ transform: [{ scale: 0.7 }] }} />
-                  <Text style={styles.aiTitleBadgeText}>AI writing title...</Text>
-                </View>
-              ) : null}
-            </View>
-            <TextInput
-              style={[styles.titleInput, generatingTitle && { color: Colors.textMuted }]}
-              value={title}
-              onChangeText={setTitle}
-              placeholder="Enter a title for your video..."
-              placeholderTextColor={Colors.textMuted}
-              returnKeyType="done"
-              maxLength={100}
-              editable={!generatingTitle}
-            />
-          </View>
-        </KeyboardAvoidingView>
 
         {/* Platforms */}
         <View style={styles.field}>
@@ -319,25 +225,25 @@ export default function UploadScreen() {
           <Text style={styles.tipText}>• Upload high resolution (1080p+) for quality</Text>
         </View>
 
-        {/* Upload Button */}
+        {/* Publish Button */}
         <Pressable
           style={({ pressed }) => [
-            styles.uploadBtn,
-            (!title || isUploading) && styles.uploadBtnDisabled,
+            styles.publishBtn,
+            (!pickedVideo || isUploading) && styles.publishBtnDisabled,
             pressed && { opacity: 0.85 },
           ]}
-          onPress={handleUpload}
-          disabled={isUploading}
+          onPress={handlePublish}
+          disabled={!pickedVideo || isUploading}
         >
           {isUploading ? (
             <>
-              <MaterialIcons name="hourglass-top" size={20} color="#fff" />
-              <Text style={styles.uploadBtnText}>Uploading...</Text>
+              <ActivityIndicator size="small" color="#fff" />
+              <Text style={styles.publishBtnText}>Publishing...</Text>
             </>
           ) : (
             <>
-              <MaterialIcons name="cloud-upload" size={20} color="#fff" />
-              <Text style={styles.uploadBtnText}>Upload Video</Text>
+              <MaterialIcons name="send" size={20} color="#fff" />
+              <Text style={styles.publishBtnText}>Publish Now</Text>
             </>
           )}
         </Pressable>
@@ -369,7 +275,7 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderColor: Colors.surfaceBorder,
   },
-  title: {
+  headerTitle: {
     fontSize: FontSize.lg,
     fontWeight: FontWeight.bold,
     color: Colors.textPrimary,
@@ -441,50 +347,6 @@ const styles = StyleSheet.create({
     color: '#fff',
     includeFontPadding: false,
   },
-  field: {
-    paddingHorizontal: Spacing.md,
-    marginBottom: Spacing.lg,
-    gap: Spacing.sm,
-  },
-  titleLabelRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-  },
-  aiTitleBadge: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 4,
-    backgroundColor: Colors.primaryGlow,
-    borderRadius: Radius.full,
-    paddingHorizontal: 8,
-    paddingVertical: 3,
-    borderWidth: 1,
-    borderColor: Colors.primary + '55',
-  },
-  aiTitleBadgeText: {
-    fontSize: 10,
-    color: Colors.primaryLight,
-    fontWeight: FontWeight.semibold,
-    includeFontPadding: false,
-  },
-  fieldLabel: {
-    fontSize: FontSize.sm,
-    fontWeight: FontWeight.semibold,
-    color: Colors.textSecondary,
-    includeFontPadding: false,
-  },
-  titleInput: {
-    backgroundColor: Colors.surfaceElevated,
-    borderRadius: Radius.md,
-    borderWidth: 1,
-    borderColor: Colors.surfaceBorder,
-    padding: Spacing.sm + 4,
-    fontSize: FontSize.md,
-    color: Colors.textPrimary,
-    minHeight: 48,
-    includeFontPadding: false,
-  },
   previewWrapper: {
     width: 120,
     height: 160,
@@ -495,6 +357,11 @@ const styles = StyleSheet.create({
   previewThumb: {
     width: '100%',
     height: '100%',
+  },
+  previewPlaceholder: {
+    backgroundColor: Colors.surfaceBorder,
+    alignItems: 'center',
+    justifyContent: 'center',
   },
   previewOverlay: {
     position: 'absolute',
@@ -519,6 +386,17 @@ const styles = StyleSheet.create({
     fontSize: FontSize.xs,
     color: Colors.primaryLight,
     fontWeight: FontWeight.semibold,
+    includeFontPadding: false,
+  },
+  field: {
+    paddingHorizontal: Spacing.md,
+    marginBottom: Spacing.lg,
+    gap: Spacing.sm,
+  },
+  fieldLabel: {
+    fontSize: FontSize.sm,
+    fontWeight: FontWeight.semibold,
+    color: Colors.textSecondary,
     includeFontPadding: false,
   },
   platformsList: {
@@ -573,7 +451,7 @@ const styles = StyleSheet.create({
     color: Colors.textSecondary,
     includeFontPadding: false,
   },
-  uploadBtn: {
+  publishBtn: {
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'center',
@@ -583,10 +461,10 @@ const styles = StyleSheet.create({
     borderRadius: Radius.full,
     paddingVertical: 16,
   },
-  uploadBtnDisabled: {
+  publishBtnDisabled: {
     backgroundColor: Colors.primary + '55',
   },
-  uploadBtnText: {
+  publishBtnText: {
     fontSize: FontSize.lg,
     fontWeight: FontWeight.bold,
     color: '#fff',
