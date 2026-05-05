@@ -43,17 +43,36 @@ const HOOK_TYPES: { type: HookType; label: string; desc: string; icon: string }[
 
 const ALL_PLATFORMS: PlatformType[] = ['tiktok', 'reels', 'youtube'];
 
+/** Resolve ph:// URIs to a local file:// path that VideoThumbnails can read */
+async function resolveVideoUri(uri: string): Promise<string> {
+  if (!uri.startsWith('ph://')) return uri;
+  try {
+    const MediaLibrary = await import('expo-media-library');
+    const assetId = uri.replace('ph://', '');
+    const asset = await MediaLibrary.getAssetInfoAsync(assetId);
+    if (asset?.localUri) return asset.localUri;
+  } catch { /* fall through */ }
+  try {
+    const FileSystem = await import('expo-file-system');
+    const dest = FileSystem.cacheDirectory + `vid_${Date.now()}.mp4`;
+    await FileSystem.copyAsync({ from: uri, to: dest });
+    return dest;
+  } catch { /* give up */ }
+  return uri;
+}
+
 /** Safely extract a video frame for audio AI analysis only */
 async function extractVideoFrame(videoUri: string): Promise<{ base64: string; mime: string } | null> {
   try {
     const VideoThumbnails = await import('expo-video-thumbnails');
     const FileSystem = await import('expo-file-system');
 
+    const resolvedUri = await resolveVideoUri(videoUri);
     const seekCandidates = [2000, 1000, 500, 0];
     let frameUri: string | null = null;
     for (const seekMs of seekCandidates) {
       try {
-        const { uri } = await VideoThumbnails.getThumbnailAsync(videoUri, { time: seekMs, quality: 0.6 });
+        const { uri } = await VideoThumbnails.getThumbnailAsync(resolvedUri, { time: seekMs, quality: 0.6 });
         if (uri) { frameUri = uri; break; }
       } catch { /* try next */ }
     }
@@ -171,9 +190,10 @@ export default function EditorScreen() {
     timestampSeconds: number,
   ): Promise<string | null> => {
     try {
+      const resolved = await resolveVideoUri(videoUri);
       const { getFrameAt } = await import('react-native-video-trim');
       const ts = Math.max(0, Math.round(timestampSeconds * 1000));
-      const { outputPath } = await getFrameAt(videoUri, {
+      const { outputPath } = await getFrameAt(resolved, {
         time: ts,
         format: 'jpeg',
         quality: 88,
@@ -184,7 +204,8 @@ export default function EditorScreen() {
       console.warn('[thumbnail] getFrameAt failed, trying expo-video-thumbnails:', e);
       try {
         const VideoThumbnails = await import('expo-video-thumbnails');
-        const { uri } = await VideoThumbnails.getThumbnailAsync(videoUri, {
+        const resolved = await resolveVideoUri(videoUri);
+        const { uri } = await VideoThumbnails.getThumbnailAsync(resolved, {
           time: Math.max(0, Math.round(timestampSeconds * 1000)),
           quality: 0.85,
         });

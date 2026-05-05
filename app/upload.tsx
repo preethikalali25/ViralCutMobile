@@ -15,9 +15,30 @@ import PlatformBadge from '@/components/ui/PlatformBadge';
 
 const ALL_PLATFORMS: PlatformType[] = ['tiktok', 'reels', 'youtube'];
 
+/** Copy a ph:// asset to the local cache so expo-video-thumbnails can read it. */
+async function resolveVideoUri(uri: string): Promise<string> {
+  if (!uri.startsWith('ph://')) return uri;
+  try {
+    const MediaLibrary = await import('expo-media-library');
+    const asset = await MediaLibrary.getAssetInfoAsync(uri.replace('ph://', ''));
+    if (asset?.localUri) return asset.localUri;
+  } catch { /* fall through */ }
+  // Fallback: copy via FileSystem
+  try {
+    const FileSystem = await import('expo-file-system');
+    const dest = FileSystem.cacheDirectory + `vid_${Date.now()}.mp4`;
+    await FileSystem.copyAsync({ from: uri, to: dest });
+    return dest;
+  } catch { /* give up */ }
+  return uri;
+}
+
 /** Try extracting a thumbnail at multiple seek positions to avoid black/dark frames. */
 async function extractBestThumbnail(videoUri: string, durationMs: number): Promise<string | null> {
   try {
+    // Resolve ph:// URIs to local file URIs that VideoThumbnails can read
+    const resolvedUri = await resolveVideoUri(videoUri);
+
     const VideoThumbnails = await import('expo-video-thumbnails');
     const dur = durationMs > 0 ? durationMs : 5000;
     const candidates = [
@@ -31,7 +52,7 @@ async function extractBestThumbnail(videoUri: string, durationMs: number): Promi
 
     for (const seekMs of candidates) {
       try {
-        const { uri } = await VideoThumbnails.getThumbnailAsync(videoUri, {
+        const { uri } = await VideoThumbnails.getThumbnailAsync(resolvedUri, {
           time: seekMs,
           quality: 0.85,
         });
