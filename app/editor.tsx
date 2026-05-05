@@ -121,6 +121,7 @@ export default function EditorScreen() {
   const [hashtags, setHashtags] = useState('');
   const [selectedAudioId, setSelectedAudioId] = useState('');
   const [platforms, setPlatforms] = useState<PlatformType[]>(['tiktok']);
+  const hookSaveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [generatingHook, setGeneratingHook] = useState(false);
   const [generatingCaption, setGeneratingCaption] = useState(false);
   const [generatingAudio, setGeneratingAudio] = useState(false);
@@ -195,7 +196,10 @@ export default function EditorScreen() {
             platforms: currentPlatforms, ...framePayload,
           });
           setGeneratingHook(false);
-          if (!error && data?.result) setHookText(data.result);
+          if (!error && data?.result) {
+            setHookText(data.result);
+            updateVideo(video.id, { hook: { type: video.hook?.type ?? 'question', text: data.result } });
+          }
         })());
       }
 
@@ -276,8 +280,11 @@ export default function EditorScreen() {
     });
     setGeneratingHook(false);
     if (error) { showAlert('AI Error', error); return; }
-    if (data?.result) setHookText(data.result);
-  }, [video.title, hookType, platforms, showAlert, ensureFrame]);
+    if (data?.result) {
+      setHookText(data.result);
+      updateVideo(video.id, { hook: { type: hookType, text: data.result } });
+    }
+  }, [video.title, video.id, hookType, platforms, showAlert, ensureFrame, updateVideo]);
 
   const handleGenerateCaption = useCallback(async () => {
     setGeneratingCaption(true);
@@ -680,7 +687,13 @@ export default function EditorScreen() {
                 <TextInput
                   style={styles.textInput}
                   value={hookText}
-                  onChangeText={setHookText}
+                  onChangeText={(text) => {
+                    setHookText(text);
+                    if (hookSaveTimer.current) clearTimeout(hookSaveTimer.current);
+                    hookSaveTimer.current = setTimeout(() => {
+                      updateVideo(video.id, { hook: { type: hookType, text } });
+                    }, 800);
+                  }}
                   placeholder="AI will write the best hook, or type your own..."
                   placeholderTextColor={Colors.textMuted}
                   multiline

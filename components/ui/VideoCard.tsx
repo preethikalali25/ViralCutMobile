@@ -36,6 +36,11 @@ export default function VideoCard({ video, onPress }: Props) {
         <View style={styles.durationBadge}>
           <Text style={styles.duration}>{formatDuration(video.duration)}</Text>
         </View>
+        {video.hook?.text ? (
+          <View style={styles.hookOverlay}>
+            <Text style={styles.hookText} numberOfLines={3}>{video.hook.text}</Text>
+          </View>
+        ) : null}
         <View style={styles.playOverlay}>
           <MaterialIcons name="play-circle-filled" size={32} color="rgba(255,255,255,0.9)" />
         </View>
@@ -104,6 +109,22 @@ const styles = StyleSheet.create({
     color: '#fff',
     fontSize: FontSize.xs,
     fontWeight: FontWeight.semibold,
+    includeFontPadding: false,
+  },
+  hookOverlay: {
+    position: 'absolute',
+    bottom: 0,
+    left: 0,
+    right: 0,
+    backgroundColor: 'rgba(0,0,0,0.72)',
+    paddingHorizontal: 8,
+    paddingVertical: 6,
+  },
+  hookText: {
+    color: '#fff',
+    fontSize: FontSize.xs,
+    fontWeight: FontWeight.bold,
+    lineHeight: 14,
     includeFontPadding: false,
   },
   playOverlay: {
