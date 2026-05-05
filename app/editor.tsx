@@ -20,6 +20,7 @@ import { FunctionsHttpError } from '@supabase/supabase-js';
 import { useTikTok } from '@/hooks/useTikTok';
 import { uploadVideoToStorage } from '@/services/tiktokService';
 import { uploadToWayin, submitWayinTask, getWayinStatus, WayinClip } from '@/services/wayinVideoService';
+import * as FileSystem from 'expo-file-system';
 
 type Tab = 'hook' | 'caption' | 'audio' | 'platforms';
 
@@ -152,7 +153,42 @@ export default function EditorScreen() {
   const [trimPhase, setTrimPhase] = useState<'idle' | 'trimming' | 'done' | 'error'>('idle');
   const [trimError, setTrimError] = useState<string | null>(null);
 
+  // Thumbnail generation state
+  const [generatingThumbnail, setGeneratingThumbnail] = useState(false);
+  const [thumbnailUri, setThumbnailUri] = useState<string | null>(video?.thumbnail ?? null);
+
   const wayinPollRef = useRef<ReturnType<typeof setInterval> | null>(null);
+
+  // ── Extract thumbnail from video at a specific timestamp (seconds) ───────────
+  const generateThumbnailFromTimestamp = useCallback(async (
+    videoUri: string,
+    timestampSeconds: number,
+  ): Promise<string | null> => {
+    try {
+      const { getFrameAt } = await import('react-native-video-trim');
+      const ts = Math.max(0, Math.round(timestampSeconds * 1000));
+      const { outputPath } = await getFrameAt(videoUri, {
+        time: ts,
+        format: 'jpeg',
+        quality: 88,
+        maxWidth: 720,
+      });
+      return outputPath.startsWith('file://') ? outputPath : `file://${outputPath}`;
+    } catch (e) {
+      console.warn('[thumbnail] getFrameAt failed, trying expo-video-thumbnails:', e);
+      try {
+        const VideoThumbnails = await import('expo-video-thumbnails');
+        const { uri } = await VideoThumbnails.getThumbnailAsync(videoUri, {
+          time: Math.max(0, Math.round(timestampSeconds * 1000)),
+          quality: 0.85,
+        });
+        return uri ?? null;
+      } catch (e2) {
+        console.warn('[thumbnail] expo-video-thumbnails also failed:', e2);
+        return null;
+      }
+    }
+  }, []);
   // Cache for WayinVideo public URL (to avoid re-uploading)
   const wayinPublicUrlRef = useRef<string | null>(null);
   const frameCache = useRef<{ base64: string; mime: string } | null | 'pending'>('pending');
@@ -173,6 +209,7 @@ export default function EditorScreen() {
     setHashtags(video.hashtags?.join(' ') ?? '');
     setSelectedAudioId(video.audio?.id ?? '');
     setPlatforms(video.platforms ?? ['tiktok']);
+    setThumbnailUri(video.thumbnail ?? null);
   }, [video?.id]);
 
   // ── Auto-generate on first open using WayinVideo for hook/caption, Gemini for audio ──
@@ -225,6 +262,27 @@ export default function EditorScreen() {
 
     runAll();
   }, [video?.id]);
+
+  // ── Generate thumbnail from best WayinVideo clip ─────────────────────────────
+  const generateWayinThumbnail = useCallback(async (clip: WayinClip, videoUri: string) => {
+    if (generatingThumbnail) return;
+    setGeneratingThumbnail(true);
+    try {
+      // Use clip start + 1 second for a better frame (avoid cut-in artifacts)
+      const seekSeconds = clip.start > 0 ? clip.start + 1 : Math.max(0, clip.start);
+      const newThumb = await generateThumbnailFromTimestamp(videoUri, seekSeconds);
+      if (newThumb) {
+        setThumbnailUri(newThumb);
+        updateVideo(video!.id, { thumbnail: newThumb });
+        return newThumb;
+      }
+    } catch (e) {
+      console.warn('[thumbnail] WayinVideo thumbnail generation failed:', e);
+    } finally {
+      setGeneratingThumbnail(false);
+    }
+    return null;
+  }, [generatingThumbnail, generateThumbnailFromTimestamp, updateVideo, video]);
 
   // ── Core WayinVideo analysis engine ──────────────────────────────────────────
   /**
@@ -318,6 +376,18 @@ export default function EditorScreen() {
                 ? best.hashtags.map(h => h.startsWith('#') ? h : `#${h}`).join(' ')
                 : '';
               opts.onCaption?.(best.description, tags);
+            }
+            // Auto-generate thumbnail from the best viral clip's start timestamp
+            if (video?.videoUri && best.start >= 0) {
+              const videoUri = wayinPublicUrlRef.current ?? video.videoUri;
+              generateThumbnailFromTimestamp(videoUri, Math.max(0, best.start + 1))
+                .then(thumb => {
+                  if (thumb) {
+                    setThumbnailUri(thumb);
+                    updateVideo(video.id, { thumbnail: thumb });
+                  }
+                })
+                .catch(console.warn);
             }
           }
         }
@@ -713,8 +783,8 @@ export default function EditorScreen() {
           {/* Thumbnail Preview */}
           <View style={styles.previewContainer}>
             <View style={styles.preview}>
-              {video.thumbnail ? (
-                <Image source={{ uri: video.thumbnail }} style={styles.previewImg} contentFit="cover" transition={200} />
+              {thumbnailUri ? (
+                <Image source={{ uri: thumbnailUri }} style={styles.previewImg} contentFit="cover" transition={200} />
               ) : (
                 <View style={[styles.previewImg, { backgroundColor: Colors.surface, alignItems: 'center', justifyContent: 'center' }]}>
                   <MaterialIcons name="videocam" size={36} color={Colors.textMuted} />
@@ -727,6 +797,27 @@ export default function EditorScreen() {
               ) : null}
               <Pressable style={styles.playBtn} onPress={() => setShowPlayer(true)} hitSlop={8}>
                 <MaterialIcons name="play-circle-filled" size={44} color="rgba(255,255,255,0.9)" />
+              </Pressable>
+              {/* Thumbnail refresh button */}
+              <Pressable
+                style={styles.thumbRefreshBtn}
+                onPress={async () => {
+                  if (!video?.videoUri || generatingThumbnail) return;
+                  setGeneratingThumbnail(true);
+                  const videoUri = wayinPublicUrlRef.current ?? video.videoUri;
+                  const seekSec = wayinClips.length > 0 ? Math.max(0, wayinClips[0].start + 1) : 2;
+                  const thumb = await generateThumbnailFromTimestamp(videoUri, seekSec);
+                  if (thumb) {
+                    setThumbnailUri(thumb);
+                    updateVideo(video.id, { thumbnail: thumb });
+                  }
+                  setGeneratingThumbnail(false);
+                }}
+                hitSlop={6}
+              >
+                {generatingThumbnail
+                  ? <ActivityIndicator size="small" color="#fff" />
+                  : <MaterialIcons name="photo-camera" size={15} color="#fff" />}
               </Pressable>
             </View>
           </View>
@@ -1181,6 +1272,24 @@ export default function EditorScreen() {
                       ))}
                     </View>
                   </View>
+                ) : null}
+
+                {/* Set as Thumbnail */}
+                {(selectedWayinClip.start >= 0) ? (
+                  <Pressable
+                    style={({ pressed }) => [styles.clipThumbBtn, pressed && { opacity: 0.85 }, generatingThumbnail && { opacity: 0.6 }]}
+                    onPress={() => {
+                      if (!video?.videoUri) return;
+                      generateWayinThumbnail(selectedWayinClip, wayinPublicUrlRef.current ?? video.videoUri);
+                    }}
+                    disabled={generatingThumbnail}
+                  >
+                    {generatingThumbnail ? (
+                      <><ActivityIndicator size="small" color="#6c47ff" /><Text style={styles.clipThumbBtnText}>Generating thumbnail...</Text></>
+                    ) : (
+                      <><MaterialIcons name="photo-camera" size={16} color="#6c47ff" /><Text style={styles.clipThumbBtnText}>Use Clip Frame as Thumbnail</Text>{thumbnailUri ? <View style={styles.thumbPreviewDot}><MaterialIcons name="check" size={10} color="#fff" /></View> : null}</>
+                    )}
+                  </Pressable>
                 ) : null}
 
                 {/* Primary action: Trim */}
@@ -1707,6 +1816,21 @@ const styles = StyleSheet.create({
   clipTrimNote: {
     fontSize: FontSize.xs, color: Colors.textMuted, textAlign: 'center',
     lineHeight: 16, paddingHorizontal: Spacing.sm, marginBottom: Spacing.md, includeFontPadding: false,
+  },
+  clipThumbBtn: {
+    flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8,
+    borderRadius: Radius.full, paddingVertical: 11, borderWidth: 1.5, borderColor: '#6c47ff',
+    backgroundColor: '#6c47ff18', marginBottom: Spacing.sm,
+  },
+  clipThumbBtnText: { fontSize: FontSize.sm, fontWeight: FontWeight.semibold, color: '#6c47ff', includeFontPadding: false },
+  thumbPreviewDot: {
+    width: 16, height: 16, borderRadius: 8, backgroundColor: Colors.emerald,
+    alignItems: 'center', justifyContent: 'center',
+  },
+  thumbRefreshBtn: {
+    position: 'absolute', top: 8, right: 8,
+    width: 28, height: 28, borderRadius: 14,
+    backgroundColor: 'rgba(0,0,0,0.65)', alignItems: 'center', justifyContent: 'center',
   },
 
   // Shared sheet styles
