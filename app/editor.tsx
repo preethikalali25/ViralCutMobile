@@ -430,11 +430,28 @@ export default function EditorScreen() {
     setWayinError(null);
   };
 
-  /** Apply clip metadata (title/caption/hashtags) without trimming */
-  const applyClipMeta = (clip: WayinClip) => {
-    if (clip.title) { setVideoTitle(clip.title); updateVideo(video.id, { title: clip.title }); }
+  /** Apply clip metadata (title/caption/hashtags) without trimming and persist to library */
+  const applyClipMeta = (clip: WayinClip, extraVideoFields?: Record<string, unknown>) => {
+    const newTitle = clip.title || videoTitle;
+    const newCaption = clip.description || caption;
+    const newHashtags = clip.hashtags?.length
+      ? clip.hashtags.map(h => h.startsWith('#') ? h : `#${h}`).join(' ')
+      : hashtags;
+
+    if (clip.title) setVideoTitle(clip.title);
     if (clip.description) setCaption(clip.description);
-    if (clip.hashtags?.length) setHashtags(clip.hashtags.map(h => h.startsWith('#') ? h : `#${h}`).join(' '));
+    if (clip.hashtags?.length) setHashtags(newHashtags);
+
+    // Persist everything to the video store so it appears in the library
+    updateVideo(video.id, {
+      title: newTitle,
+      caption: newCaption,
+      hashtags: newHashtags.split(/\s+/).filter(Boolean),
+      hook: { type: hookType, text: hookText },
+      platforms,
+      status: video.status === 'published' ? 'published' : 'ready',
+      ...extraVideoFields,
+    });
   };
 
   /** Open clip detail sheet */
@@ -453,7 +470,14 @@ export default function EditorScreen() {
     setShowClipDetailSheet(false);
     if (wayinPollRef.current) clearInterval(wayinPollRef.current!);
     setWayinPhase('idle');
-    showAlert('Applied!', 'Title, caption and hashtags updated from WayinVideo.');
+    showAlert(
+      'Saved to Library!',
+      'WayinVideo title, caption and hashtags applied. The video is ready in your library.',
+      [
+        { text: 'View Library', onPress: () => router.push('/(tabs)/library') },
+        { text: 'Keep Editing', style: 'cancel' },
+      ],
+    );
   };
 
   /** Headless trim to clip timestamps then apply meta */
@@ -484,8 +508,7 @@ export default function EditorScreen() {
         endTime: Math.round(clip.end * 1000),
       });
       const outputUri = result.outputPath.startsWith('file://') ? result.outputPath : `file://${result.outputPath}`;
-      updateVideo(video.id, { videoUri: outputUri });
-      applyClipMeta(clip);
+      applyClipMeta(clip, { videoUri: outputUri });
       setTrimPhase('done');
     } catch (e: any) {
       console.error('[trim] Error:', e);
@@ -1117,9 +1140,11 @@ export default function EditorScreen() {
                     setTrimPhase('idle');
                     setSelectedWayinClip(null);
                     setWayinPhase('idle');
+                    router.push('/(tabs)/library');
                   }}
                 >
-                  <Text style={styles.tiktokPublishBtnText}>Done — Ready to Publish</Text>
+                  <MaterialIcons name="video-library" size={18} color="#fff" />
+                  <Text style={styles.tiktokPublishBtnText}>View in Library</Text>
                 </Pressable>
               </View>
             ) : null}
