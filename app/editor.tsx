@@ -19,6 +19,7 @@ import { formatDuration } from '@/services/formatters';
 import { FunctionsHttpError } from '@supabase/supabase-js';
 import { useTikTok } from '@/hooks/useTikTok';
 import { uploadVideoToStorage } from '@/services/tiktokService';
+import { submitWayinTask, getWayinStatus, WayinClip } from '@/services/wayinVideoService';
 
 type Tab = 'hook' | 'caption' | 'audio' | 'platforms';
 
@@ -125,6 +126,14 @@ export default function EditorScreen() {
   const [tiktokPrivacy, setTiktokPrivacy] = useState('SELF_ONLY');
   const [uploadingToStorage, setUploadingToStorage] = useState(false);
   const [uploadProgress, setUploadProgress] = useState(0);
+
+  // WayinVideo state
+  const [wayinPhase, setWayinPhase] = useState<'idle' | 'uploading' | 'analyzing' | 'done' | 'error'>('idle');
+  const [wayinTaskId, setWayinTaskId] = useState<string | null>(null);
+  const [wayinClips, setWayinClips] = useState<WayinClip[]>([]);
+  const [wayinError, setWayinError] = useState<string | null>(null);
+  const [showWayinSheet, setShowWayinSheet] = useState(false);
+  const wayinPollRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const frameCache = useRef<{ base64: string; mime: string } | null | 'pending'>('pending');
   const tiktok = useTikTok();
 
@@ -349,6 +358,94 @@ export default function EditorScreen() {
       },
       { text: 'Cancel', style: 'cancel' },
     ]);
+  };
+
+  // ── WayinVideo Analysis ────────────────────────────────────────────────────
+  const handleWayinAnalyze = async () => {
+    let videoUrl = video?.videoUri ?? '';
+    if (!videoUrl) {
+      showAlert('No Video', 'Upload a video first before analyzing.');
+      return;
+    }
+
+    setWayinError(null);
+    setWayinClips([]);
+    setWayinTaskId(null);
+    setShowWayinSheet(true);
+
+    // Upload to storage if local file
+    if (videoUrl.startsWith('file://') || videoUrl.startsWith('ph://')) {
+      setWayinPhase('uploading');
+      const { publicUrl, error: uploadErr } = await uploadVideoToStorage(
+        videoUrl,
+        user?.id ?? 'unknown',
+        video.id,
+        () => {},
+      );
+      if (uploadErr || !publicUrl) {
+        setWayinPhase('error');
+        setWayinError(uploadErr ?? 'Failed to upload video for analysis.');
+        return;
+      }
+      videoUrl = publicUrl;
+      updateVideo(video.id, { videoUri: publicUrl });
+    }
+
+    setWayinPhase('analyzing');
+    const { taskId, error: submitErr } = await submitWayinTask(videoUrl, videoTitle || video.title || 'ViralCut Video');
+    if (submitErr || !taskId) {
+      setWayinPhase('error');
+      setWayinError(submitErr ?? 'Failed to submit video to WayinVideo.');
+      return;
+    }
+
+    setWayinTaskId(taskId);
+
+    // Poll for results
+    if (wayinPollRef.current) clearInterval(wayinPollRef.current);
+    let attempts = 0;
+    const MAX_ATTEMPTS = 30; // 30 × 6s = 3 minutes
+
+    wayinPollRef.current = setInterval(async () => {
+      attempts++;
+      if (attempts > MAX_ATTEMPTS) {
+        clearInterval(wayinPollRef.current!);
+        setWayinPhase('error');
+        setWayinError('Analysis timed out. Please try again.');
+        return;
+      }
+
+      const result = await getWayinStatus(taskId);
+      if (result.error) return; // transient — keep polling
+
+      if (result.status === 'SUCCEEDED' || (result.status === 'ONGOING' && result.clips.length > 0)) {
+        if (result.status === 'SUCCEEDED') {
+          clearInterval(wayinPollRef.current!);
+          setWayinPhase('done');
+        }
+        setWayinClips(result.clips);
+      } else if (result.status === 'FAILED') {
+        clearInterval(wayinPollRef.current!);
+        setWayinPhase('error');
+        setWayinError('WayinVideo analysis failed. Please try again.');
+      }
+    }, 6000);
+  };
+
+  const applyWayinClip = (clip: WayinClip) => {
+    if (clip.title) { setVideoTitle(clip.title); updateVideo(video.id, { title: clip.title }); }
+    if (clip.description) setCaption(clip.description);
+    if (clip.hashtags?.length) setHashtags(clip.hashtags.map(h => h.startsWith('#') ? h : `#${h}`).join(' '));
+    setShowWayinSheet(false);
+    if (wayinPollRef.current) clearInterval(wayinPollRef.current!);
+    setWayinPhase('idle');
+  };
+
+  const closeWayinSheet = () => {
+    if (wayinPollRef.current) clearInterval(wayinPollRef.current!);
+    setShowWayinSheet(false);
+    setWayinPhase('idle');
+    setWayinError(null);
   };
 
   const handleTikTokPublish = async () => {
@@ -707,6 +804,33 @@ export default function EditorScreen() {
             ) : null}
           </View>
 
+          {/* WayinVideo AI Analyze Button */}
+          <View style={styles.wayinRow}>
+            <Pressable
+              style={({ pressed }) => [
+                styles.wayinBtn,
+                pressed && { opacity: 0.85 },
+                wayinPhase === 'uploading' || wayinPhase === 'analyzing' ? styles.wayinBtnLoading : null,
+              ]}
+              onPress={handleWayinAnalyze}
+              disabled={wayinPhase === 'uploading' || wayinPhase === 'analyzing'}
+            >
+              {wayinPhase === 'uploading' || wayinPhase === 'analyzing' ? (
+                <>
+                  <ActivityIndicator size="small" color="#fff" />
+                  <Text style={styles.wayinBtnText}>
+                    {wayinPhase === 'uploading' ? 'Uploading video...' : 'WayinVideo analyzing...'}
+                  </Text>
+                </>
+              ) : (
+                <>
+                  <MaterialCommunityIcons name="lightning-bolt" size={18} color="#fff" />
+                  <Text style={styles.wayinBtnText}>Analyze with WayinVideo AI</Text>
+                </>
+              )}
+            </Pressable>
+          </View>
+
           {/* Actions */}
           <View style={styles.actions}>
             <Pressable
@@ -728,6 +852,117 @@ export default function EditorScreen() {
           <View style={{ height: Spacing.xl }} />
         </ScrollView>
       </KeyboardAvoidingView>
+
+      {/* ── WayinVideo Results Sheet ── */}
+      <Modal
+        visible={showWayinSheet}
+        animationType="slide"
+        transparent
+        onRequestClose={closeWayinSheet}
+      >
+        <View style={styles.sheetOverlay}>
+          <Pressable
+            style={StyleSheet.absoluteFillObject}
+            onPress={() => { if (wayinPhase !== 'uploading' && wayinPhase !== 'analyzing') closeWayinSheet(); }}
+          />
+          <View style={[styles.tiktokSheet, { maxHeight: '85%' }]}>
+            <View style={styles.sheetHandle} />
+
+            {/* Header */}
+            <View style={styles.sheetHeader}>
+              <View style={[styles.sheetIcon, { backgroundColor: '#6c47ff' }]}>
+                <MaterialCommunityIcons name="lightning-bolt" size={22} color="#fff" />
+              </View>
+              <View style={{ flex: 1 }}>
+                <Text style={styles.sheetTitle}>WayinVideo AI</Text>
+                <Text style={styles.sheetSub}>Viral clip analysis</Text>
+              </View>
+              {wayinPhase !== 'uploading' && wayinPhase !== 'analyzing' ? (
+                <Pressable onPress={closeWayinSheet} hitSlop={8}>
+                  <MaterialIcons name="close" size={20} color={Colors.textMuted} />
+                </Pressable>
+              ) : null}
+            </View>
+
+            {/* Uploading / Analyzing */}
+            {wayinPhase === 'uploading' || wayinPhase === 'analyzing' ? (
+              <View style={styles.sheetPhase}>
+                <ActivityIndicator size="large" color="#6c47ff" />
+                <Text style={styles.sheetPhaseTitle}>
+                  {wayinPhase === 'uploading' ? 'Uploading video...' : 'Analyzing your video...'}
+                </Text>
+                <Text style={styles.sheetPhaseSub}>
+                  {wayinPhase === 'uploading'
+                    ? 'Preparing your video for WayinVideo analysis.'
+                    : 'WayinVideo AI is detecting viral moments, generating hooks, captions, and hashtags. This may take up to a minute.'}
+                </Text>
+              </View>
+            ) : null}
+
+            {/* Results */}
+            {wayinPhase === 'done' || (wayinPhase === 'analyzing' && wayinClips.length > 0) ? (
+              <ScrollView showsVerticalScrollIndicator={false} style={{ maxHeight: 480 }}>
+                {wayinPhase === 'done' ? (
+                  <View style={styles.wayinSuccessBanner}>
+                    <MaterialIcons name="check-circle" size={16} color={Colors.emerald} />
+                    <Text style={styles.wayinSuccessText}>
+                      {wayinClips.length} viral clip{wayinClips.length !== 1 ? 's' : ''} found — tap one to apply
+                    </Text>
+                  </View>
+                ) : null}
+                {wayinClips.map((clip, idx) => (
+                  <Pressable
+                    key={idx}
+                    style={({ pressed }) => [styles.wayinClipCard, pressed && { opacity: 0.85 }]}
+                    onPress={() => applyWayinClip(clip)}
+                  >
+                    <View style={styles.wayinClipHeader}>
+                      <View style={styles.wayinRankBadge}>
+                        <Text style={styles.wayinRankText}>#{idx + 1}</Text>
+                      </View>
+                      {clip.virality_score > 0 ? (
+                        <View style={styles.wayinScoreBadge}>
+                          <MaterialIcons name="trending-up" size={11} color="#6c47ff" />
+                          <Text style={styles.wayinScoreText}>{Math.round(clip.virality_score * 100)}% viral</Text>
+                        </View>
+                      ) : null}
+                      <MaterialIcons name="add-circle-outline" size={20} color="#6c47ff" style={{ marginLeft: 'auto' }} />
+                    </View>
+                    <Text style={styles.wayinClipTitle} numberOfLines={2}>{clip.title}</Text>
+                    {clip.description ? (
+                      <Text style={styles.wayinClipDesc} numberOfLines={3}>{clip.description}</Text>
+                    ) : null}
+                    {clip.hashtags?.length > 0 ? (
+                      <Text style={styles.wayinClipTags} numberOfLines={2}>
+                        {clip.hashtags.slice(0, 6).map(h => h.startsWith('#') ? h : `#${h}`).join(' ')}
+                      </Text>
+                    ) : null}
+                    <View style={styles.wayinApplyRow}>
+                      <MaterialCommunityIcons name="auto-fix" size={12} color="#6c47ff" />
+                      <Text style={styles.wayinApplyText}>Tap to apply title, caption & hashtags</Text>
+                    </View>
+                  </Pressable>
+                ))}
+              </ScrollView>
+            ) : null}
+
+            {/* Error */}
+            {wayinPhase === 'error' ? (
+              <View style={styles.sheetPhase}>
+                <MaterialIcons name="error-outline" size={52} color={Colors.error} />
+                <Text style={styles.sheetPhaseTitle}>Analysis Failed</Text>
+                <Text style={styles.sheetPhaseSub}>{wayinError}</Text>
+                <Pressable
+                  style={[styles.tiktokPublishBtn, { marginTop: Spacing.md, backgroundColor: '#6c47ff' }]}
+                  onPress={() => { closeWayinSheet(); handleWayinAnalyze(); }}
+                >
+                  <Text style={styles.tiktokPublishBtnText}>Try Again</Text>
+                </Pressable>
+              </View>
+            ) : null}
+          </View>
+        </View>
+      </Modal>
 
       {/* ── TikTok Publish Sheet ── */}
       <Modal
@@ -1092,6 +1327,45 @@ const styles = StyleSheet.create({
     height: '100%', borderRadius: 3,
     backgroundColor: Colors.primaryLight,
   },
+
+  // WayinVideo button
+  wayinRow: { paddingHorizontal: Spacing.md, paddingTop: Spacing.sm },
+  wayinBtn: {
+    flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8,
+    backgroundColor: '#6c47ff', borderRadius: Radius.full, paddingVertical: 13,
+    minHeight: 46,
+  },
+  wayinBtnLoading: { opacity: 0.75 },
+  wayinBtnText: { fontSize: FontSize.sm, fontWeight: FontWeight.bold, color: '#fff', includeFontPadding: false },
+
+  // WayinVideo sheet
+  wayinSuccessBanner: {
+    flexDirection: 'row', alignItems: 'center', gap: 6,
+    backgroundColor: Colors.emerald + '18', borderRadius: Radius.md,
+    paddingHorizontal: Spacing.sm, paddingVertical: 8, marginBottom: Spacing.sm,
+  },
+  wayinSuccessText: { fontSize: FontSize.sm, color: Colors.emerald, fontWeight: FontWeight.semibold, includeFontPadding: false },
+  wayinClipCard: {
+    backgroundColor: Colors.surfaceElevated, borderRadius: Radius.lg,
+    padding: Spacing.md, marginBottom: Spacing.sm, borderWidth: 1.5, borderColor: '#6c47ff33',
+    gap: Spacing.xs,
+  },
+  wayinClipHeader: { flexDirection: 'row', alignItems: 'center', gap: 6, marginBottom: 4 },
+  wayinRankBadge: {
+    backgroundColor: '#6c47ff', borderRadius: Radius.full,
+    paddingHorizontal: 7, paddingVertical: 2,
+  },
+  wayinRankText: { fontSize: 10, fontWeight: FontWeight.bold, color: '#fff', includeFontPadding: false },
+  wayinScoreBadge: {
+    flexDirection: 'row', alignItems: 'center', gap: 2,
+    backgroundColor: '#6c47ff22', borderRadius: Radius.full, paddingHorizontal: 6, paddingVertical: 2,
+  },
+  wayinScoreText: { fontSize: 10, color: '#6c47ff', fontWeight: FontWeight.bold, includeFontPadding: false },
+  wayinClipTitle: { fontSize: FontSize.md, fontWeight: FontWeight.bold, color: Colors.textPrimary, includeFontPadding: false },
+  wayinClipDesc: { fontSize: FontSize.sm, color: Colors.textSecondary, lineHeight: 18, includeFontPadding: false },
+  wayinClipTags: { fontSize: FontSize.xs, color: '#6c47ff', fontWeight: FontWeight.medium, includeFontPadding: false },
+  wayinApplyRow: { flexDirection: 'row', alignItems: 'center', gap: 4, marginTop: 2 },
+  wayinApplyText: { fontSize: FontSize.xs, color: '#6c47ff', fontWeight: FontWeight.semibold, includeFontPadding: false },
   // TikTok sheet
   sheetOverlay: { flex: 1, justifyContent: 'flex-end', backgroundColor: 'rgba(0,0,0,0.6)' },
   tiktokSheet: {
