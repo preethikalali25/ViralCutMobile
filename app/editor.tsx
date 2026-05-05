@@ -42,7 +42,7 @@ const HOOK_TYPES: { type: HookType; label: string; desc: string; icon: string }[
 
 const ALL_PLATFORMS: PlatformType[] = ['tiktok', 'reels', 'youtube'];
 
-/** Safely extract a video frame — tries multiple seek positions to avoid dark/black frames */
+/** Safely extract a video frame for audio AI analysis only */
 async function extractVideoFrame(videoUri: string): Promise<{ base64: string; mime: string } | null> {
   try {
     const VideoThumbnails = await import('expo-video-thumbnails');
@@ -122,11 +122,14 @@ export default function EditorScreen() {
   const [selectedAudioId, setSelectedAudioId] = useState('');
   const [platforms, setPlatforms] = useState<PlatformType[]>(['tiktok']);
   const hookSaveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  // Hook/caption generation state (now via WayinVideo)
   const [generatingHook, setGeneratingHook] = useState(false);
   const [generatingCaption, setGeneratingCaption] = useState(false);
   const [generatingAudio, setGeneratingAudio] = useState(false);
   const [aiPickedSong, setAiPickedSong] = useState<AISuggestedAudio | null>(null);
   const [autoGenDone, setAutoGenDone] = useState(false);
+
   const [showPlayer, setShowPlayer] = useState(false);
   const [videoTitle, setVideoTitle] = useState('');
   const [generatingTitle, setGeneratingTitle] = useState(false);
@@ -140,6 +143,8 @@ export default function EditorScreen() {
   const [wayinClips, setWayinClips] = useState<WayinClip[]>([]);
   const [wayinError, setWayinError] = useState<string | null>(null);
   const [showWayinSheet, setShowWayinSheet] = useState(false);
+  // Which field triggered the current WayinVideo run
+  const [wayinTarget, setWayinTarget] = useState<'hook' | 'caption' | 'both' | 'browse'>('both');
 
   // Clip detail + trim state
   const [selectedWayinClip, setSelectedWayinClip] = useState<WayinClip | null>(null);
@@ -148,10 +153,11 @@ export default function EditorScreen() {
   const [trimError, setTrimError] = useState<string | null>(null);
 
   const wayinPollRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  // Cache for WayinVideo public URL (to avoid re-uploading)
+  const wayinPublicUrlRef = useRef<string | null>(null);
   const frameCache = useRef<{ base64: string; mime: string } | null | 'pending'>('pending');
   const tiktok = useTikTok();
 
-  // useVideoPlayer MUST be called unconditionally — use empty string when no URI
   const videoPlayer = useVideoPlayer(
     { uri: video?.videoUri ?? '' },
     player => { if (player) player.loop = false; }
@@ -169,7 +175,7 @@ export default function EditorScreen() {
     setPlatforms(video.platforms ?? ['tiktok']);
   }, [video?.id]);
 
-  // Auto-generate on first open when video has no hook/caption/audio
+  // ── Auto-generate on first open using WayinVideo for hook/caption, Gemini for audio ──
   useEffect(() => {
     if (!video || autoGenDone) return;
     const needsHook = !(video.hook?.text?.trim());
@@ -179,63 +185,156 @@ export default function EditorScreen() {
     setAutoGenDone(true);
 
     const runAll = async () => {
-      if (frameCache.current === 'pending') {
-        frameCache.current = video.videoUri ? await extractVideoFrame(video.videoUri) : null;
-      }
-      const frame = frameCache.current !== 'pending' ? frameCache.current : null;
-      const framePayload = frame ? { videoFrameBase64: frame.base64, videoFrameMime: frame.mime } : {};
-      const currentPlatforms = video.platforms ?? ['tiktok'];
-      const cleanedTitle = cleanTitle(video.title);
-      const jobs: Promise<void>[] = [];
-
-      if (needsHook) {
-        jobs.push((async () => {
-          setGeneratingHook(true);
-          const { data, error } = await callAIGenerator('hook', {
-            videoTitle: cleanedTitle, hookType: video.hook?.type ?? 'question',
-            platforms: currentPlatforms, ...framePayload,
-          });
-          setGeneratingHook(false);
-          if (!error && data?.result) {
-            setHookText(data.result);
-            updateVideo(video.id, { hook: { type: video.hook?.type ?? 'question', text: data.result } });
-          }
-        })());
+      // WayinVideo handles hook + caption
+      if (needsHook || needsCaption) {
+        const target = needsHook && needsCaption ? 'both' : needsHook ? 'hook' : 'caption';
+        setWayinTarget(target);
+        // Run silently without showing sheet — just populate fields
+        await runWayinAnalysisInternal({
+          target,
+          silent: true,
+          onHook: (text) => {
+            setHookText(text);
+            updateVideo(video.id, { hook: { type: video.hook?.type ?? 'question', text } });
+          },
+          onCaption: (cap, tags) => {
+            if (cap) setCaption(cap);
+            if (tags) setHashtags(tags);
+          },
+        });
       }
 
-      if (needsCaption) {
-        jobs.push((async () => {
-          setGeneratingCaption(true);
-          const { data, error } = await callAIGenerator('caption', {
-            videoTitle: cleanedTitle, platforms: currentPlatforms, ...framePayload,
-          });
-          setGeneratingCaption(false);
-          if (!error && data?.result) {
-            if (data.result.caption) setCaption(data.result.caption);
-            if (data.result.hashtags) setHashtags(data.result.hashtags);
-          }
-        })());
-      }
-
+      // Gemini still handles audio
       if (needsAudio) {
-        jobs.push((async () => {
-          setGeneratingAudio(true);
-          const { data, error } = await callAIGenerator('audio', {
-            videoTitle: cleanedTitle, platforms: currentPlatforms, ...framePayload,
-          });
-          setGeneratingAudio(false);
-          if (!error && data?.result?.id) {
-            setAiPickedSong(data.result);
-            setSelectedAudioId(data.result.id);
-          }
-        })());
+        if (frameCache.current === 'pending') {
+          frameCache.current = video.videoUri ? await extractVideoFrame(video.videoUri) : null;
+        }
+        const frame = frameCache.current !== 'pending' ? frameCache.current : null;
+        const framePayload = frame ? { videoFrameBase64: frame.base64, videoFrameMime: frame.mime } : {};
+        setGeneratingAudio(true);
+        const { data, error } = await callAIGenerator('audio', {
+          videoTitle: cleanTitle(video.title), platforms: video.platforms ?? ['tiktok'], ...framePayload,
+        });
+        setGeneratingAudio(false);
+        if (!error && data?.result?.id) {
+          setAiPickedSong(data.result);
+          setSelectedAudioId(data.result.id);
+        }
       }
-
-      await Promise.all(jobs);
     };
 
     runAll();
   }, [video?.id]);
+
+  // ── Core WayinVideo analysis engine ──────────────────────────────────────────
+  /**
+   * Internal: runs upload → submit → poll without touching sheet UI.
+   * Callbacks fire when results arrive.
+   */
+  const runWayinAnalysisInternal = useCallback(async (opts: {
+    target: 'hook' | 'caption' | 'both' | 'browse';
+    silent?: boolean;
+    onHook?: (text: string) => void;
+    onCaption?: (caption: string, hashtags: string) => void;
+    onClips?: (clips: WayinClip[]) => void;
+  }) => {
+    if (!video) return { error: 'No video' };
+
+    let videoUrl = video.videoUri ?? '';
+    if (!videoUrl) return { error: 'No video URI' };
+
+    // Step 1: Ensure public HTTPS URL (use cache if available)
+    if (videoUrl.startsWith('file://') || videoUrl.startsWith('ph://')) {
+      if (wayinPublicUrlRef.current) {
+        videoUrl = wayinPublicUrlRef.current;
+      } else {
+        if (!opts.silent) setWayinPhase('uploading');
+        const { publicUrl, error: uploadErr } = await uploadVideoToStorage(
+          videoUrl, user?.id ?? 'unknown', video.id, () => {},
+        );
+        if (uploadErr || !publicUrl) {
+          if (!opts.silent) { setWayinPhase('error'); setWayinError(uploadErr ?? 'Upload failed.'); }
+          return { error: uploadErr ?? 'Upload failed.' };
+        }
+        videoUrl = publicUrl;
+        wayinPublicUrlRef.current = publicUrl;
+        updateVideo(video.id, { videoUri: publicUrl });
+      }
+    } else {
+      wayinPublicUrlRef.current = videoUrl;
+    }
+
+    // Step 2: Upload to WayinVideo (pre-signed)
+    if (!opts.silent) setWayinPhase('uploading');
+    const fileName = videoUrl.split('/').pop()?.split('?')[0] ?? 'video.mp4';
+    const { identity, error: wayinUpErr } = await uploadToWayin(videoUrl, fileName);
+    if (wayinUpErr || !identity) {
+      if (!opts.silent) { setWayinPhase('error'); setWayinError(wayinUpErr ?? 'WayinVideo upload failed.'); }
+      return { error: wayinUpErr ?? 'WayinVideo upload failed.' };
+    }
+
+    // Step 3: Submit task
+    if (!opts.silent) setWayinPhase('analyzing');
+    const { taskId, error: submitErr } = await submitWayinTask(identity, videoTitle || video.title || 'ViralCut Video');
+    if (submitErr || !taskId) {
+      if (!opts.silent) { setWayinPhase('error'); setWayinError(submitErr ?? 'Submit failed.'); }
+      return { error: submitErr ?? 'Submit failed.' };
+    }
+
+    // Step 4: Poll
+    return new Promise<{ clips?: WayinClip[]; error?: string }>((resolve) => {
+      if (wayinPollRef.current) clearInterval(wayinPollRef.current);
+      let attempts = 0;
+      const MAX_ATTEMPTS = 30;
+      let appliedOnce = false;
+
+      wayinPollRef.current = setInterval(async () => {
+        attempts++;
+        if (attempts > MAX_ATTEMPTS) {
+          clearInterval(wayinPollRef.current!);
+          const msg = 'Analysis timed out. Please try again.';
+          if (!opts.silent) { setWayinPhase('error'); setWayinError(msg); }
+          resolve({ error: msg });
+          return;
+        }
+
+        const result = await getWayinStatus(taskId);
+        if (result.error) return;
+
+        if (result.clips.length > 0) {
+          if (!opts.silent) setWayinClips(result.clips);
+          opts.onClips?.(result.clips);
+
+          // Apply best clip immediately on first results
+          if (!appliedOnce && result.clips.length > 0) {
+            appliedOnce = true;
+            const best = result.clips[0];
+            const target = opts.target;
+            if ((target === 'hook' || target === 'both') && best.title) {
+              opts.onHook?.(best.title);
+            }
+            if ((target === 'caption' || target === 'both') && best.description) {
+              const tags = best.hashtags?.length
+                ? best.hashtags.map(h => h.startsWith('#') ? h : `#${h}`).join(' ')
+                : '';
+              opts.onCaption?.(best.description, tags);
+            }
+          }
+        }
+
+        if (result.status === 'SUCCEEDED') {
+          clearInterval(wayinPollRef.current!);
+          if (!opts.silent) setWayinPhase('done');
+          resolve({ clips: result.clips });
+        } else if (result.status === 'FAILED') {
+          clearInterval(wayinPollRef.current!);
+          const msg = 'WayinVideo analysis failed. Please try again.';
+          if (!opts.silent) { setWayinPhase('error'); setWayinError(msg); }
+          resolve({ error: msg });
+        }
+      }, 6000);
+    });
+  }, [video, user, videoTitle, updateVideo]);
 
   // ── Early return for missing video — AFTER all hooks ──
   if (!video) {
@@ -250,20 +349,75 @@ export default function EditorScreen() {
     );
   }
 
-  const handleGenerateTitle = useCallback(async () => {
-    setGeneratingTitle(true);
-    const framePayload = await ensureFrame();
-    const { data, error } = await callAIGenerator('title', {
-      videoTitle: cleanTitle(video?.title ?? ''), ...framePayload,
-    });
-    setGeneratingTitle(false);
-    if (error) { showAlert('AI Error', error); return; }
-    if (data?.result) {
-      setVideoTitle(data.result);
-      if (video) updateVideo(video.id, { title: data.result });
+  // ── Generate Hook (via WayinVideo) ──────────────────────────────────────────
+  const handleGenerateHook = async () => {
+    // If we already have clips cached, apply instantly
+    if (wayinClips.length > 0) {
+      const best = wayinClips[0];
+      if (best.title) {
+        setHookText(best.title);
+        updateVideo(video.id, { hook: { type: hookType, text: best.title } });
+      }
+      // Show sheet so user can browse other clips
+      setWayinTarget('hook');
+      setShowWayinSheet(true);
+      return;
     }
-  }, [video, showAlert]);
 
+    setGeneratingHook(true);
+    setWayinTarget('hook');
+    setWayinError(null);
+    setWayinClips([]);
+
+    await runWayinAnalysisInternal({
+      target: 'hook',
+      silent: false,
+      onHook: (text) => {
+        setHookText(text);
+        updateVideo(video.id, { hook: { type: hookType, text } });
+      },
+      onClips: () => {}, // clips set internally
+    });
+
+    setGeneratingHook(false);
+
+    // Show the clip browser if we got results
+    if (wayinClips.length > 0) setShowWayinSheet(true);
+  };
+
+  // ── Generate Caption (via WayinVideo) ───────────────────────────────────────
+  const handleGenerateCaption = async () => {
+    if (wayinClips.length > 0) {
+      const best = wayinClips[0];
+      if (best.description) setCaption(best.description);
+      if (best.hashtags?.length) {
+        setHashtags(best.hashtags.map(h => h.startsWith('#') ? h : `#${h}`).join(' '));
+      }
+      setWayinTarget('caption');
+      setShowWayinSheet(true);
+      return;
+    }
+
+    setGeneratingCaption(true);
+    setWayinTarget('caption');
+    setWayinError(null);
+    setWayinClips([]);
+
+    await runWayinAnalysisInternal({
+      target: 'caption',
+      silent: false,
+      onCaption: (cap, tags) => {
+        if (cap) setCaption(cap);
+        if (tags) setHashtags(tags);
+      },
+      onClips: () => {},
+    });
+
+    setGeneratingCaption(false);
+    if (wayinClips.length > 0) setShowWayinSheet(true);
+  };
+
+  // ── Generate Audio (Gemini) ──────────────────────────────────────────────────
   const ensureFrame = useCallback(async () => {
     if (frameCache.current === 'pending') {
       frameCache.current = video.videoUri ? await extractVideoFrame(video.videoUri) : null;
@@ -271,34 +425,6 @@ export default function EditorScreen() {
     const frame = frameCache.current !== 'pending' ? frameCache.current : null;
     return frame ? { videoFrameBase64: frame.base64, videoFrameMime: frame.mime } : {};
   }, [video.videoUri]);
-
-  const handleGenerateHook = useCallback(async () => {
-    setGeneratingHook(true);
-    const framePayload = await ensureFrame();
-    const { data, error } = await callAIGenerator('hook', {
-      videoTitle: cleanTitle(video.title), hookType, platforms, ...framePayload,
-    });
-    setGeneratingHook(false);
-    if (error) { showAlert('AI Error', error); return; }
-    if (data?.result) {
-      setHookText(data.result);
-      updateVideo(video.id, { hook: { type: hookType, text: data.result } });
-    }
-  }, [video.title, video.id, hookType, platforms, showAlert, ensureFrame, updateVideo]);
-
-  const handleGenerateCaption = useCallback(async () => {
-    setGeneratingCaption(true);
-    const framePayload = await ensureFrame();
-    const { data, error } = await callAIGenerator('caption', {
-      videoTitle: cleanTitle(video.title), platforms, ...framePayload,
-    });
-    setGeneratingCaption(false);
-    if (error) { showAlert('AI Error', error); return; }
-    if (data?.result) {
-      if (data.result.caption) setCaption(data.result.caption);
-      if (data.result.hashtags) setHashtags(data.result.hashtags);
-    }
-  }, [video.title, platforms, showAlert, ensureFrame]);
 
   const handleGenerateAudio = useCallback(async () => {
     setGeneratingAudio(true);
@@ -311,6 +437,47 @@ export default function EditorScreen() {
     const song = data?.result;
     if (song && song.id) { setAiPickedSong(song); setSelectedAudioId(song.id); }
   }, [video.title, platforms, showAlert, ensureFrame]);
+
+  const handleGenerateTitle = useCallback(async () => {
+    setGeneratingTitle(true);
+    const framePayload = await ensureFrame();
+    const { data, error } = await callAIGenerator('title', {
+      videoTitle: cleanTitle(video?.title ?? ''), ...framePayload,
+    });
+    setGeneratingTitle(false);
+    if (error) { showAlert('AI Error', error); return; }
+    if (data?.result) {
+      setVideoTitle(data.result);
+      if (video) updateVideo(video.id, { title: data.result });
+    }
+  }, [video, showAlert, ensureFrame, updateVideo]);
+
+  // ── Browse all clips (manual button) ────────────────────────────────────────
+  const handleBrowseClips = async () => {
+    if (wayinClips.length > 0) {
+      setWayinTarget('browse');
+      setShowWayinSheet(true);
+      return;
+    }
+    setWayinTarget('browse');
+    setWayinError(null);
+    setWayinClips([]);
+    setShowWayinSheet(true);
+    setWayinPhase('uploading');
+
+    await runWayinAnalysisInternal({
+      target: 'browse',
+      silent: false,
+      onClips: () => {},
+    });
+  };
+
+  const closeWayinSheet = () => {
+    if (wayinPollRef.current) clearInterval(wayinPollRef.current!);
+    setShowWayinSheet(false);
+    setWayinPhase('idle');
+    setWayinError(null);
+  };
 
   const snapshotEditorState = () => {
     const audioSource = aiPickedSong && selectedAudioId === aiPickedSong.id
@@ -362,82 +529,7 @@ export default function EditorScreen() {
     ]);
   };
 
-  // ── WayinVideo Analysis ────────────────────────────────────────────────────
-  const handleWayinAnalyze = async () => {
-    let videoUrl = video?.videoUri ?? '';
-    if (!videoUrl) { showAlert('No Video', 'Upload a video first before analyzing.'); return; }
-
-    setWayinError(null);
-    setWayinClips([]);
-    setShowWayinSheet(true);
-    setWayinPhase('uploading');
-
-    // Step 1: Ensure we have a public HTTPS URL (upload local files to Supabase storage first)
-    if (videoUrl.startsWith('file://') || videoUrl.startsWith('ph://')) {
-      const { publicUrl, error: uploadErr } = await uploadVideoToStorage(
-        videoUrl, user?.id ?? 'unknown', video.id, () => {},
-      );
-      if (uploadErr || !publicUrl) {
-        setWayinPhase('error');
-        setWayinError(uploadErr ?? 'Failed to upload video for analysis.');
-        return;
-      }
-      videoUrl = publicUrl;
-      updateVideo(video.id, { videoUri: publicUrl });
-    }
-
-    // Step 2: Upload the video to WayinVideo via their pre-signed upload API
-    // WayinVideo only accepts files uploaded via their own API or URLs from known platforms
-    const fileName = videoUrl.split('/').pop()?.split('?')[0] ?? 'video.mp4';
-    const { identity, error: wayinUploadErr } = await uploadToWayin(videoUrl, fileName);
-    if (wayinUploadErr || !identity) {
-      setWayinPhase('error');
-      setWayinError(wayinUploadErr ?? 'Failed to upload video to WayinVideo.');
-      return;
-    }
-
-    // Step 3: Submit clip analysis task using the WayinVideo identity
-    setWayinPhase('analyzing');
-    const { taskId, error: submitErr } = await submitWayinTask(identity, videoTitle || video.title || 'ViralCut Video');
-    if (submitErr || !taskId) {
-      setWayinPhase('error');
-      setWayinError(submitErr ?? 'Failed to submit video to WayinVideo.');
-      return;
-    }
-
-    if (wayinPollRef.current) clearInterval(wayinPollRef.current);
-    let attempts = 0;
-    const MAX_ATTEMPTS = 30;
-
-    wayinPollRef.current = setInterval(async () => {
-      attempts++;
-      if (attempts > MAX_ATTEMPTS) {
-        clearInterval(wayinPollRef.current!);
-        setWayinPhase('error');
-        setWayinError('Analysis timed out. Please try again.');
-        return;
-      }
-      const result = await getWayinStatus(taskId);
-      if (result.error) return;
-      if (result.status === 'SUCCEEDED' || (result.status === 'ONGOING' && result.clips.length > 0)) {
-        if (result.status === 'SUCCEEDED') { clearInterval(wayinPollRef.current!); setWayinPhase('done'); }
-        setWayinClips(result.clips);
-      } else if (result.status === 'FAILED') {
-        clearInterval(wayinPollRef.current!);
-        setWayinPhase('error');
-        setWayinError('WayinVideo analysis failed. Please try again.');
-      }
-    }, 6000);
-  };
-
-  const closeWayinSheet = () => {
-    if (wayinPollRef.current) clearInterval(wayinPollRef.current!);
-    setShowWayinSheet(false);
-    setWayinPhase('idle');
-    setWayinError(null);
-  };
-
-  /** Apply clip metadata (title/caption/hashtags) without trimming and persist to library */
+  /** Apply clip metadata to editor and persist to library */
   const applyClipMeta = (clip: WayinClip, extraVideoFields?: Record<string, unknown>) => {
     const newTitle = clip.title || videoTitle;
     const newCaption = clip.description || caption;
@@ -445,16 +537,18 @@ export default function EditorScreen() {
       ? clip.hashtags.map(h => h.startsWith('#') ? h : `#${h}`).join(' ')
       : hashtags;
 
-    if (clip.title) setVideoTitle(clip.title);
+    if (clip.title) {
+      setHookText(clip.title);
+      setVideoTitle(clip.title);
+    }
     if (clip.description) setCaption(clip.description);
     if (clip.hashtags?.length) setHashtags(newHashtags);
 
-    // Persist everything to the video store so it appears in the library
     updateVideo(video.id, {
       title: newTitle,
       caption: newCaption,
       hashtags: newHashtags.split(/\s+/).filter(Boolean),
-      hook: { type: hookType, text: hookText },
+      hook: { type: hookType, text: clip.title || hookText },
       platforms,
       status: video.status === 'published' ? 'published' : 'ready',
       ...extraVideoFields,
@@ -479,7 +573,7 @@ export default function EditorScreen() {
     setWayinPhase('idle');
     showAlert(
       'Saved to Library!',
-      'WayinVideo title, caption and hashtags applied. The video is ready in your library.',
+      'WayinVideo hook, caption and hashtags applied.',
       [
         { text: 'View Library', onPress: () => router.push('/(tabs)/library') },
         { text: 'Keep Editing', style: 'cancel' },
@@ -496,7 +590,7 @@ export default function EditorScreen() {
     if (!videoUri.startsWith('file://') && !videoUri.startsWith('ph://')) {
       showAlert(
         'Trimming Unavailable',
-        'The video was already uploaded to cloud storage. Trimming requires the original local file. Apply content only instead.',
+        'The video was already uploaded to cloud storage. Trimming requires the original local file.',
         [
           { text: 'Apply Content Only', onPress: applyWayinClipOnly },
           { text: 'Cancel', style: 'cancel' },
@@ -529,14 +623,12 @@ export default function EditorScreen() {
     setTrimPhase('idle');
     setTrimError(null);
     setSelectedWayinClip(null);
-    // Re-open clip list if results are available
     if (wayinClips.length > 0) setShowWayinSheet(true);
   };
 
   const handleTikTokPublish = async () => {
     const snap = snapshotEditorState();
     let videoUrl = video?.videoUri ?? '';
-
     if (!videoUrl) { showAlert('No Video File', 'Select a video before publishing to TikTok.'); return; }
 
     if (videoUrl.startsWith('file://') || videoUrl.startsWith('ph://')) {
@@ -572,6 +664,7 @@ export default function EditorScreen() {
   ];
 
   const selectedClipIdx = selectedWayinClip ? wayinClips.indexOf(selectedWayinClip) : -1;
+  const isWayinRunning = wayinPhase === 'uploading' || wayinPhase === 'analyzing';
 
   return (
     <SafeAreaView style={styles.safe} edges={['top']}>
@@ -638,6 +731,17 @@ export default function EditorScreen() {
             </View>
           </View>
 
+          {/* WayinVideo clips available banner */}
+          {wayinClips.length > 0 ? (
+            <Pressable style={styles.clipsBanner} onPress={handleBrowseClips}>
+              <MaterialCommunityIcons name="lightning-bolt" size={14} color="#6c47ff" />
+              <Text style={styles.clipsBannerText}>
+                {wayinClips.length} viral clip{wayinClips.length !== 1 ? 's' : ''} detected — tap to browse
+              </Text>
+              <MaterialIcons name="chevron-right" size={16} color="#6c47ff" />
+            </Pressable>
+          ) : null}
+
           {/* Tabs */}
           <View style={styles.tabBar}>
             {TABS.map(t => (
@@ -671,15 +775,20 @@ export default function EditorScreen() {
                   ))}
                 </View>
 
+                {/* WayinVideo-powered hook button */}
                 <Pressable
-                  style={({ pressed }) => [styles.aiBtn, pressed && { opacity: 0.85 }, generatingHook && styles.aiBtnLoading]}
+                  style={({ pressed }) => [styles.wayinAiBtn, pressed && { opacity: 0.85 }, generatingHook && styles.aiBtnLoading]}
                   onPress={handleGenerateHook}
-                  disabled={generatingHook}
+                  disabled={generatingHook || isWayinRunning}
                 >
                   {generatingHook ? (
-                    <><ActivityIndicator size="small" color={Colors.primaryLight} /><Text style={styles.aiBtnText}>Writing best hook...</Text></>
+                    <><ActivityIndicator size="small" color="#fff" /><Text style={styles.wayinAiBtnText}>Analyzing video...</Text></>
                   ) : (
-                    <><MaterialCommunityIcons name="auto-fix" size={16} color={Colors.primaryLight} /><Text style={styles.aiBtnText}>{hookText ? 'Regenerate Hook' : 'AI Pick Best Hook'}</Text></>
+                    <>
+                      <MaterialCommunityIcons name="lightning-bolt" size={16} color="#fff" />
+                      <Text style={styles.wayinAiBtnText}>{hookText ? 'Regenerate Hook' : 'AI Generate Hook'}</Text>
+                      <View style={styles.wayinBadge}><Text style={styles.wayinBadgeText}>WayinVideo</Text></View>
+                    </>
                   )}
                 </Pressable>
 
@@ -694,7 +803,7 @@ export default function EditorScreen() {
                       updateVideo(video.id, { hook: { type: hookType, text } });
                     }, 800);
                   }}
-                  placeholder="AI will write the best hook, or type your own..."
+                  placeholder="WayinVideo AI will write a viral hook from your video..."
                   placeholderTextColor={Colors.textMuted}
                   multiline
                   numberOfLines={3}
@@ -706,15 +815,20 @@ export default function EditorScreen() {
             {/* ── Caption Tab ── */}
             {tab === 'caption' ? (
               <View style={styles.section}>
+                {/* WayinVideo-powered caption button */}
                 <Pressable
-                  style={({ pressed }) => [styles.aiBtn, pressed && { opacity: 0.85 }, generatingCaption && styles.aiBtnLoading]}
+                  style={({ pressed }) => [styles.wayinAiBtn, pressed && { opacity: 0.85 }, generatingCaption && styles.aiBtnLoading]}
                   onPress={handleGenerateCaption}
-                  disabled={generatingCaption}
+                  disabled={generatingCaption || isWayinRunning}
                 >
                   {generatingCaption ? (
-                    <><ActivityIndicator size="small" color={Colors.primaryLight} /><Text style={styles.aiBtnText}>Writing caption...</Text></>
+                    <><ActivityIndicator size="small" color="#fff" /><Text style={styles.wayinAiBtnText}>Analyzing video...</Text></>
                   ) : (
-                    <><MaterialCommunityIcons name="auto-fix" size={16} color={Colors.primaryLight} /><Text style={styles.aiBtnText}>{caption ? 'Regenerate Caption & Hashtags' : 'AI Write Caption & Hashtags'}</Text></>
+                    <>
+                      <MaterialCommunityIcons name="lightning-bolt" size={16} color="#fff" />
+                      <Text style={styles.wayinAiBtnText}>{caption ? 'Regenerate Caption & Hashtags' : 'AI Write Caption & Hashtags'}</Text>
+                      <View style={styles.wayinBadge}><Text style={styles.wayinBadgeText}>WayinVideo</Text></View>
+                    </>
                   )}
                 </Pressable>
 
@@ -723,7 +837,7 @@ export default function EditorScreen() {
                   style={[styles.textInput, { minHeight: 100 }]}
                   value={caption}
                   onChangeText={setCaption}
-                  placeholder="AI will write your caption, or type your own..."
+                  placeholder="WayinVideo AI will write your caption from the video..."
                   placeholderTextColor={Colors.textMuted}
                   multiline
                 />
@@ -746,7 +860,7 @@ export default function EditorScreen() {
               </View>
             ) : null}
 
-            {/* ── Audio Tab ── */}
+            {/* ── Audio Tab (still Gemini) ── */}
             {tab === 'audio' ? (
               <View style={styles.section}>
                 <Pressable
@@ -851,33 +965,6 @@ export default function EditorScreen() {
             ) : null}
           </View>
 
-          {/* WayinVideo AI Analyze Button */}
-          <View style={styles.wayinRow}>
-            <Pressable
-              style={({ pressed }) => [
-                styles.wayinBtn,
-                pressed && { opacity: 0.85 },
-                (wayinPhase === 'uploading' || wayinPhase === 'analyzing') ? styles.wayinBtnLoading : null,
-              ]}
-              onPress={handleWayinAnalyze}
-              disabled={wayinPhase === 'uploading' || wayinPhase === 'analyzing'}
-            >
-              {wayinPhase === 'uploading' || wayinPhase === 'analyzing' ? (
-                <>
-                  <ActivityIndicator size="small" color="#fff" />
-                  <Text style={styles.wayinBtnText}>
-                    {wayinPhase === 'uploading' ? 'Uploading video...' : 'WayinVideo analyzing...'}
-                  </Text>
-                </>
-              ) : (
-                <>
-                  <MaterialCommunityIcons name="lightning-bolt" size={18} color="#fff" />
-                  <Text style={styles.wayinBtnText}>Analyze with WayinVideo AI</Text>
-                </>
-              )}
-            </Pressable>
-          </View>
-
           {/* Actions */}
           <View style={styles.actions}>
             <Pressable style={({ pressed }) => [styles.scheduleBtn, pressed && { opacity: 0.8 }]} onPress={handleSchedule}>
@@ -899,7 +986,7 @@ export default function EditorScreen() {
         <View style={styles.sheetOverlay}>
           <Pressable
             style={StyleSheet.absoluteFillObject}
-            onPress={() => { if (wayinPhase !== 'uploading' && wayinPhase !== 'analyzing') closeWayinSheet(); }}
+            onPress={() => { if (!isWayinRunning) closeWayinSheet(); }}
           />
           <View style={[styles.tiktokSheet, { maxHeight: '85%' }]}>
             <View style={styles.sheetHandle} />
@@ -910,16 +997,20 @@ export default function EditorScreen() {
               </View>
               <View style={{ flex: 1 }}>
                 <Text style={styles.sheetTitle}>WayinVideo AI</Text>
-                <Text style={styles.sheetSub}>Viral clip detection & trim</Text>
+                <Text style={styles.sheetSub}>
+                  {wayinTarget === 'hook' ? 'Hook generation from video analysis'
+                    : wayinTarget === 'caption' ? 'Caption & hashtag generation'
+                    : 'Viral clip detection & trim'}
+                </Text>
               </View>
-              {wayinPhase !== 'uploading' && wayinPhase !== 'analyzing' ? (
+              {!isWayinRunning ? (
                 <Pressable onPress={closeWayinSheet} hitSlop={8}>
                   <MaterialIcons name="close" size={20} color={Colors.textMuted} />
                 </Pressable>
               ) : null}
             </View>
 
-            {wayinPhase === 'uploading' || wayinPhase === 'analyzing' ? (
+            {isWayinRunning ? (
               <View style={styles.sheetPhase}>
                 <ActivityIndicator size="large" color="#6c47ff" />
                 <Text style={styles.sheetPhaseTitle}>
@@ -927,19 +1018,19 @@ export default function EditorScreen() {
                 </Text>
                 <Text style={styles.sheetPhaseSub}>
                   {wayinPhase === 'uploading'
-                    ? 'Transferring your video to WayinVideo for analysis. This may take a moment for large files.'
-                    : 'WayinVideo AI is detecting viral moments and generating hooks, captions, and timestamps. This may take up to a minute.'}
+                    ? 'Transferring your video for AI analysis...'
+                    : 'Detecting viral moments and generating content. This may take up to a minute.'}
                 </Text>
               </View>
             ) : null}
 
-            {wayinPhase === 'done' || (wayinPhase === 'analyzing' && wayinClips.length > 0) ? (
+            {(wayinPhase === 'done' || (wayinPhase === 'analyzing' && wayinClips.length > 0) || (wayinPhase === 'idle' && wayinClips.length > 0)) ? (
               <ScrollView showsVerticalScrollIndicator={false} style={{ maxHeight: 480 }}>
-                {wayinPhase === 'done' ? (
+                {wayinClips.length > 0 ? (
                   <View style={styles.wayinSuccessBanner}>
                     <MaterialIcons name="check-circle" size={16} color={Colors.emerald} />
                     <Text style={styles.wayinSuccessText}>
-                      {wayinClips.length} viral clip{wayinClips.length !== 1 ? 's' : ''} found — tap to review & trim
+                      {wayinClips.length} viral clip{wayinClips.length !== 1 ? 's' : ''} detected — tap to apply or trim
                     </Text>
                   </View>
                 ) : null}
@@ -994,7 +1085,7 @@ export default function EditorScreen() {
                 <Text style={styles.sheetPhaseSub}>{wayinError}</Text>
                 <Pressable
                   style={[styles.tiktokPublishBtn, { marginTop: Spacing.md, backgroundColor: '#6c47ff' }]}
-                  onPress={() => { closeWayinSheet(); handleWayinAnalyze(); }}
+                  onPress={() => { closeWayinSheet(); handleBrowseClips(); }}
                 >
                   <Text style={styles.tiktokPublishBtnText}>Try Again</Text>
                 </Pressable>
@@ -1067,7 +1158,7 @@ export default function EditorScreen() {
 
                 {selectedWayinClip.title ? (
                   <View style={styles.clipMetaSection}>
-                    <Text style={styles.clipMetaLabel}>TITLE</Text>
+                    <Text style={styles.clipMetaLabel}>HOOK / TITLE</Text>
                     <Text style={styles.clipMetaValue}>{selectedWayinClip.title}</Text>
                   </View>
                 ) : null}
@@ -1116,7 +1207,7 @@ export default function EditorScreen() {
                   onPress={applyWayinClipOnly}
                 >
                   <MaterialCommunityIcons name="auto-fix" size={15} color="#6c47ff" />
-                  <Text style={styles.clipActionBtnOutlineText}>Apply Content Only (no trim)</Text>
+                  <Text style={styles.clipActionBtnOutlineText}>Apply Hook, Caption & Hashtags (no trim)</Text>
                 </Pressable>
 
                 <Text style={styles.clipTrimNote}>
@@ -1144,7 +1235,7 @@ export default function EditorScreen() {
                 <MaterialIcons name="check-circle" size={56} color={Colors.emerald} />
                 <Text style={styles.sheetPhaseTitle}>Video Trimmed!</Text>
                 <Text style={styles.sheetPhaseSub}>
-                  Your video is cut to the viral segment and content applied. Ready to publish!
+                  Hook, caption and hashtags applied from WayinVideo. Ready to publish!
                 </Text>
                 <Pressable
                   style={[styles.tiktokPublishBtn, { marginTop: Spacing.md, backgroundColor: '#6c47ff' }]}
@@ -1265,9 +1356,7 @@ export default function EditorScreen() {
                   {tiktok.publishState.phase === 'uploading' ? 'Sending to TikTok...' : 'TikTok is processing your video...'}
                 </Text>
                 <Text style={styles.sheetPhaseSub}>
-                  {tiktok.publishState.phase === 'processing'
-                    ? 'This can take up to 2 minutes.'
-                    : 'Connecting to TikTok API...'}
+                  {tiktok.publishState.phase === 'processing' ? 'This can take up to 2 minutes.' : 'Connecting to TikTok API...'}
                 </Text>
               </View>
             ) : null}
@@ -1391,6 +1480,16 @@ const styles = StyleSheet.create({
   },
   hookOverlayText: { fontSize: FontSize.xs, fontWeight: FontWeight.bold, color: '#fff', textAlign: 'center', includeFontPadding: false },
   playBtn: { position: 'absolute', top: 0, left: 0, right: 0, bottom: 0, alignItems: 'center', justifyContent: 'center' },
+
+  // Clips available banner
+  clipsBanner: {
+    flexDirection: 'row', alignItems: 'center', gap: 6,
+    backgroundColor: '#6c47ff18', borderRadius: Radius.md, marginHorizontal: Spacing.md,
+    marginBottom: Spacing.sm, paddingHorizontal: Spacing.sm + 2, paddingVertical: 8,
+    borderWidth: 1, borderColor: '#6c47ff33',
+  },
+  clipsBannerText: { flex: 1, fontSize: FontSize.sm, color: '#6c47ff', fontWeight: FontWeight.semibold, includeFontPadding: false },
+
   tabBar: {
     flexDirection: 'row', marginHorizontal: Spacing.md,
     backgroundColor: Colors.surfaceElevated, borderRadius: Radius.full,
@@ -1403,6 +1502,20 @@ const styles = StyleSheet.create({
   tabContent: { paddingTop: Spacing.md },
   section: { paddingHorizontal: Spacing.md, gap: Spacing.sm },
   sectionLabel: { fontSize: FontSize.sm, fontWeight: FontWeight.semibold, color: Colors.textSecondary, includeFontPadding: false },
+
+  // WayinVideo-powered AI button (purple, solid)
+  wayinAiBtn: {
+    flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8,
+    backgroundColor: '#6c47ff', borderRadius: Radius.full, paddingVertical: 13, minHeight: 48,
+  },
+  wayinAiBtnText: { fontSize: FontSize.sm, fontWeight: FontWeight.bold, color: '#fff', includeFontPadding: false },
+  wayinBadge: {
+    backgroundColor: 'rgba(255,255,255,0.18)', borderRadius: Radius.full,
+    paddingHorizontal: 7, paddingVertical: 2,
+  },
+  wayinBadgeText: { fontSize: 9, fontWeight: FontWeight.bold, color: '#fff', includeFontPadding: false },
+
+  // Gemini AI button (outline, accent)
   aiBtn: {
     flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8,
     backgroundColor: Colors.primaryGlow, borderRadius: Radius.full, paddingVertical: 12,
@@ -1410,6 +1523,7 @@ const styles = StyleSheet.create({
   },
   aiBtnLoading: { opacity: 0.7 },
   aiBtnText: { fontSize: FontSize.sm, fontWeight: FontWeight.bold, color: Colors.primaryLight, includeFontPadding: false },
+
   aiPickedCard: {
     backgroundColor: Colors.primaryGlow, borderRadius: Radius.lg, padding: Spacing.sm,
     borderWidth: 1, borderColor: Colors.primary + '55', gap: Spacing.xs,
@@ -1512,15 +1626,6 @@ const styles = StyleSheet.create({
   uploadBtnText: { color: '#fff', fontSize: FontSize.md, fontWeight: FontWeight.bold, includeFontPadding: false },
   progressBarBg: { width: '80%', height: 6, borderRadius: 3, backgroundColor: Colors.surfaceBorder, overflow: 'hidden', marginTop: 4 },
   progressBarFill: { height: '100%', borderRadius: 3, backgroundColor: Colors.primaryLight },
-
-  // WayinVideo button
-  wayinRow: { paddingHorizontal: Spacing.md, paddingTop: Spacing.sm },
-  wayinBtn: {
-    flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8,
-    backgroundColor: '#6c47ff', borderRadius: Radius.full, paddingVertical: 13, minHeight: 46,
-  },
-  wayinBtnLoading: { opacity: 0.75 },
-  wayinBtnText: { fontSize: FontSize.sm, fontWeight: FontWeight.bold, color: '#fff', includeFontPadding: false },
 
   // WayinVideo results sheet
   wayinSuccessBanner: {
