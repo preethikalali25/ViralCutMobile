@@ -176,6 +176,13 @@ export default function EditorScreen() {
   const [generatingThumbnail, setGeneratingThumbnail] = useState(false);
   const [thumbnailUri, setThumbnailUri] = useState<string | null>(video?.thumbnail ?? null);
 
+  // Trim progress state
+  const [trimProgress, setTrimProgress] = useState(0);
+  const [trimElapsed, setTrimElapsed] = useState(0);
+  const [trimEstimate, setTrimEstimate] = useState(0);
+  const trimTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const trimStartTimeRef = useRef<number>(0);
+
   // Filmstrip state (clip detail sheet)
   const [filmstripFrames, setFilmstripFrames] = useState<{ uri: string; ts: number }[]>([]);
   const [filmstripLoading, setFilmstripLoading] = useState(false);
@@ -735,20 +742,50 @@ export default function EditorScreen() {
     setTrimPhase('trimming');
     setTrimError(null);
 
+    const clipDuration = Math.max(1, clip.end - clip.start);
+    startTrimTimer(clipDuration);
+
     try {
       const { trim } = await import('react-native-video-trim');
       const result = await trim(videoUri, {
         startTime: Math.round(clip.start * 1000),
         endTime: Math.round(clip.end * 1000),
       });
+      stopTrimTimer();
+      setTrimProgress(100);
       const outputUri = result.outputPath.startsWith('file://') ? result.outputPath : `file://${result.outputPath}`;
       applyClipMeta(clip, { videoUri: outputUri });
       setTrimPhase('done');
     } catch (e: any) {
+      stopTrimTimer();
       console.error('[trim] Error:', e);
       setTrimPhase('error');
       setTrimError(String(e?.message ?? e));
     }
+  };
+
+  const stopTrimTimer = () => {
+    if (trimTimerRef.current) {
+      clearInterval(trimTimerRef.current);
+      trimTimerRef.current = null;
+    }
+  };
+
+  const startTrimTimer = (clipDurationSeconds: number) => {
+    // Estimate: processing ≈ 1.5× clip duration, min 6 s, max 120 s
+    const estimate = Math.min(120, Math.max(6, clipDurationSeconds * 1.5));
+    setTrimEstimate(estimate);
+    setTrimProgress(0);
+    setTrimElapsed(0);
+    trimStartTimeRef.current = Date.now();
+
+    trimTimerRef.current = setInterval(() => {
+      const elapsed = (Date.now() - trimStartTimeRef.current) / 1000;
+      setTrimElapsed(elapsed);
+      // Exponential approach to 90% — never reaches 100% until trim completes
+      const pct = 90 * (1 - Math.exp(-elapsed / (estimate * 0.6)));
+      setTrimProgress(Math.min(89, pct));
+    }, 250);
   };
 
   const closeClipDetailSheet = () => {
@@ -758,6 +795,9 @@ export default function EditorScreen() {
     setSelectedWayinClip(null);
     setFilmstripFrames([]);
     setFilmstripSelectedIdx(null);
+    stopTrimTimer();
+    setTrimProgress(0);
+    setTrimElapsed(0);
     if (wayinClips.length > 0) setShowWayinSheet(true);
   };
 
@@ -1461,14 +1501,61 @@ export default function EditorScreen() {
 
             {trimPhase === 'trimming' ? (
               <View style={styles.sheetPhase}>
+                {/* Circular spinner */}
                 <ActivityIndicator size="large" color="#6c47ff" />
+
                 <Text style={styles.sheetPhaseTitle}>Trimming video...</Text>
                 <Text style={styles.sheetPhaseSub}>
                   Cutting to{' '}
                   {selectedWayinClip
                     ? `${formatTimestamp(selectedWayinClip.start)} – ${formatTimestamp(selectedWayinClip.end)}`
                     : 'selected segment'}
-                  . This may take a moment.
+                </Text>
+
+                {/* Progress bar */}
+                <View style={styles.trimProgressWrap}>
+                  <View style={styles.trimProgressBg}>
+                    <View
+                      style={[
+                        styles.trimProgressFill,
+                        { width: `${trimProgress}%` as any },
+                      ]}
+                    />
+                  </View>
+                  <View style={styles.trimProgressRow}>
+                    <Text style={styles.trimProgressPct}>
+                      {trimProgress < 100 ? `${Math.round(trimProgress)}%` : '100%'}
+                    </Text>
+                    <Text style={styles.trimProgressTime}>
+                      {Math.floor(trimElapsed)}s elapsed
+                    </Text>
+                    {trimEstimate > 0 && trimElapsed < trimEstimate ? (
+                      <Text style={styles.trimProgressEst}>
+                        ~{Math.max(0, Math.ceil(trimEstimate - trimElapsed))}s left
+                      </Text>
+                    ) : null}
+                  </View>
+                </View>
+
+                {/* Stage label */}
+                <View style={styles.trimStageRow}>
+                  {[
+                    { label: 'Read', done: trimProgress >= 15 },
+                    { label: 'Decode', done: trimProgress >= 40 },
+                    { label: 'Encode', done: trimProgress >= 75 },
+                    { label: 'Write', done: trimProgress >= 100 },
+                  ].map((stage, i) => (
+                    <View key={i} style={styles.trimStageItem}>
+                      <View style={[styles.trimStageDot, stage.done && styles.trimStageDotDone]} />
+                      <Text style={[styles.trimStageLabel, stage.done && styles.trimStageLabelDone]}>
+                        {stage.label}
+                      </Text>
+                    </View>
+                  ))}
+                </View>
+
+                <Text style={styles.trimProgressNote}>
+                  Processing time varies with video length and device speed.
                 </Text>
               </View>
             ) : null}
@@ -1965,6 +2052,50 @@ const styles = StyleSheet.create({
     position: 'absolute', top: 8, right: 8,
     width: 28, height: 28, borderRadius: 14,
     backgroundColor: 'rgba(0,0,0,0.65)', alignItems: 'center', justifyContent: 'center',
+  },
+
+  // Trim progress
+  trimProgressWrap: { width: '100%', paddingHorizontal: Spacing.md, gap: 6 },
+  trimProgressBg: {
+    height: 8, borderRadius: 4, backgroundColor: Colors.surfaceBorder,
+    overflow: 'hidden', width: '100%',
+  },
+  trimProgressFill: {
+    height: '100%', borderRadius: 4,
+    backgroundColor: '#6c47ff',
+  },
+  trimProgressRow: {
+    flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between',
+  },
+  trimProgressPct: {
+    fontSize: FontSize.sm, fontWeight: FontWeight.bold, color: '#6c47ff', includeFontPadding: false,
+  },
+  trimProgressTime: {
+    fontSize: FontSize.xs, color: Colors.textMuted, includeFontPadding: false,
+  },
+  trimProgressEst: {
+    fontSize: FontSize.xs, color: Colors.textSecondary, includeFontPadding: false,
+  },
+  trimStageRow: {
+    flexDirection: 'row', alignItems: 'center', gap: Spacing.md,
+    marginTop: 4,
+  },
+  trimStageItem: { alignItems: 'center', gap: 4 },
+  trimStageDot: {
+    width: 8, height: 8, borderRadius: 4,
+    backgroundColor: Colors.surfaceBorder, borderWidth: 1.5, borderColor: Colors.surfaceBorder,
+  },
+  trimStageDotDone: {
+    backgroundColor: '#6c47ff', borderColor: '#6c47ff',
+  },
+  trimStageLabel: {
+    fontSize: 9, color: Colors.textMuted, fontWeight: FontWeight.medium,
+    textTransform: 'uppercase', letterSpacing: 0.6, includeFontPadding: false,
+  },
+  trimStageLabelDone: { color: '#6c47ff' },
+  trimProgressNote: {
+    fontSize: FontSize.xs, color: Colors.textMuted, textAlign: 'center',
+    paddingHorizontal: Spacing.md, includeFontPadding: false,
   },
 
   // Filmstrip
