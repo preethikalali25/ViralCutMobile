@@ -19,7 +19,7 @@ import { formatDuration } from '@/services/formatters';
 import { FunctionsHttpError } from '@supabase/supabase-js';
 import { useTikTok } from '@/hooks/useTikTok';
 import { uploadVideoToStorage } from '@/services/tiktokService';
-import { submitWayinTask, getWayinStatus, WayinClip } from '@/services/wayinVideoService';
+import { uploadToWayin, submitWayinTask, getWayinStatus, WayinClip } from '@/services/wayinVideoService';
 
 type Tab = 'hook' | 'caption' | 'audio' | 'platforms';
 
@@ -363,9 +363,10 @@ export default function EditorScreen() {
     setWayinError(null);
     setWayinClips([]);
     setShowWayinSheet(true);
+    setWayinPhase('uploading');
 
+    // Step 1: Ensure we have a public HTTPS URL (upload local files to Supabase storage first)
     if (videoUrl.startsWith('file://') || videoUrl.startsWith('ph://')) {
-      setWayinPhase('uploading');
       const { publicUrl, error: uploadErr } = await uploadVideoToStorage(
         videoUrl, user?.id ?? 'unknown', video.id, () => {},
       );
@@ -378,8 +379,19 @@ export default function EditorScreen() {
       updateVideo(video.id, { videoUri: publicUrl });
     }
 
+    // Step 2: Upload the video to WayinVideo via their pre-signed upload API
+    // WayinVideo only accepts files uploaded via their own API or URLs from known platforms
+    const fileName = videoUrl.split('/').pop()?.split('?')[0] ?? 'video.mp4';
+    const { identity, error: wayinUploadErr } = await uploadToWayin(videoUrl, fileName);
+    if (wayinUploadErr || !identity) {
+      setWayinPhase('error');
+      setWayinError(wayinUploadErr ?? 'Failed to upload video to WayinVideo.');
+      return;
+    }
+
+    // Step 3: Submit clip analysis task using the WayinVideo identity
     setWayinPhase('analyzing');
-    const { taskId, error: submitErr } = await submitWayinTask(videoUrl, videoTitle || video.title || 'ViralCut Video');
+    const { taskId, error: submitErr } = await submitWayinTask(identity, videoTitle || video.title || 'ViralCut Video');
     if (submitErr || !taskId) {
       setWayinPhase('error');
       setWayinError(submitErr ?? 'Failed to submit video to WayinVideo.');
@@ -875,11 +887,11 @@ export default function EditorScreen() {
               <View style={styles.sheetPhase}>
                 <ActivityIndicator size="large" color="#6c47ff" />
                 <Text style={styles.sheetPhaseTitle}>
-                  {wayinPhase === 'uploading' ? 'Uploading video...' : 'Analyzing your video...'}
+                  {wayinPhase === 'uploading' ? 'Uploading to WayinVideo...' : 'Analyzing your video...'}
                 </Text>
                 <Text style={styles.sheetPhaseSub}>
                   {wayinPhase === 'uploading'
-                    ? 'Preparing your video for WayinVideo analysis.'
+                    ? 'Transferring your video to WayinVideo for analysis. This may take a moment for large files.'
                     : 'WayinVideo AI is detecting viral moments and generating hooks, captions, and timestamps. This may take up to a minute.'}
                 </Text>
               </View>

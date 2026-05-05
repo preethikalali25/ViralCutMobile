@@ -31,12 +31,22 @@ async function invoke(action: string, payload: Record<string, unknown>) {
   return { data, error: null };
 }
 
-/** Submit a video URL to WayinVideo for AI clip analysis. Returns a taskId. */
-export async function submitWayinTask(
+/** Upload a public video URL to WayinVideo via their pre-signed upload flow. Returns an identity string. */
+export async function uploadToWayin(
   videoUrl: string,
+  fileName?: string,
+): Promise<{ identity?: string; error?: string }> {
+  const { data, error } = await invoke('upload', { videoUrl, fileName });
+  if (error) return { error };
+  return { identity: data.identity };
+}
+
+/** Submit a WayinVideo identity (from uploadToWayin) for AI clip analysis. Returns a taskId. */
+export async function submitWayinTask(
+  videoIdentity: string,
   projectName?: string,
 ): Promise<{ taskId?: string; error?: string }> {
-  const { data, error } = await invoke('submit', { videoUrl, projectName });
+  const { data, error } = await invoke('submit', { videoUrl: videoIdentity, projectName });
   if (error) return { error };
   return { taskId: data.taskId };
 }

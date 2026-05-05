@@ -30,6 +30,78 @@ Deno.serve(async (req) => {
 
     const action = (body?.action ?? '') as string;
 
+    // ─── Upload video to WayinVideo (pre-signed flow) ─────────────────────────
+    if (action === 'upload') {
+      const { videoUrl, fileName } = body as { videoUrl: string; fileName?: string };
+
+      if (!videoUrl) {
+        return new Response(
+          JSON.stringify({ error: 'videoUrl is required' }),
+          { status: 400, headers: { ...corsHeaders, 'Content-Type': 'application/json' } },
+        );
+      }
+
+      const name = (fileName ?? videoUrl.split('/').pop()?.split('?')[0] ?? 'video.mp4')
+        .replace(/[^a-zA-Z0-9._-]/g, '_');
+      const safeName = name.endsWith('.mp4') || name.endsWith('.mov') || name.endsWith('.avi') || name.endsWith('.webm')
+        ? name
+        : `${name}.mp4`;
+
+      console.log('[wayinvideo] Requesting pre-signed upload URL for:', safeName);
+
+      // Step 1: Get pre-signed upload URL
+      const urlRes = await fetch(`${WAYIN_BASE}/upload/single-file`, {
+        method: 'POST',
+        headers: wayinHeaders(apiKey),
+        body: JSON.stringify({ name: safeName }),
+      });
+      const urlData = await urlRes.json();
+      console.log('[wayinvideo] Pre-signed URL response:', JSON.stringify(urlData).slice(0, 300));
+
+      if (!urlRes.ok || !urlData?.data?.upload_url || !urlData?.data?.identity) {
+        return new Response(
+          JSON.stringify({ error: `WayinVideo upload init failed: ${JSON.stringify(urlData)}` }),
+          { status: 502, headers: { ...corsHeaders, 'Content-Type': 'application/json' } },
+        );
+      }
+
+      const { upload_url, identity } = urlData.data;
+
+      // Step 2: Fetch video from source URL and PUT to pre-signed URL
+      console.log('[wayinvideo] Fetching video from storage URL:', videoUrl.slice(0, 100));
+      const videoRes = await fetch(videoUrl);
+      if (!videoRes.ok) {
+        return new Response(
+          JSON.stringify({ error: `Failed to fetch video from storage: ${videoRes.status} ${videoRes.statusText}` }),
+          { status: 502, headers: { ...corsHeaders, 'Content-Type': 'application/json' } },
+        );
+      }
+
+      const contentType = videoRes.headers.get('content-type') ?? 'video/mp4';
+      console.log('[wayinvideo] Uploading video to WayinVideo pre-signed URL, content-type:', contentType);
+
+      const putRes = await fetch(upload_url, {
+        method: 'PUT',
+        headers: { 'Content-Type': contentType },
+        body: videoRes.body,
+      });
+
+      console.log('[wayinvideo] PUT response status:', putRes.status);
+
+      if (!putRes.ok) {
+        const putErr = await putRes.text().catch(() => 'unknown');
+        return new Response(
+          JSON.stringify({ error: `WayinVideo upload PUT failed: ${putRes.status} ${putErr}` }),
+          { status: 502, headers: { ...corsHeaders, 'Content-Type': 'application/json' } },
+        );
+      }
+
+      return new Response(
+        JSON.stringify({ identity }),
+        { headers: { ...corsHeaders, 'Content-Type': 'application/json' } },
+      );
+    }
+
     // ─── Submit clipping task ─────────────────────────────────────────────────
     if (action === 'submit') {
       const { videoUrl, projectName } = body as { videoUrl: string; projectName?: string };
