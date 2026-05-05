@@ -157,6 +157,12 @@ export default function EditorScreen() {
   const [generatingThumbnail, setGeneratingThumbnail] = useState(false);
   const [thumbnailUri, setThumbnailUri] = useState<string | null>(video?.thumbnail ?? null);
 
+  // Filmstrip state (clip detail sheet)
+  const [filmstripFrames, setFilmstripFrames] = useState<{ uri: string; ts: number }[]>([]);
+  const [filmstripLoading, setFilmstripLoading] = useState(false);
+  const [filmstripSelectedIdx, setFilmstripSelectedIdx] = useState<number | null>(null);
+  const filmstripCacheRef = useRef<Record<string, { uri: string; ts: number }[]>>({});
+
   const wayinPollRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   // ── Extract thumbnail from video at a specific timestamp (seconds) ───────────
@@ -262,6 +268,39 @@ export default function EditorScreen() {
 
     runAll();
   }, [video?.id]);
+
+  // ── Extract filmstrip frames for a clip ──────────────────────────────────────
+  const extractFilmstripFrames = useCallback(async (clip: WayinClip, videoUri: string) => {
+    const cacheKey = `${clip.start}-${clip.end}-${videoUri}`;
+    if (filmstripCacheRef.current[cacheKey]) {
+      setFilmstripFrames(filmstripCacheRef.current[cacheKey]);
+      setFilmstripSelectedIdx(null);
+      return;
+    }
+    setFilmstripLoading(true);
+    setFilmstripFrames([]);
+    setFilmstripSelectedIdx(null);
+
+    const FRAME_COUNT = 6;
+    const start = Math.max(0, clip.start);
+    const end = Math.max(start + 1, clip.end);
+    const duration = end - start;
+    const seekPoints = Array.from({ length: FRAME_COUNT }, (_, i) =>
+      start + (duration * i) / (FRAME_COUNT - 1)
+    );
+
+    const results: { uri: string; ts: number }[] = [];
+    for (const ts of seekPoints) {
+      try {
+        const uri = await generateThumbnailFromTimestamp(videoUri, ts);
+        if (uri) results.push({ uri, ts });
+      } catch { /* skip failed frames */ }
+    }
+
+    filmstripCacheRef.current[cacheKey] = results;
+    setFilmstripFrames(results);
+    setFilmstripLoading(false);
+  }, [generateThumbnailFromTimestamp]);
 
   // ── Generate thumbnail from best WayinVideo clip ─────────────────────────────
   const generateWayinThumbnail = useCallback(async (clip: WayinClip, videoUri: string) => {
@@ -632,6 +671,9 @@ export default function EditorScreen() {
     setTrimError(null);
     setShowWayinSheet(false);
     setShowClipDetailSheet(true);
+    // Kick off filmstrip extraction
+    const videoUri = wayinPublicUrlRef.current ?? video?.videoUri ?? '';
+    if (videoUri) extractFilmstripFrames(clip, videoUri);
   };
 
   /** Apply content only, no trim */
@@ -693,6 +735,8 @@ export default function EditorScreen() {
     setTrimPhase('idle');
     setTrimError(null);
     setSelectedWayinClip(null);
+    setFilmstripFrames([]);
+    setFilmstripSelectedIdx(null);
     if (wayinClips.length > 0) setShowWayinSheet(true);
   };
 
@@ -1215,6 +1259,75 @@ export default function EditorScreen() {
 
             {selectedWayinClip && trimPhase === 'idle' ? (
               <ScrollView showsVerticalScrollIndicator={false}>
+
+                {/* ── Filmstrip ── */}
+                <View style={styles.filmstripSection}>
+                  <View style={styles.filmstripHeader}>
+                    <MaterialIcons name="photo-library" size={13} color={Colors.textMuted} />
+                    <Text style={styles.filmstripLabel}>PICK THUMBNAIL FRAME</Text>
+                    {filmstripLoading ? (
+                      <ActivityIndicator size="small" color="#6c47ff" style={{ marginLeft: 'auto' }} />
+                    ) : filmstripFrames.length > 0 ? (
+                      <Text style={styles.filmstripHint}>tap to set as thumbnail</Text>
+                    ) : null}
+                  </View>
+
+                  {filmstripLoading && filmstripFrames.length === 0 ? (
+                    <View style={styles.filmstripSkeleton}>
+                      {[0,1,2,3,4,5].map(i => (
+                        <View key={i} style={styles.filmstripSkeletonFrame} />
+                      ))}
+                    </View>
+                  ) : filmstripFrames.length > 0 ? (
+                    <ScrollView
+                      horizontal
+                      showsHorizontalScrollIndicator={false}
+                      contentContainerStyle={styles.filmstripScroll}
+                    >
+                      {filmstripFrames.map((frame, idx) => {
+                        const isSelected = filmstripSelectedIdx === idx;
+                        return (
+                          <Pressable
+                            key={idx}
+                            style={({ pressed }) => [
+                              styles.filmstripFrame,
+                              isSelected && styles.filmstripFrameSelected,
+                              pressed && { opacity: 0.82 },
+                            ]}
+                            onPress={() => {
+                              setFilmstripSelectedIdx(idx);
+                              setThumbnailUri(frame.uri);
+                              if (video) updateVideo(video.id, { thumbnail: frame.uri });
+                            }}
+                          >
+                            <Image
+                              source={{ uri: frame.uri }}
+                              style={styles.filmstripImg}
+                              contentFit="cover"
+                              transition={150}
+                            />
+                            <View style={styles.filmstripTs}>
+                              <Text style={styles.filmstripTsText}>{formatTimestamp(frame.ts)}</Text>
+                            </View>
+                            {isSelected ? (
+                              <View style={styles.filmstripSelectedOverlay}>
+                                <View style={styles.filmstripCheckCircle}>
+                                  <MaterialIcons name="check" size={12} color="#fff" />
+                                </View>
+                              </View>
+                            ) : null}
+                          </Pressable>
+                        );
+                      })}
+                    </ScrollView>
+                  ) : !filmstripLoading ? (
+                    <View style={styles.filmstripEmpty}>
+                      <MaterialIcons name="image-not-supported" size={18} color={Colors.textMuted} />
+                      <Text style={styles.filmstripEmptyText}>Frame extraction not available on this device</Text>
+                    </View>
+                  ) : null}
+                </View>
+
                 {/* Timestamp bar */}
                 {(selectedWayinClip.start > 0 || selectedWayinClip.end > 0) ? (
                   <View style={styles.clipTimestampBar}>
@@ -1832,6 +1945,71 @@ const styles = StyleSheet.create({
     width: 28, height: 28, borderRadius: 14,
     backgroundColor: 'rgba(0,0,0,0.65)', alignItems: 'center', justifyContent: 'center',
   },
+
+  // Filmstrip
+  filmstripSection: {
+    marginBottom: Spacing.md,
+    backgroundColor: Colors.surfaceElevated,
+    borderRadius: Radius.lg,
+    borderWidth: 1,
+    borderColor: '#6c47ff33',
+    overflow: 'hidden',
+    paddingVertical: Spacing.sm,
+  },
+  filmstripHeader: {
+    flexDirection: 'row', alignItems: 'center', gap: 5,
+    paddingHorizontal: Spacing.sm + 4, marginBottom: Spacing.xs,
+  },
+  filmstripLabel: {
+    fontSize: 9, fontWeight: FontWeight.bold, color: Colors.textMuted,
+    textTransform: 'uppercase', letterSpacing: 0.9, includeFontPadding: false,
+  },
+  filmstripHint: {
+    marginLeft: 'auto' as any, fontSize: 9, color: '#6c47ff',
+    fontWeight: FontWeight.semibold, includeFontPadding: false,
+  },
+  filmstripScroll: {
+    flexDirection: 'row', gap: 6,
+    paddingHorizontal: Spacing.sm + 4, paddingBottom: 2,
+  },
+  filmstripFrame: {
+    width: 72, height: 100, borderRadius: Radius.md,
+    overflow: 'hidden', borderWidth: 2.5, borderColor: 'transparent',
+    position: 'relative',
+  },
+  filmstripFrameSelected: {
+    borderColor: '#6c47ff',
+  },
+  filmstripImg: { width: '100%', height: '100%' },
+  filmstripTs: {
+    position: 'absolute', bottom: 0, left: 0, right: 0,
+    backgroundColor: 'rgba(0,0,0,0.68)',
+    paddingVertical: 3, alignItems: 'center',
+  },
+  filmstripTsText: { fontSize: 9, color: '#fff', fontWeight: FontWeight.semibold, includeFontPadding: false },
+  filmstripSelectedOverlay: {
+    position: 'absolute', top: 0, left: 0, right: 0, bottom: 0,
+    backgroundColor: 'rgba(108,71,255,0.22)',
+    alignItems: 'flex-start', justifyContent: 'flex-start',
+    padding: 4,
+  },
+  filmstripCheckCircle: {
+    width: 18, height: 18, borderRadius: 9,
+    backgroundColor: '#6c47ff', alignItems: 'center', justifyContent: 'center',
+  },
+  filmstripSkeleton: {
+    flexDirection: 'row', gap: 6,
+    paddingHorizontal: Spacing.sm + 4, paddingBottom: 2,
+  },
+  filmstripSkeletonFrame: {
+    width: 72, height: 100, borderRadius: Radius.md,
+    backgroundColor: Colors.surfaceBorder,
+  },
+  filmstripEmpty: {
+    flexDirection: 'row', alignItems: 'center', gap: 6,
+    paddingHorizontal: Spacing.sm + 4, paddingVertical: Spacing.xs,
+  },
+  filmstripEmptyText: { fontSize: FontSize.xs, color: Colors.textMuted, flex: 1, includeFontPadding: false },
 
   // Shared sheet styles
   sheetOverlay: { flex: 1, justifyContent: 'flex-end', backgroundColor: 'rgba(0,0,0,0.6)' },
