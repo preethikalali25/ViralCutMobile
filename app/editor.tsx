@@ -46,18 +46,31 @@ const ALL_PLATFORMS: PlatformType[] = ['tiktok', 'reels', 'youtube'];
 /** Resolve ph:// URIs to a local file:// path that VideoThumbnails can read */
 async function resolveVideoUri(uri: string): Promise<string> {
   if (!uri.startsWith('ph://')) return uri;
+
+  // 1st: FileSystem.copyAsync — works on iOS when photo library access is granted
+  try {
+    const FS = await import('expo-file-system');
+    const dest = FS.cacheDirectory + `vid_${Date.now()}.mp4`;
+    await FS.copyAsync({ from: uri, to: dest });
+    console.log('[resolveVideoUri] copyAsync succeeded:', dest);
+    return dest;
+  } catch (e) {
+    console.warn('[resolveVideoUri] copyAsync failed, trying MediaLibrary:', e);
+  }
+
+  // 2nd: expo-media-library — bare UUID only (strip /L0/001 suffixes)
   try {
     const MediaLibrary = await import('expo-media-library');
-    const assetId = uri.replace('ph://', '');
+    const assetId = uri.replace('ph://', '').split('/')[0];
     const asset = await MediaLibrary.getAssetInfoAsync(assetId);
-    if (asset?.localUri) return asset.localUri;
-  } catch { /* fall through */ }
-  try {
-    const FileSystem = await import('expo-file-system');
-    const dest = FileSystem.cacheDirectory + `vid_${Date.now()}.mp4`;
-    await FileSystem.copyAsync({ from: uri, to: dest });
-    return dest;
-  } catch { /* give up */ }
+    if (asset?.localUri) {
+      console.log('[resolveVideoUri] MediaLibrary localUri:', asset.localUri);
+      return asset.localUri;
+    }
+  } catch (e) {
+    console.warn('[resolveVideoUri] MediaLibrary fallback failed:', e);
+  }
+
   return uri;
 }
 

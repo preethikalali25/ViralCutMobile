@@ -18,18 +18,32 @@ const ALL_PLATFORMS: PlatformType[] = ['tiktok', 'reels', 'youtube'];
 /** Copy a ph:// asset to the local cache so expo-video-thumbnails can read it. */
 async function resolveVideoUri(uri: string): Promise<string> {
   if (!uri.startsWith('ph://')) return uri;
+
+  // 1st attempt: FileSystem.copyAsync — works on iOS when photo library access is granted
+  try {
+    const FS = await import('expo-file-system');
+    const dest = FS.cacheDirectory + `vid_${Date.now()}.mp4`;
+    await FS.copyAsync({ from: uri, to: dest });
+    console.log('[resolveVideoUri] copyAsync succeeded:', dest);
+    return dest;
+  } catch (e) {
+    console.warn('[resolveVideoUri] copyAsync failed, trying MediaLibrary:', e);
+  }
+
+  // 2nd attempt: expo-media-library — bare UUID only (strip path suffixes like /L0/001)
   try {
     const MediaLibrary = await import('expo-media-library');
-    const asset = await MediaLibrary.getAssetInfoAsync(uri.replace('ph://', ''));
-    if (asset?.localUri) return asset.localUri;
-  } catch { /* fall through */ }
-  // Fallback: copy via FileSystem
-  try {
-    const FileSystem = await import('expo-file-system');
-    const dest = FileSystem.cacheDirectory + `vid_${Date.now()}.mp4`;
-    await FileSystem.copyAsync({ from: uri, to: dest });
-    return dest;
-  } catch { /* give up */ }
+    const assetId = uri.replace('ph://', '').split('/')[0];
+    const asset = await MediaLibrary.getAssetInfoAsync(assetId);
+    if (asset?.localUri) {
+      console.log('[resolveVideoUri] MediaLibrary localUri:', asset.localUri);
+      return asset.localUri;
+    }
+  } catch (e) {
+    console.warn('[resolveVideoUri] MediaLibrary fallback failed:', e);
+  }
+
+  // Give up — return original and let callers handle failure gracefully
   return uri;
 }
 
@@ -105,8 +119,17 @@ export default function UploadScreen() {
 
       if (asset.uri) {
         setExtractingThumb(true);
-        extractBestThumbnail(asset.uri, asset.duration ?? 0).then(thumbUri => {
+        // Resolve ph:// → file:// immediately so the URI stored in state is always usable
+        resolveVideoUri(asset.uri).then(resolvedUri => {
+          const stableUri = resolvedUri !== asset.uri ? resolvedUri : asset.uri;
+          // Update the picked video with the resolved URI so editor never sees ph://
+          setPickedVideo({ ...asset, uri: stableUri });
+          return extractBestThumbnail(stableUri, asset.duration ?? 0);
+        }).then(thumbUri => {
           if (thumbUri) setPickedThumbnail(thumbUri);
+          setExtractingThumb(false);
+        }).catch(err => {
+          console.warn('[upload] thumbnail extraction error:', err);
           setExtractingThumb(false);
         });
       }
