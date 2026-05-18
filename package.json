@@ -1,5 +1,12 @@
 {
   "name": "onspace-app",
+  "pnpm": {
+    "onlyBuiltDependencies": [
+      "protobufjs",
+      "react-native-elements",
+      "unrs-resolver"
+    ]
+  },
   "main": "expo-router/entry",
   "version": "1.0.0",
   "scripts": {
