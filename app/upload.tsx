@@ -7,6 +7,7 @@ import { Image } from 'expo-image';
 import { MaterialIcons, MaterialCommunityIcons } from '@expo/vector-icons';
 import { useRouter } from 'expo-router';
 import * as ImagePicker from 'expo-image-picker';
+import * as VideoThumbnails from 'expo-video-thumbnails';
 import { Colors, Spacing, Radius, FontSize, FontWeight } from '@/constants/theme';
 import { useVideos } from '@/hooks/useVideos';
 import { useAlert } from '@/template';
@@ -53,7 +54,6 @@ async function extractBestThumbnail(videoUri: string, durationMs: number): Promi
     // Resolve ph:// URIs to local file URIs that VideoThumbnails can read
     const resolvedUri = await resolveVideoUri(videoUri);
 
-    const VideoThumbnails = await import('expo-video-thumbnails');
     const dur = durationMs > 0 ? durationMs : 5000;
     const candidates = [
       Math.floor(dur * 0.2),
