@@ -18,6 +18,7 @@ import StatusBadge from '@/components/ui/StatusBadge';
 import { formatDuration } from '@/services/formatters';
 import { FunctionsHttpError } from '@supabase/supabase-js';
 import { useTikTok } from '@/hooks/useTikTok';
+import { useInstagram } from '@/hooks/useInstagram';
 import { uploadVideoToStorage } from '@/services/tiktokService';
 import * as FileSystem from 'expo-file-system';
 
@@ -136,6 +137,7 @@ export default function EditorScreen() {
   const [videoTitle, setVideoTitle] = useState('');
   const [generatingTitle, setGeneratingTitle] = useState(false);
   const [showTikTokSheet, setShowTikTokSheet] = useState(false);
+  const [showInstagramSheet, setShowInstagramSheet] = useState(false);
   const [tiktokPrivacy, setTiktokPrivacy] = useState('SELF_ONLY');
   const [uploadingToStorage, setUploadingToStorage] = useState(false);
   const [uploadProgress, setUploadProgress] = useState(0);
@@ -144,6 +146,7 @@ export default function EditorScreen() {
 
   const frameCache = useRef<{ base64: string; mime: string } | null | 'pending'>('pending');
   const tiktok = useTikTok();
+  const instagram = useInstagram();
 
   const videoPlayer = useVideoPlayer(
     { uri: video?.videoUri ?? '' },
@@ -325,6 +328,10 @@ export default function EditorScreen() {
       setShowTikTokSheet(true);
       return;
     }
+    if (platforms.includes('reels') && instagram.status.connected) {
+      setShowInstagramSheet(true);
+      return;
+    }
     showAlert('Publish Now?', 'This will publish your video locally.', [
       {
         text: 'Publish', onPress: () => {
@@ -358,6 +365,29 @@ export default function EditorScreen() {
       videoUrl, videoTitle || snap.hook.text || 'ViralCut video', tiktokPrivacy,
     );
     if (error) showAlert('TikTok Error', error);
+  };
+
+  const handleInstagramPublish = async () => {
+    const snap = snapshotEditorState();
+    let videoUrl = video?.videoUri ?? '';
+    if (!videoUrl) { showAlert('No Video File', 'Select a video before publishing to Instagram.'); return; }
+
+    if (videoUrl.startsWith('file://') || videoUrl.startsWith('ph://')) {
+      setUploadingToStorage(true);
+      setUploadProgress(0);
+      const { publicUrl, error } = await uploadVideoToStorage(
+        videoUrl, user?.id ?? 'unknown', video.id, (pct) => setUploadProgress(pct),
+      );
+      setUploadingToStorage(false);
+      if (error || !publicUrl) { showAlert('Upload Failed', error ?? 'Could not upload video.'); return; }
+      videoUrl = publicUrl;
+      updateVideo(video.id, { videoUri: publicUrl });
+    }
+
+    const captionText = [snap.caption, snap.hashtags.join(' ')].filter(Boolean).join('\n\n');
+    updateVideo(video.id, { ...snap, title: videoTitle });
+    const { error } = await instagram.publish(videoUrl, captionText);
+    if (error) showAlert('Instagram Error', error);
   };
 
   const togglePlatform = (p: PlatformType) => {
@@ -799,6 +829,120 @@ export default function EditorScreen() {
                 <Pressable
                   style={[styles.tiktokPublishBtn, { marginTop: Spacing.md, backgroundColor: Colors.error }]}
                   onPress={() => tiktok.resetPublish()}
+                >
+                  <Text style={styles.tiktokPublishBtnText}>Try Again</Text>
+                </Pressable>
+              </View>
+            ) : null}
+          </View>
+        </View>
+      </Modal>
+
+      {/* ── Instagram Publish Sheet ── */}
+      <Modal
+        visible={showInstagramSheet}
+        animationType="slide"
+        transparent
+        onRequestClose={() => { setShowInstagramSheet(false); instagram.resetPublish(); }}
+      >
+        <View style={styles.sheetOverlay}>
+          <Pressable
+            style={StyleSheet.absoluteFillObject}
+            onPress={() => { if (instagram.publishState.phase === 'idle' && !uploadingToStorage) setShowInstagramSheet(false); }}
+          />
+          <View style={styles.tiktokSheet}>
+            <View style={styles.sheetHandle} />
+
+            <View style={styles.sheetHeader}>
+              <View style={[styles.sheetIcon, { backgroundColor: '#e1306c' }]}>
+                <MaterialCommunityIcons name="instagram" size={22} color="#fff" />
+              </View>
+              <View style={{ flex: 1 }}>
+                <Text style={styles.sheetTitle}>Publish to Instagram</Text>
+                <Text style={styles.sheetSub}>@{instagram.status.username || 'your account'}</Text>
+              </View>
+              {instagram.publishState.phase === 'idle' ? (
+                <Pressable onPress={() => setShowInstagramSheet(false)} hitSlop={8}>
+                  <MaterialIcons name="close" size={20} color={Colors.textMuted} />
+                </Pressable>
+              ) : null}
+            </View>
+
+            {instagram.publishState.phase === 'idle' && !uploadingToStorage ? (
+              <>
+                <View style={styles.sheetNote}>
+                  <MaterialIcons name="info-outline" size={13} color={Colors.textMuted} />
+                  <Text style={styles.sheetNoteText}>
+                    Your caption and hashtags will be included. The Reel will be published to your feed.
+                  </Text>
+                </View>
+                <Pressable
+                  style={({ pressed }) => [styles.tiktokPublishBtn, { backgroundColor: '#e1306c' }, pressed && { opacity: 0.85 }]}
+                  onPress={handleInstagramPublish}
+                >
+                  <MaterialCommunityIcons name="instagram" size={18} color="#fff" />
+                  <Text style={styles.tiktokPublishBtnText}>Post Reel to Instagram</Text>
+                </Pressable>
+              </>
+            ) : null}
+
+            {uploadingToStorage ? (
+              <View style={styles.sheetPhase}>
+                <ActivityIndicator size="large" color="#e1306c" />
+                <Text style={styles.sheetPhaseTitle}>Uploading video...</Text>
+                <Text style={styles.sheetPhaseSub}>Preparing your Reel for Instagram.</Text>
+                {uploadProgress > 0 ? (
+                  <View style={styles.progressBarBg}>
+                    <View style={[styles.progressBarFill, { width: `${uploadProgress}%` as any, backgroundColor: '#e1306c' }]} />
+                  </View>
+                ) : null}
+              </View>
+            ) : null}
+
+            {!uploadingToStorage && (instagram.publishState.phase === 'processing' || instagram.publishState.phase === 'publishing') ? (
+              <View style={styles.sheetPhase}>
+                <ActivityIndicator size="large" color="#e1306c" />
+                <Text style={styles.sheetPhaseTitle}>
+                  {instagram.publishState.phase === 'publishing' ? 'Publishing Reel...' : 'Instagram is processing your Reel...'}
+                </Text>
+                <Text style={styles.sheetPhaseSub}>This can take up to 2 minutes.</Text>
+              </View>
+            ) : null}
+
+            {instagram.publishState.phase === 'uploading' && !uploadingToStorage ? (
+              <View style={styles.sheetPhase}>
+                <ActivityIndicator size="large" color="#e1306c" />
+                <Text style={styles.sheetPhaseTitle}>Sending to Instagram...</Text>
+              </View>
+            ) : null}
+
+            {instagram.publishState.phase === 'success' ? (
+              <View style={styles.sheetPhase}>
+                <MaterialIcons name="check-circle" size={56} color={Colors.emerald} />
+                <Text style={styles.sheetPhaseTitle}>Posted to Instagram!</Text>
+                <Text style={styles.sheetPhaseSub}>Your Reel is live. Open Instagram to view it.</Text>
+                <Pressable
+                  style={[styles.tiktokPublishBtn, { marginTop: Spacing.md, backgroundColor: '#e1306c' }]}
+                  onPress={() => {
+                    instagram.resetPublish();
+                    setShowInstagramSheet(false);
+                    updateVideo(video.id, { status: 'published', publishedAt: new Date().toISOString() });
+                    router.push('/(tabs)/library');
+                  }}
+                >
+                  <Text style={styles.tiktokPublishBtnText}>Done</Text>
+                </Pressable>
+              </View>
+            ) : null}
+
+            {instagram.publishState.phase === 'error' ? (
+              <View style={styles.sheetPhase}>
+                <MaterialIcons name="error-outline" size={52} color={Colors.error} />
+                <Text style={styles.sheetPhaseTitle}>Publish Failed</Text>
+                <Text style={styles.sheetPhaseSub}>{instagram.publishState.errorMessage}</Text>
+                <Pressable
+                  style={[styles.tiktokPublishBtn, { marginTop: Spacing.md, backgroundColor: Colors.error }]}
+                  onPress={() => instagram.resetPublish()}
                 >
                   <Text style={styles.tiktokPublishBtnText}>Try Again</Text>
                 </Pressable>
