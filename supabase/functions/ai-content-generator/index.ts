@@ -1,19 +1,17 @@
 import { corsHeaders } from '../_shared/cors.ts';
 
-const AI_MODEL = 'google/gemini-3-flash-preview';
+const ANTHROPIC_MODEL = 'claude-haiku-4-5-20251001';
+const ANTHROPIC_API_URL = 'https://api.anthropic.com/v1/messages';
 
-/** Clean up raw filenames into readable titles for the AI */
 function sanitizeTitle(raw: string): string {
   return raw
-    .replace(/\.[a-zA-Z0-9]{2,5}$/, '')          // strip extension
-    .replace(/[_\-]+/g, ' ')                       // underscores/hyphens → spaces
-    .replace(/\b\d{4,}\b/g, '')                   // strip long number sequences (timestamps)
+    .replace(/\.[a-zA-Z0-9]{2,5}$/, '')
+    .replace(/[_\-]+/g, ' ')
+    .replace(/\b\d{4,}\b/g, '')
     .replace(/\s{2,}/g, ' ')
-    .trim()
-    || 'my video';
+    .trim() || 'my video';
 }
 
-/** Shared content safety rules appended to every system prompt */
 const SAFETY_RULES = `
 IMPORTANT RULES:
 - Never produce offensive, hateful, sexually suggestive, violent, discriminatory, or harmful content.
@@ -22,32 +20,25 @@ IMPORTANT RULES:
 - If the video title or frame content is unclear or generic, focus on a broadly appealing lifestyle, creativity, or inspiration angle.
 `;
 
-/** Build the messages array — if a video frame is supplied, add it as a vision input */
-function buildMessages(
-  systemPrompt: string,
+function buildUserContent(
   userPrompt: string,
   videoFrameBase64?: string,
   videoFrameMime = 'image/jpeg',
 ) {
   if (videoFrameBase64) {
     return [
-      { role: 'system', content: systemPrompt },
       {
-        role: 'user',
-        content: [
-          {
-            type: 'image_url',
-            image_url: { url: `data:${videoFrameMime};base64,${videoFrameBase64}` },
-          },
-          { type: 'text', text: userPrompt },
-        ],
+        type: 'image',
+        source: {
+          type: 'base64',
+          media_type: videoFrameMime,
+          data: videoFrameBase64,
+        },
       },
+      { type: 'text', text: userPrompt },
     ];
   }
-  return [
-    { role: 'system', content: systemPrompt },
-    { role: 'user', content: userPrompt },
-  ];
+  return userPrompt;
 }
 
 Deno.serve(async (req) => {
@@ -56,10 +47,8 @@ Deno.serve(async (req) => {
   }
 
   try {
-    const apiKey = Deno.env.get('ONSPACE_AI_API_KEY');
-    const baseUrl = Deno.env.get('ONSPACE_AI_BASE_URL');
-
-    if (!apiKey || !baseUrl) {
+    const apiKey = Deno.env.get('ANTHROPIC_API_KEY');
+    if (!apiKey) {
       return new Response(
         JSON.stringify({ error: 'AI service not configured' }),
         { status: 500, headers: { ...corsHeaders, 'Content-Type': 'application/json' } },
@@ -76,9 +65,7 @@ Deno.serve(async (req) => {
       videoFrameMime = 'image/jpeg',
     } = body;
 
-    // Always sanitize the title so the AI never sees raw filenames like "VID_20241201_083012.mp4"
     const videoTitle = sanitizeTitle(rawTitle ?? '');
-
     const hasFrame = typeof videoFrameBase64 === 'string' && videoFrameBase64.length > 100;
     console.log(`[ai-content-generator] type=${type} hasFrame=${hasFrame} title="${videoTitle}"`);
 
@@ -181,29 +168,31 @@ Return ONLY the title, 4–10 words.`;
       );
     }
 
-    const messages = buildMessages(
-      systemPrompt,
+    const userContent = buildUserContent(
       userPrompt,
       hasFrame ? videoFrameBase64 : undefined,
       videoFrameMime,
     );
 
-    const aiResponse = await fetch(`${baseUrl}/chat/completions`, {
+    const aiResponse = await fetch(ANTHROPIC_API_URL, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
-        'Authorization': `Bearer ${apiKey}`,
+        'x-api-key': apiKey,
+        'anthropic-version': '2023-06-01',
       },
       body: JSON.stringify({
-        model: AI_MODEL,
-        messages,
+        model: ANTHROPIC_MODEL,
+        max_tokens: 512,
+        system: systemPrompt,
+        messages: [{ role: 'user', content: userContent }],
         temperature: 0.75,
       }),
     });
 
     if (!aiResponse.ok) {
       const errText = await aiResponse.text();
-      console.error('AI API error:', errText);
+      console.error('Anthropic API error:', errText);
       return new Response(
         JSON.stringify({ error: `AI service error: ${errText}` }),
         { status: 502, headers: { ...corsHeaders, 'Content-Type': 'application/json' } },
@@ -211,11 +200,10 @@ Return ONLY the title, 4–10 words.`;
     }
 
     const aiData = await aiResponse.json();
-    const rawContent = (aiData.choices?.[0]?.message?.content ?? '').trim();
+    const rawContent = (aiData.content?.[0]?.text ?? '').trim();
     console.log(`[ai-content-generator] raw response (first 200 chars): ${rawContent.slice(0, 200)}`);
 
     if (type === 'hook' || type === 'title') {
-      // Strip any accidental quotes the model may wrap around the text
       const text = rawContent.replace(/^["']|["']$/g, '').trim();
       return new Response(
         JSON.stringify({ result: text }),
@@ -223,7 +211,6 @@ Return ONLY the title, 4–10 words.`;
       );
     }
 
-    // For caption and audio — parse JSON
     try {
       const cleaned = rawContent.replace(/```json?\n?/g, '').replace(/```/g, '').trim();
       const parsed = JSON.parse(cleaned);

@@ -1,7 +1,7 @@
 import React, { useState, useCallback, useRef, useEffect } from 'react';
 import {
   View, Text, ScrollView, StyleSheet, Pressable, TextInput,
-  KeyboardAvoidingView, Platform, ActivityIndicator, Modal, Dimensions,
+  KeyboardAvoidingView, Platform, ActivityIndicator, Modal,
 } from 'react-native';
 import { useVideoPlayer, VideoView } from 'expo-video';
 import { SafeAreaView } from 'react-native-safe-area-context';
@@ -19,7 +19,6 @@ import { formatDuration } from '@/services/formatters';
 import { FunctionsHttpError } from '@supabase/supabase-js';
 import { useTikTok } from '@/hooks/useTikTok';
 import { uploadVideoToStorage } from '@/services/tiktokService';
-import { uploadToWayin, submitWayinTask, getWayinStatus, WayinClip } from '@/services/wayinVideoService';
 import * as FileSystem from 'expo-file-system';
 
 type Tab = 'hook' | 'caption' | 'audio' | 'platforms';
@@ -43,57 +42,41 @@ const HOOK_TYPES: { type: HookType; label: string; desc: string; icon: string }[
 
 const ALL_PLATFORMS: PlatformType[] = ['tiktok', 'reels', 'youtube'];
 
-/** Resolve ph:// URIs to a local file:// path that VideoThumbnails can read */
 async function resolveVideoUri(uri: string): Promise<string> {
   if (!uri.startsWith('ph://')) return uri;
-
-  // 1st: FileSystem.copyAsync — works on iOS when photo library access is granted
   try {
     const FS = await import('expo-file-system');
     const dest = FS.cacheDirectory + `vid_${Date.now()}.mp4`;
     await FS.copyAsync({ from: uri, to: dest });
-    console.log('[resolveVideoUri] copyAsync succeeded:', dest);
     return dest;
   } catch (e) {
     console.warn('[resolveVideoUri] copyAsync failed, trying MediaLibrary:', e);
   }
-
-  // 2nd: expo-media-library — bare UUID only (strip /L0/001 suffixes)
   try {
     const MediaLibrary = await import('expo-media-library');
     const assetId = uri.replace('ph://', '').split('/')[0];
     const asset = await MediaLibrary.getAssetInfoAsync(assetId);
-    if (asset?.localUri) {
-      console.log('[resolveVideoUri] MediaLibrary localUri:', asset.localUri);
-      return asset.localUri;
-    }
+    if (asset?.localUri) return asset.localUri;
   } catch (e) {
     console.warn('[resolveVideoUri] MediaLibrary fallback failed:', e);
   }
-
   return uri;
 }
 
-/** Safely extract a video frame for audio AI analysis only */
 async function extractVideoFrame(videoUri: string): Promise<{ base64: string; mime: string } | null> {
   try {
     const VideoThumbnails = await import('expo-video-thumbnails');
     const FileSystem = await import('expo-file-system');
-
     const resolvedUri = await resolveVideoUri(videoUri);
-    const seekCandidates = [2000, 1000, 500, 0];
     let frameUri: string | null = null;
-    for (const seekMs of seekCandidates) {
+    for (const seekMs of [2000, 1000, 500, 0]) {
       try {
         const { uri } = await VideoThumbnails.getThumbnailAsync(resolvedUri, { time: seekMs, quality: 0.6 });
         if (uri) { frameUri = uri; break; }
       } catch { /* try next */ }
     }
     if (!frameUri) return null;
-
-    const base64 = await FileSystem.readAsStringAsync(frameUri, {
-      encoding: FileSystem.EncodingType.Base64,
-    });
+    const base64 = await FileSystem.readAsStringAsync(frameUri, { encoding: FileSystem.EncodingType.Base64 });
     return { base64, mime: 'image/jpeg' };
   } catch (e) {
     console.warn('Frame extraction failed:', e);
@@ -101,7 +84,6 @@ async function extractVideoFrame(videoUri: string): Promise<{ base64: string; mi
   }
 }
 
-/** Strip file extensions, underscores, and timestamp noise from raw filenames */
 function cleanTitle(raw: string): string {
   return raw
     .replace(/\.[a-zA-Z0-9]{2,5}$/, '')
@@ -109,14 +91,6 @@ function cleanTitle(raw: string): string {
     .replace(/\b\d{4,}\b/g, '')
     .replace(/\s{2,}/g, ' ')
     .trim() || 'my video';
-}
-
-/** Format seconds to M:SS */
-function formatTimestamp(seconds: number): string {
-  const s = Math.max(0, Math.floor(seconds));
-  const mins = Math.floor(s / 60);
-  const secs = s % 60;
-  return `${mins}:${secs.toString().padStart(2, '0')}`;
 }
 
 async function callAIGenerator(type: string, payload: Record<string, unknown>) {
@@ -127,10 +101,7 @@ async function callAIGenerator(type: string, payload: Record<string, unknown>) {
   if (error) {
     let msg = error.message;
     if (error instanceof FunctionsHttpError) {
-      try {
-        const text = await error.context?.text();
-        msg = text || msg;
-      } catch { /* ignore */ }
+      try { const text = await error.context?.text(); msg = text || msg; } catch { /* ignore */ }
     }
     return { data: null, error: msg };
   }
@@ -146,7 +117,6 @@ export default function EditorScreen() {
 
   const video = videos.find(v => v.id === id) ?? videos.find(v => v.status === 'ready' || v.status === 'published');
 
-  // ── All hooks MUST run unconditionally before any early return ──
   const [tab, setTab] = useState<Tab>('hook');
   const [hookType, setHookType] = useState<HookType>('question');
   const [hookText, setHookText] = useState('');
@@ -156,7 +126,6 @@ export default function EditorScreen() {
   const [platforms, setPlatforms] = useState<PlatformType[]>(['tiktok']);
   const hookSaveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  // Hook/caption generation state (now via WayinVideo)
   const [generatingHook, setGeneratingHook] = useState(false);
   const [generatingCaption, setGeneratingCaption] = useState(false);
   const [generatingAudio, setGeneratingAudio] = useState(false);
@@ -170,74 +139,9 @@ export default function EditorScreen() {
   const [tiktokPrivacy, setTiktokPrivacy] = useState('SELF_ONLY');
   const [uploadingToStorage, setUploadingToStorage] = useState(false);
   const [uploadProgress, setUploadProgress] = useState(0);
-
-  // WayinVideo state
-  const [wayinPhase, setWayinPhase] = useState<'idle' | 'uploading' | 'analyzing' | 'done' | 'error'>('idle');
-  const [wayinClips, setWayinClips] = useState<WayinClip[]>([]);
-  const [wayinError, setWayinError] = useState<string | null>(null);
-  const [showWayinSheet, setShowWayinSheet] = useState(false);
-  // Which field triggered the current WayinVideo run
-  const [wayinTarget, setWayinTarget] = useState<'hook' | 'caption' | 'both' | 'browse'>('both');
-
-  // Clip detail + trim state
-  const [selectedWayinClip, setSelectedWayinClip] = useState<WayinClip | null>(null);
-  const [showClipDetailSheet, setShowClipDetailSheet] = useState(false);
-  const [trimPhase, setTrimPhase] = useState<'idle' | 'trimming' | 'done' | 'error'>('idle');
-  const [trimError, setTrimError] = useState<string | null>(null);
-
-  // Thumbnail generation state
   const [generatingThumbnail, setGeneratingThumbnail] = useState(false);
   const [thumbnailUri, setThumbnailUri] = useState<string | null>(video?.thumbnail ?? null);
 
-  // Trim progress state
-  const [trimProgress, setTrimProgress] = useState(0);
-  const [trimElapsed, setTrimElapsed] = useState(0);
-  const [trimEstimate, setTrimEstimate] = useState(0);
-  const trimTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
-  const trimStartTimeRef = useRef<number>(0);
-
-  // Filmstrip state (clip detail sheet)
-  const [filmstripFrames, setFilmstripFrames] = useState<{ uri: string; ts: number }[]>([]);
-  const [filmstripLoading, setFilmstripLoading] = useState(false);
-  const [filmstripSelectedIdx, setFilmstripSelectedIdx] = useState<number | null>(null);
-  const filmstripCacheRef = useRef<Record<string, { uri: string; ts: number }[]>>({});
-
-  const wayinPollRef = useRef<ReturnType<typeof setInterval> | null>(null);
-
-  // ── Extract thumbnail from video at a specific timestamp (seconds) ───────────
-  const generateThumbnailFromTimestamp = useCallback(async (
-    videoUri: string,
-    timestampSeconds: number,
-  ): Promise<string | null> => {
-    try {
-      const resolved = await resolveVideoUri(videoUri);
-      const { getFrameAt } = await import('react-native-video-trim');
-      const ts = Math.max(0, Math.round(timestampSeconds * 1000));
-      const { outputPath } = await getFrameAt(resolved, {
-        time: ts,
-        format: 'jpeg',
-        quality: 88,
-        maxWidth: 720,
-      });
-      return outputPath.startsWith('file://') ? outputPath : `file://${outputPath}`;
-    } catch (e) {
-      console.warn('[thumbnail] getFrameAt failed, trying expo-video-thumbnails:', e);
-      try {
-        const VideoThumbnails = await import('expo-video-thumbnails');
-        const resolved = await resolveVideoUri(videoUri);
-        const { uri } = await VideoThumbnails.getThumbnailAsync(resolved, {
-          time: Math.max(0, Math.round(timestampSeconds * 1000)),
-          quality: 0.85,
-        });
-        return uri ?? null;
-      } catch (e2) {
-        console.warn('[thumbnail] expo-video-thumbnails also failed:', e2);
-        return null;
-      }
-    }
-  }, []);
-  // Cache for WayinVideo public URL (to avoid re-uploading)
-  const wayinPublicUrlRef = useRef<string | null>(null);
   const frameCache = useRef<{ base64: string; mime: string } | null | 'pending'>('pending');
   const tiktok = useTikTok();
 
@@ -246,7 +150,6 @@ export default function EditorScreen() {
     player => { if (player) player.loop = false; }
   );
 
-  // Sync state from video when it loads
   useEffect(() => {
     if (!video) return;
     setVideoTitle(video.title ?? '');
@@ -259,7 +162,7 @@ export default function EditorScreen() {
     setThumbnailUri(video.thumbnail ?? null);
   }, [video?.id]);
 
-  // ── Auto-generate on first open using WayinVideo for hook/caption, Gemini for audio ──
+  // Auto-generate hook, caption, and audio on first open
   useEffect(() => {
     if (!video || autoGenDone) return;
     const needsHook = !(video.hook?.text?.trim());
@@ -269,38 +172,38 @@ export default function EditorScreen() {
     setAutoGenDone(true);
 
     const runAll = async () => {
-      // WayinVideo handles hook + caption
-      if (needsHook || needsCaption) {
-        const target = needsHook && needsCaption ? 'both' : needsHook ? 'hook' : 'caption';
-        setWayinTarget(target);
-        // Run silently without showing sheet — just populate fields
-        await runWayinAnalysisInternal({
-          target,
-          silent: true,
-          onHook: (text) => {
-            setHookText(text);
-            updateVideo(video.id, { hook: { type: video.hook?.type ?? 'question', text } });
-          },
-          onCaption: (cap, tags) => {
-            if (cap) setCaption(cap);
-            if (tags) setHashtags(tags);
-          },
+      const frame = video.videoUri ? await extractVideoFrame(video.videoUri) : null;
+      frameCache.current = frame;
+      const framePayload = frame ? { videoFrameBase64: frame.base64, videoFrameMime: frame.mime } : {};
+
+      if (needsHook) {
+        const { data } = await callAIGenerator('hook', {
+          videoTitle: cleanTitle(video.title), hookType: 'question',
+          platforms: video.platforms ?? ['tiktok'], ...framePayload,
         });
+        if (data?.result) {
+          setHookText(data.result);
+          updateVideo(video.id, { hook: { type: 'question', text: data.result } });
+        }
       }
 
-      // Gemini still handles audio
-      if (needsAudio) {
-        if (frameCache.current === 'pending') {
-          frameCache.current = video.videoUri ? await extractVideoFrame(video.videoUri) : null;
+      if (needsCaption) {
+        const { data } = await callAIGenerator('caption', {
+          videoTitle: cleanTitle(video.title), platforms: video.platforms ?? ['tiktok'], ...framePayload,
+        });
+        if (data?.result?.caption) {
+          setCaption(data.result.caption);
+          if (data.result.hashtags) setHashtags(data.result.hashtags);
         }
-        const frame = frameCache.current !== 'pending' ? frameCache.current : null;
-        const framePayload = frame ? { videoFrameBase64: frame.base64, videoFrameMime: frame.mime } : {};
+      }
+
+      if (needsAudio) {
         setGeneratingAudio(true);
-        const { data, error } = await callAIGenerator('audio', {
+        const { data } = await callAIGenerator('audio', {
           videoTitle: cleanTitle(video.title), platforms: video.platforms ?? ['tiktok'], ...framePayload,
         });
         setGeneratingAudio(false);
-        if (!error && data?.result?.id) {
+        if (data?.result?.id) {
           setAiPickedSong(data.result);
           setSelectedAudioId(data.result.id);
         }
@@ -310,183 +213,6 @@ export default function EditorScreen() {
     runAll();
   }, [video?.id]);
 
-  // ── Extract filmstrip frames for a clip ──────────────────────────────────────
-  const extractFilmstripFrames = useCallback(async (clip: WayinClip, videoUri: string) => {
-    const cacheKey = `${clip.start}-${clip.end}-${videoUri}`;
-    if (filmstripCacheRef.current[cacheKey]) {
-      setFilmstripFrames(filmstripCacheRef.current[cacheKey]);
-      setFilmstripSelectedIdx(null);
-      return;
-    }
-    setFilmstripLoading(true);
-    setFilmstripFrames([]);
-    setFilmstripSelectedIdx(null);
-
-    const FRAME_COUNT = 6;
-    const start = Math.max(0, clip.start);
-    const end = Math.max(start + 1, clip.end);
-    const duration = end - start;
-    const seekPoints = Array.from({ length: FRAME_COUNT }, (_, i) =>
-      start + (duration * i) / (FRAME_COUNT - 1)
-    );
-
-    const results: { uri: string; ts: number }[] = [];
-    for (const ts of seekPoints) {
-      try {
-        const uri = await generateThumbnailFromTimestamp(videoUri, ts);
-        if (uri) results.push({ uri, ts });
-      } catch { /* skip failed frames */ }
-    }
-
-    filmstripCacheRef.current[cacheKey] = results;
-    setFilmstripFrames(results);
-    setFilmstripLoading(false);
-  }, [generateThumbnailFromTimestamp]);
-
-  // ── Generate thumbnail from best WayinVideo clip ─────────────────────────────
-  const generateWayinThumbnail = useCallback(async (clip: WayinClip, videoUri: string) => {
-    if (generatingThumbnail) return;
-    setGeneratingThumbnail(true);
-    try {
-      // Use clip start + 1 second for a better frame (avoid cut-in artifacts)
-      const seekSeconds = clip.start > 0 ? clip.start + 1 : Math.max(0, clip.start);
-      const newThumb = await generateThumbnailFromTimestamp(videoUri, seekSeconds);
-      if (newThumb) {
-        setThumbnailUri(newThumb);
-        updateVideo(video!.id, { thumbnail: newThumb });
-        return newThumb;
-      }
-    } catch (e) {
-      console.warn('[thumbnail] WayinVideo thumbnail generation failed:', e);
-    } finally {
-      setGeneratingThumbnail(false);
-    }
-    return null;
-  }, [generatingThumbnail, generateThumbnailFromTimestamp, updateVideo, video]);
-
-  // ── Core WayinVideo analysis engine ──────────────────────────────────────────
-  /**
-   * Internal: runs upload → submit → poll without touching sheet UI.
-   * Callbacks fire when results arrive.
-   */
-  const runWayinAnalysisInternal = useCallback(async (opts: {
-    target: 'hook' | 'caption' | 'both' | 'browse';
-    silent?: boolean;
-    onHook?: (text: string) => void;
-    onCaption?: (caption: string, hashtags: string) => void;
-    onClips?: (clips: WayinClip[]) => void;
-  }) => {
-    if (!video) return { error: 'No video' };
-
-    let videoUrl = video.videoUri ?? '';
-    if (!videoUrl) return { error: 'No video URI' };
-
-    // Step 1: Ensure public HTTPS URL (use cache if available)
-    if (videoUrl.startsWith('file://') || videoUrl.startsWith('ph://')) {
-      if (wayinPublicUrlRef.current) {
-        videoUrl = wayinPublicUrlRef.current;
-      } else {
-        if (!opts.silent) setWayinPhase('uploading');
-        const { publicUrl, error: uploadErr } = await uploadVideoToStorage(
-          videoUrl, user?.id ?? 'unknown', video.id, () => {},
-        );
-        if (uploadErr || !publicUrl) {
-          if (!opts.silent) { setWayinPhase('error'); setWayinError(uploadErr ?? 'Upload failed.'); }
-          return { error: uploadErr ?? 'Upload failed.' };
-        }
-        videoUrl = publicUrl;
-        wayinPublicUrlRef.current = publicUrl;
-        updateVideo(video.id, { videoUri: publicUrl });
-      }
-    } else {
-      wayinPublicUrlRef.current = videoUrl;
-    }
-
-    // Step 2: Upload to WayinVideo (pre-signed)
-    if (!opts.silent) setWayinPhase('uploading');
-    const fileName = videoUrl.split('/').pop()?.split('?')[0] ?? 'video.mp4';
-    const { identity, error: wayinUpErr } = await uploadToWayin(videoUrl, fileName);
-    if (wayinUpErr || !identity) {
-      if (!opts.silent) { setWayinPhase('error'); setWayinError(wayinUpErr ?? 'WayinVideo upload failed.'); }
-      return { error: wayinUpErr ?? 'WayinVideo upload failed.' };
-    }
-
-    // Step 3: Submit task
-    if (!opts.silent) setWayinPhase('analyzing');
-    const { taskId, error: submitErr } = await submitWayinTask(identity, videoTitle || video.title || 'ViralCut Video');
-    if (submitErr || !taskId) {
-      if (!opts.silent) { setWayinPhase('error'); setWayinError(submitErr ?? 'Submit failed.'); }
-      return { error: submitErr ?? 'Submit failed.' };
-    }
-
-    // Step 4: Poll
-    return new Promise<{ clips?: WayinClip[]; error?: string }>((resolve) => {
-      if (wayinPollRef.current) clearInterval(wayinPollRef.current);
-      let attempts = 0;
-      const MAX_ATTEMPTS = 30;
-      let appliedOnce = false;
-
-      wayinPollRef.current = setInterval(async () => {
-        attempts++;
-        if (attempts > MAX_ATTEMPTS) {
-          clearInterval(wayinPollRef.current!);
-          const msg = 'Analysis timed out. Please try again.';
-          if (!opts.silent) { setWayinPhase('error'); setWayinError(msg); }
-          resolve({ error: msg });
-          return;
-        }
-
-        const result = await getWayinStatus(taskId);
-        if (result.error) return;
-
-        if (result.clips.length > 0) {
-          if (!opts.silent) setWayinClips(result.clips);
-          opts.onClips?.(result.clips);
-
-          // Apply best clip immediately on first results
-          if (!appliedOnce && result.clips.length > 0) {
-            appliedOnce = true;
-            const best = result.clips[0];
-            const target = opts.target;
-            if ((target === 'hook' || target === 'both') && best.title) {
-              opts.onHook?.(best.title);
-            }
-            if ((target === 'caption' || target === 'both') && best.description) {
-              const tags = best.hashtags?.length
-                ? best.hashtags.map(h => h.startsWith('#') ? h : `#${h}`).join(' ')
-                : '';
-              opts.onCaption?.(best.description, tags);
-            }
-            // Auto-generate thumbnail from the best viral clip's start timestamp
-            if (video?.videoUri && best.start >= 0) {
-              const videoUri = wayinPublicUrlRef.current ?? video.videoUri;
-              generateThumbnailFromTimestamp(videoUri, Math.max(0, best.start + 1))
-                .then(thumb => {
-                  if (thumb) {
-                    setThumbnailUri(thumb);
-                    updateVideo(video.id, { thumbnail: thumb });
-                  }
-                })
-                .catch(console.warn);
-            }
-          }
-        }
-
-        if (result.status === 'SUCCEEDED') {
-          clearInterval(wayinPollRef.current!);
-          if (!opts.silent) setWayinPhase('done');
-          resolve({ clips: result.clips });
-        } else if (result.status === 'FAILED') {
-          clearInterval(wayinPollRef.current!);
-          const msg = 'WayinVideo analysis failed. Please try again.';
-          if (!opts.silent) { setWayinPhase('error'); setWayinError(msg); }
-          resolve({ error: msg });
-        }
-      }, 6000);
-    });
-  }, [video, user, videoTitle, updateVideo]);
-
-  // ── Early return for missing video — AFTER all hooks ──
   if (!video) {
     return (
       <SafeAreaView style={[styles.safe, { alignItems: 'center', justifyContent: 'center', gap: 12 }]}>
@@ -499,82 +225,40 @@ export default function EditorScreen() {
     );
   }
 
-  // ── Generate Hook (via WayinVideo) ──────────────────────────────────────────
-  const handleGenerateHook = async () => {
-    // If we already have clips cached, apply instantly
-    if (wayinClips.length > 0) {
-      const best = wayinClips[0];
-      if (best.title) {
-        setHookText(best.title);
-        updateVideo(video.id, { hook: { type: hookType, text: best.title } });
-      }
-      // Show sheet so user can browse other clips
-      setWayinTarget('hook');
-      setShowWayinSheet(true);
-      return;
-    }
-
-    setGeneratingHook(true);
-    setWayinTarget('hook');
-    setWayinError(null);
-    setWayinClips([]);
-
-    await runWayinAnalysisInternal({
-      target: 'hook',
-      silent: false,
-      onHook: (text) => {
-        setHookText(text);
-        updateVideo(video.id, { hook: { type: hookType, text } });
-      },
-      onClips: () => {}, // clips set internally
-    });
-
-    setGeneratingHook(false);
-
-    // Show the clip browser if we got results
-    if (wayinClips.length > 0) setShowWayinSheet(true);
-  };
-
-  // ── Generate Caption (via WayinVideo) ───────────────────────────────────────
-  const handleGenerateCaption = async () => {
-    if (wayinClips.length > 0) {
-      const best = wayinClips[0];
-      if (best.description) setCaption(best.description);
-      if (best.hashtags?.length) {
-        setHashtags(best.hashtags.map(h => h.startsWith('#') ? h : `#${h}`).join(' '));
-      }
-      setWayinTarget('caption');
-      setShowWayinSheet(true);
-      return;
-    }
-
-    setGeneratingCaption(true);
-    setWayinTarget('caption');
-    setWayinError(null);
-    setWayinClips([]);
-
-    await runWayinAnalysisInternal({
-      target: 'caption',
-      silent: false,
-      onCaption: (cap, tags) => {
-        if (cap) setCaption(cap);
-        if (tags) setHashtags(tags);
-      },
-      onClips: () => {},
-    });
-
-    setGeneratingCaption(false);
-    if (wayinClips.length > 0) setShowWayinSheet(true);
-  };
-
-  // ── Generate Audio (Gemini) ──────────────────────────────────────────────────
-  const ensureFrame = useCallback(async () => {
+  const ensureFrame = async () => {
     if (frameCache.current === 'pending') {
       frameCache.current = video.videoUri ? await extractVideoFrame(video.videoUri) : null;
     }
     const frame = frameCache.current !== 'pending' ? frameCache.current : null;
     return frame ? { videoFrameBase64: frame.base64, videoFrameMime: frame.mime } : {};
-  }, [video.videoUri]);
+  };
+
+  const handleGenerateHook = async () => {
+    setGeneratingHook(true);
+    const framePayload = await ensureFrame();
+    const { data, error } = await callAIGenerator('hook', {
+      videoTitle: cleanTitle(video.title), hookType, platforms, ...framePayload,
+    });
+    setGeneratingHook(false);
+    if (error) { showAlert('AI Error', 'Could not generate hook. Please try again.'); return; }
+    if (data?.result) {
+      setHookText(data.result);
+      updateVideo(video.id, { hook: { type: hookType, text: data.result } });
+    }
+  };
+
+  const handleGenerateCaption = async () => {
+    setGeneratingCaption(true);
+    const framePayload = await ensureFrame();
+    const { data, error } = await callAIGenerator('caption', {
+      videoTitle: cleanTitle(video.title), platforms, ...framePayload,
+    });
+    setGeneratingCaption(false);
+    if (error) { showAlert('AI Error', 'Could not generate caption. Please try again.'); return; }
+    const result = data?.result;
+    if (result?.caption) setCaption(result.caption);
+    if (result?.hashtags) setHashtags(result.hashtags);
+  };
 
   const handleGenerateAudio = useCallback(async () => {
     setGeneratingAudio(true);
@@ -585,8 +269,8 @@ export default function EditorScreen() {
     setGeneratingAudio(false);
     if (error) { showAlert('AI Error', error); return; }
     const song = data?.result;
-    if (song && song.id) { setAiPickedSong(song); setSelectedAudioId(song.id); }
-  }, [video.title, platforms, showAlert, ensureFrame]);
+    if (song?.id) { setAiPickedSong(song); setSelectedAudioId(song.id); }
+  }, [video.title, platforms, showAlert]);
 
   const handleGenerateTitle = useCallback(async () => {
     setGeneratingTitle(true);
@@ -598,36 +282,9 @@ export default function EditorScreen() {
     if (error) { showAlert('AI Error', error); return; }
     if (data?.result) {
       setVideoTitle(data.result);
-      if (video) updateVideo(video.id, { title: data.result });
+      updateVideo(video.id, { title: data.result });
     }
-  }, [video, showAlert, ensureFrame, updateVideo]);
-
-  // ── Browse all clips (manual button) ────────────────────────────────────────
-  const handleBrowseClips = async () => {
-    if (wayinClips.length > 0) {
-      setWayinTarget('browse');
-      setShowWayinSheet(true);
-      return;
-    }
-    setWayinTarget('browse');
-    setWayinError(null);
-    setWayinClips([]);
-    setShowWayinSheet(true);
-    setWayinPhase('uploading');
-
-    await runWayinAnalysisInternal({
-      target: 'browse',
-      silent: false,
-      onClips: () => {},
-    });
-  };
-
-  const closeWayinSheet = () => {
-    if (wayinPollRef.current) clearInterval(wayinPollRef.current!);
-    setShowWayinSheet(false);
-    setWayinPhase('idle');
-    setWayinError(null);
-  };
+  }, [video, showAlert, updateVideo]);
 
   const snapshotEditorState = () => {
     const audioSource = aiPickedSong && selectedAudioId === aiPickedSong.id
@@ -679,141 +336,6 @@ export default function EditorScreen() {
     ]);
   };
 
-  /** Apply clip metadata to editor and persist to library */
-  const applyClipMeta = (clip: WayinClip, extraVideoFields?: Record<string, unknown>) => {
-    const newTitle = clip.title || videoTitle;
-    const newCaption = clip.description || caption;
-    const newHashtags = clip.hashtags?.length
-      ? clip.hashtags.map(h => h.startsWith('#') ? h : `#${h}`).join(' ')
-      : hashtags;
-
-    if (clip.title) {
-      setHookText(clip.title);
-      setVideoTitle(clip.title);
-    }
-    if (clip.description) setCaption(clip.description);
-    if (clip.hashtags?.length) setHashtags(newHashtags);
-
-    updateVideo(video.id, {
-      title: newTitle,
-      caption: newCaption,
-      hashtags: newHashtags.split(/\s+/).filter(Boolean),
-      hook: { type: hookType, text: clip.title || hookText },
-      platforms,
-      status: video.status === 'published' ? 'published' : 'ready',
-      ...extraVideoFields,
-    });
-  };
-
-  /** Open clip detail sheet */
-  const handleSelectWayinClip = (clip: WayinClip) => {
-    setSelectedWayinClip(clip);
-    setTrimPhase('idle');
-    setTrimError(null);
-    setShowWayinSheet(false);
-    setShowClipDetailSheet(true);
-    // Kick off filmstrip extraction
-    const videoUri = wayinPublicUrlRef.current ?? video?.videoUri ?? '';
-    if (videoUri) extractFilmstripFrames(clip, videoUri);
-  };
-
-  /** Apply content only, no trim */
-  const applyWayinClipOnly = () => {
-    if (!selectedWayinClip) return;
-    applyClipMeta(selectedWayinClip);
-    setShowClipDetailSheet(false);
-    if (wayinPollRef.current) clearInterval(wayinPollRef.current!);
-    setWayinPhase('idle');
-    showAlert(
-      'Saved to Library!',
-      'WayinVideo hook, caption and hashtags applied.',
-      [
-        { text: 'View Library', onPress: () => router.push('/(tabs)/library') },
-        { text: 'Keep Editing', style: 'cancel' },
-      ],
-    );
-  };
-
-  /** Headless trim to clip timestamps then apply meta */
-  const handleTrimToClip = async () => {
-    if (!selectedWayinClip || !video?.videoUri) return;
-    const clip = selectedWayinClip;
-    const videoUri = video.videoUri;
-
-    if (!videoUri.startsWith('file://') && !videoUri.startsWith('ph://')) {
-      showAlert(
-        'Trimming Unavailable',
-        'The video was already uploaded to cloud storage. Trimming requires the original local file.',
-        [
-          { text: 'Apply Content Only', onPress: applyWayinClipOnly },
-          { text: 'Cancel', style: 'cancel' },
-        ],
-      );
-      return;
-    }
-
-    setTrimPhase('trimming');
-    setTrimError(null);
-
-    const clipDuration = Math.max(1, clip.end - clip.start);
-    startTrimTimer(clipDuration);
-
-    try {
-      const { trim } = await import('react-native-video-trim');
-      const result = await trim(videoUri, {
-        startTime: Math.round(clip.start * 1000),
-        endTime: Math.round(clip.end * 1000),
-      });
-      stopTrimTimer();
-      setTrimProgress(100);
-      const outputUri = result.outputPath.startsWith('file://') ? result.outputPath : `file://${result.outputPath}`;
-      applyClipMeta(clip, { videoUri: outputUri });
-      setTrimPhase('done');
-    } catch (e: any) {
-      stopTrimTimer();
-      console.error('[trim] Error:', e);
-      setTrimPhase('error');
-      setTrimError(String(e?.message ?? e));
-    }
-  };
-
-  const stopTrimTimer = () => {
-    if (trimTimerRef.current) {
-      clearInterval(trimTimerRef.current);
-      trimTimerRef.current = null;
-    }
-  };
-
-  const startTrimTimer = (clipDurationSeconds: number) => {
-    // Estimate: processing ≈ 1.5× clip duration, min 6 s, max 120 s
-    const estimate = Math.min(120, Math.max(6, clipDurationSeconds * 1.5));
-    setTrimEstimate(estimate);
-    setTrimProgress(0);
-    setTrimElapsed(0);
-    trimStartTimeRef.current = Date.now();
-
-    trimTimerRef.current = setInterval(() => {
-      const elapsed = (Date.now() - trimStartTimeRef.current) / 1000;
-      setTrimElapsed(elapsed);
-      // Exponential approach to 90% — never reaches 100% until trim completes
-      const pct = 90 * (1 - Math.exp(-elapsed / (estimate * 0.6)));
-      setTrimProgress(Math.min(89, pct));
-    }, 250);
-  };
-
-  const closeClipDetailSheet = () => {
-    setShowClipDetailSheet(false);
-    setTrimPhase('idle');
-    setTrimError(null);
-    setSelectedWayinClip(null);
-    setFilmstripFrames([]);
-    setFilmstripSelectedIdx(null);
-    stopTrimTimer();
-    setTrimProgress(0);
-    setTrimElapsed(0);
-    if (wayinClips.length > 0) setShowWayinSheet(true);
-  };
-
   const handleTikTokPublish = async () => {
     const snap = snapshotEditorState();
     let videoUrl = video?.videoUri ?? '';
@@ -826,7 +348,7 @@ export default function EditorScreen() {
         videoUrl, user?.id ?? 'unknown', video.id, (pct) => setUploadProgress(pct),
       );
       setUploadingToStorage(false);
-      if (error || !publicUrl) { showAlert('Upload Failed', error ?? 'Could not upload video to storage.'); return; }
+      if (error || !publicUrl) { showAlert('Upload Failed', error ?? 'Could not upload video.'); return; }
       videoUrl = publicUrl;
       updateVideo(video.id, { videoUri: publicUrl });
     }
@@ -850,9 +372,6 @@ export default function EditorScreen() {
     { id: 'audio', label: 'Audio' },
     { id: 'platforms', label: 'Platforms' },
   ];
-
-  const selectedClipIdx = selectedWayinClip ? wayinClips.indexOf(selectedWayinClip) : -1;
-  const isWayinRunning = wayinPhase === 'uploading' || wayinPhase === 'analyzing';
 
   return (
     <SafeAreaView style={styles.safe} edges={['top']}>
@@ -916,18 +435,18 @@ export default function EditorScreen() {
               <Pressable style={styles.playBtn} onPress={() => setShowPlayer(true)} hitSlop={8}>
                 <MaterialIcons name="play-circle-filled" size={44} color="rgba(255,255,255,0.9)" />
               </Pressable>
-              {/* Thumbnail refresh button */}
               <Pressable
                 style={styles.thumbRefreshBtn}
                 onPress={async () => {
                   if (!video?.videoUri || generatingThumbnail) return;
                   setGeneratingThumbnail(true);
-                  const videoUri = wayinPublicUrlRef.current ?? video.videoUri;
-                  const seekSec = wayinClips.length > 0 ? Math.max(0, wayinClips[0].start + 1) : 2;
-                  const thumb = await generateThumbnailFromTimestamp(videoUri, seekSec);
-                  if (thumb) {
-                    setThumbnailUri(thumb);
-                    updateVideo(video.id, { thumbnail: thumb });
+                  try {
+                    const VideoThumbnails = await import('expo-video-thumbnails');
+                    const resolved = await resolveVideoUri(video.videoUri);
+                    const { uri } = await VideoThumbnails.getThumbnailAsync(resolved, { time: 2000, quality: 0.85 });
+                    if (uri) { setThumbnailUri(uri); updateVideo(video.id, { thumbnail: uri }); }
+                  } catch (e) {
+                    console.warn('[thumbnail] refresh failed:', e);
                   }
                   setGeneratingThumbnail(false);
                 }}
@@ -939,17 +458,6 @@ export default function EditorScreen() {
               </Pressable>
             </View>
           </View>
-
-          {/* WayinVideo clips available banner */}
-          {wayinClips.length > 0 ? (
-            <Pressable style={styles.clipsBanner} onPress={handleBrowseClips}>
-              <MaterialCommunityIcons name="lightning-bolt" size={14} color="#6c47ff" />
-              <Text style={styles.clipsBannerText}>
-                {wayinClips.length} viral clip{wayinClips.length !== 1 ? 's' : ''} detected — tap to browse
-              </Text>
-              <MaterialIcons name="chevron-right" size={16} color="#6c47ff" />
-            </Pressable>
-          ) : null}
 
           {/* Tabs */}
           <View style={styles.tabBar}>
@@ -984,20 +492,15 @@ export default function EditorScreen() {
                   ))}
                 </View>
 
-                {/* WayinVideo-powered hook button */}
                 <Pressable
-                  style={({ pressed }) => [styles.wayinAiBtn, pressed && { opacity: 0.85 }, generatingHook && styles.aiBtnLoading]}
+                  style={({ pressed }) => [styles.aiBtn, pressed && { opacity: 0.85 }, generatingHook && styles.aiBtnLoading]}
                   onPress={handleGenerateHook}
-                  disabled={generatingHook || isWayinRunning}
+                  disabled={generatingHook}
                 >
                   {generatingHook ? (
-                    <><ActivityIndicator size="small" color="#fff" /><Text style={styles.wayinAiBtnText}>Analyzing video...</Text></>
+                    <><ActivityIndicator size="small" color={Colors.primaryLight} /><Text style={styles.aiBtnText}>Writing hook...</Text></>
                   ) : (
-                    <>
-                      <MaterialCommunityIcons name="lightning-bolt" size={16} color="#fff" />
-                      <Text style={styles.wayinAiBtnText}>{hookText ? 'Regenerate Hook' : 'AI Generate Hook'}</Text>
-                      <View style={styles.wayinBadge}><Text style={styles.wayinBadgeText}>WayinVideo</Text></View>
-                    </>
+                    <><MaterialCommunityIcons name="auto-fix" size={16} color={Colors.primaryLight} /><Text style={styles.aiBtnText}>{hookText ? 'Regenerate Hook' : 'AI Generate Hook'}</Text></>
                   )}
                 </Pressable>
 
@@ -1012,7 +515,7 @@ export default function EditorScreen() {
                       updateVideo(video.id, { hook: { type: hookType, text } });
                     }, 800);
                   }}
-                  placeholder="WayinVideo AI will write a viral hook from your video..."
+                  placeholder="AI will write a viral hook for your video..."
                   placeholderTextColor={Colors.textMuted}
                   multiline
                   numberOfLines={3}
@@ -1024,20 +527,15 @@ export default function EditorScreen() {
             {/* ── Caption Tab ── */}
             {tab === 'caption' ? (
               <View style={styles.section}>
-                {/* WayinVideo-powered caption button */}
                 <Pressable
-                  style={({ pressed }) => [styles.wayinAiBtn, pressed && { opacity: 0.85 }, generatingCaption && styles.aiBtnLoading]}
+                  style={({ pressed }) => [styles.aiBtn, pressed && { opacity: 0.85 }, generatingCaption && styles.aiBtnLoading]}
                   onPress={handleGenerateCaption}
-                  disabled={generatingCaption || isWayinRunning}
+                  disabled={generatingCaption}
                 >
                   {generatingCaption ? (
-                    <><ActivityIndicator size="small" color="#fff" /><Text style={styles.wayinAiBtnText}>Analyzing video...</Text></>
+                    <><ActivityIndicator size="small" color={Colors.primaryLight} /><Text style={styles.aiBtnText}>Writing caption...</Text></>
                   ) : (
-                    <>
-                      <MaterialCommunityIcons name="lightning-bolt" size={16} color="#fff" />
-                      <Text style={styles.wayinAiBtnText}>{caption ? 'Regenerate Caption & Hashtags' : 'AI Write Caption & Hashtags'}</Text>
-                      <View style={styles.wayinBadge}><Text style={styles.wayinBadgeText}>WayinVideo</Text></View>
-                    </>
+                    <><MaterialCommunityIcons name="auto-fix" size={16} color={Colors.primaryLight} /><Text style={styles.aiBtnText}>{caption ? 'Regenerate Caption & Hashtags' : 'AI Write Caption & Hashtags'}</Text></>
                   )}
                 </Pressable>
 
@@ -1046,7 +544,7 @@ export default function EditorScreen() {
                   style={[styles.textInput, { minHeight: 100 }]}
                   value={caption}
                   onChangeText={setCaption}
-                  placeholder="WayinVideo AI will write your caption from the video..."
+                  placeholder="AI will write your caption..."
                   placeholderTextColor={Colors.textMuted}
                   multiline
                 />
@@ -1069,7 +567,7 @@ export default function EditorScreen() {
               </View>
             ) : null}
 
-            {/* ── Audio Tab (still Gemini) ── */}
+            {/* ── Audio Tab ── */}
             {tab === 'audio' ? (
               <View style={styles.section}>
                 <Pressable
@@ -1189,436 +687,6 @@ export default function EditorScreen() {
           <View style={{ height: Spacing.xl }} />
         </ScrollView>
       </KeyboardAvoidingView>
-
-      {/* ── WayinVideo Results Sheet ── */}
-      <Modal visible={showWayinSheet} animationType="slide" transparent onRequestClose={closeWayinSheet}>
-        <View style={styles.sheetOverlay}>
-          <Pressable
-            style={StyleSheet.absoluteFillObject}
-            onPress={() => { if (!isWayinRunning) closeWayinSheet(); }}
-          />
-          <View style={[styles.tiktokSheet, { maxHeight: '85%' }]}>
-            <View style={styles.sheetHandle} />
-
-            <View style={styles.sheetHeader}>
-              <View style={[styles.sheetIcon, { backgroundColor: '#6c47ff' }]}>
-                <MaterialCommunityIcons name="lightning-bolt" size={22} color="#fff" />
-              </View>
-              <View style={{ flex: 1 }}>
-                <Text style={styles.sheetTitle}>WayinVideo AI</Text>
-                <Text style={styles.sheetSub}>
-                  {wayinTarget === 'hook' ? 'Hook generation from video analysis'
-                    : wayinTarget === 'caption' ? 'Caption & hashtag generation'
-                    : 'Viral clip detection & trim'}
-                </Text>
-              </View>
-              {!isWayinRunning ? (
-                <Pressable onPress={closeWayinSheet} hitSlop={8}>
-                  <MaterialIcons name="close" size={20} color={Colors.textMuted} />
-                </Pressable>
-              ) : null}
-            </View>
-
-            {isWayinRunning ? (
-              <View style={styles.sheetPhase}>
-                <ActivityIndicator size="large" color="#6c47ff" />
-                <Text style={styles.sheetPhaseTitle}>
-                  {wayinPhase === 'uploading' ? 'Uploading to WayinVideo...' : 'Analyzing your video...'}
-                </Text>
-                <Text style={styles.sheetPhaseSub}>
-                  {wayinPhase === 'uploading'
-                    ? 'Transferring your video for AI analysis...'
-                    : 'Detecting viral moments and generating content. This may take up to a minute.'}
-                </Text>
-              </View>
-            ) : null}
-
-            {(wayinPhase === 'done' || (wayinPhase === 'analyzing' && wayinClips.length > 0) || (wayinPhase === 'idle' && wayinClips.length > 0)) ? (
-              <ScrollView showsVerticalScrollIndicator={false} style={{ maxHeight: 480 }}>
-                {wayinClips.length > 0 ? (
-                  <View style={styles.wayinSuccessBanner}>
-                    <MaterialIcons name="check-circle" size={16} color={Colors.emerald} />
-                    <Text style={styles.wayinSuccessText}>
-                      {wayinClips.length} viral clip{wayinClips.length !== 1 ? 's' : ''} detected — tap to apply or trim
-                    </Text>
-                  </View>
-                ) : null}
-                {wayinClips.map((clip, idx) => (
-                  <Pressable
-                    key={idx}
-                    style={({ pressed }) => [styles.wayinClipCard, pressed && { opacity: 0.85 }]}
-                    onPress={() => handleSelectWayinClip(clip)}
-                  >
-                    <View style={styles.wayinClipHeader}>
-                      <View style={styles.wayinRankBadge}>
-                        <Text style={styles.wayinRankText}>#{idx + 1}</Text>
-                      </View>
-                      {clip.virality_score > 0 ? (
-                        <View style={styles.wayinScoreBadge}>
-                          <MaterialIcons name="trending-up" size={11} color="#6c47ff" />
-                          <Text style={styles.wayinScoreText}>{Math.round(clip.virality_score * 100)}% viral</Text>
-                        </View>
-                      ) : null}
-                      {(clip.start > 0 || clip.end > 0) ? (
-                        <View style={styles.wayinTimestampBadge}>
-                          <MaterialIcons name="schedule" size={10} color={Colors.textMuted} />
-                          <Text style={styles.wayinTimestampText}>
-                            {formatTimestamp(clip.start)} – {formatTimestamp(clip.end)}
-                          </Text>
-                        </View>
-                      ) : null}
-                      <MaterialIcons name="chevron-right" size={20} color="#6c47ff" style={{ marginLeft: 'auto' }} />
-                    </View>
-                    <Text style={styles.wayinClipTitle} numberOfLines={2}>{clip.title}</Text>
-                    {clip.description ? (
-                      <Text style={styles.wayinClipDesc} numberOfLines={2}>{clip.description}</Text>
-                    ) : null}
-                    {clip.hashtags?.length > 0 ? (
-                      <Text style={styles.wayinClipTags} numberOfLines={1}>
-                        {clip.hashtags.slice(0, 4).map(h => h.startsWith('#') ? h : `#${h}`).join(' ')}
-                      </Text>
-                    ) : null}
-                    <View style={styles.wayinApplyRow}>
-                      <MaterialCommunityIcons name="scissors-cutting" size={12} color="#6c47ff" />
-                      <Text style={styles.wayinApplyText}>Tap to review — trim or apply content</Text>
-                    </View>
-                  </Pressable>
-                ))}
-              </ScrollView>
-            ) : null}
-
-            {wayinPhase === 'error' ? (
-              <View style={styles.sheetPhase}>
-                <MaterialIcons name="error-outline" size={52} color={Colors.error} />
-                <Text style={styles.sheetPhaseTitle}>Analysis Failed</Text>
-                <Text style={styles.sheetPhaseSub}>{wayinError}</Text>
-                <Pressable
-                  style={[styles.tiktokPublishBtn, { marginTop: Spacing.md, backgroundColor: '#6c47ff' }]}
-                  onPress={() => { closeWayinSheet(); handleBrowseClips(); }}
-                >
-                  <Text style={styles.tiktokPublishBtnText}>Try Again</Text>
-                </Pressable>
-              </View>
-            ) : null}
-          </View>
-        </View>
-      </Modal>
-
-      {/* ── Clip Detail & Trim Sheet ── */}
-      <Modal visible={showClipDetailSheet} animationType="slide" transparent onRequestClose={closeClipDetailSheet}>
-        <View style={styles.sheetOverlay}>
-          <Pressable
-            style={StyleSheet.absoluteFillObject}
-            onPress={() => { if (trimPhase !== 'trimming') closeClipDetailSheet(); }}
-          />
-          <View style={[styles.tiktokSheet, { maxHeight: '92%' }]}>
-            <View style={styles.sheetHandle} />
-
-            <View style={styles.sheetHeader}>
-              <View style={[styles.sheetIcon, { backgroundColor: '#6c47ff' }]}>
-                <MaterialCommunityIcons name="scissors-cutting" size={20} color="#fff" />
-              </View>
-              <View style={{ flex: 1 }}>
-                <Text style={styles.sheetTitle}>
-                  Viral Clip {selectedClipIdx >= 0 ? `#${selectedClipIdx + 1}` : ''}
-                </Text>
-                <Text style={styles.sheetSub}>Review, trim or apply content to editor</Text>
-              </View>
-              {trimPhase !== 'trimming' ? (
-                <Pressable onPress={closeClipDetailSheet} hitSlop={8}>
-                  <MaterialIcons name="close" size={20} color={Colors.textMuted} />
-                </Pressable>
-              ) : null}
-            </View>
-
-            {selectedWayinClip && trimPhase === 'idle' ? (
-              <ScrollView showsVerticalScrollIndicator={false}>
-
-                {/* ── Filmstrip ── */}
-                <View style={styles.filmstripSection}>
-                  <View style={styles.filmstripHeader}>
-                    <MaterialIcons name="photo-library" size={13} color={Colors.textMuted} />
-                    <Text style={styles.filmstripLabel}>PICK THUMBNAIL FRAME</Text>
-                    {filmstripLoading ? (
-                      <ActivityIndicator size="small" color="#6c47ff" style={{ marginLeft: 'auto' }} />
-                    ) : filmstripFrames.length > 0 ? (
-                      <Text style={styles.filmstripHint}>tap to set as thumbnail</Text>
-                    ) : null}
-                  </View>
-
-                  {filmstripLoading && filmstripFrames.length === 0 ? (
-                    <View style={styles.filmstripSkeleton}>
-                      {[0,1,2,3,4,5].map(i => (
-                        <View key={i} style={styles.filmstripSkeletonFrame} />
-                      ))}
-                    </View>
-                  ) : filmstripFrames.length > 0 ? (
-                    <ScrollView
-                      horizontal
-                      showsHorizontalScrollIndicator={false}
-                      contentContainerStyle={styles.filmstripScroll}
-                    >
-                      {filmstripFrames.map((frame, idx) => {
-                        const isSelected = filmstripSelectedIdx === idx;
-                        return (
-                          <Pressable
-                            key={idx}
-                            style={({ pressed }) => [
-                              styles.filmstripFrame,
-                              isSelected && styles.filmstripFrameSelected,
-                              pressed && { opacity: 0.82 },
-                            ]}
-                            onPress={() => {
-                              setFilmstripSelectedIdx(idx);
-                              setThumbnailUri(frame.uri);
-                              if (video) updateVideo(video.id, { thumbnail: frame.uri });
-                            }}
-                          >
-                            <Image
-                              source={{ uri: frame.uri }}
-                              style={styles.filmstripImg}
-                              contentFit="cover"
-                              transition={150}
-                            />
-                            <View style={styles.filmstripTs}>
-                              <Text style={styles.filmstripTsText}>{formatTimestamp(frame.ts)}</Text>
-                            </View>
-                            {isSelected ? (
-                              <View style={styles.filmstripSelectedOverlay}>
-                                <View style={styles.filmstripCheckCircle}>
-                                  <MaterialIcons name="check" size={12} color="#fff" />
-                                </View>
-                              </View>
-                            ) : null}
-                          </Pressable>
-                        );
-                      })}
-                    </ScrollView>
-                  ) : !filmstripLoading ? (
-                    <View style={styles.filmstripEmpty}>
-                      <MaterialIcons name="image-not-supported" size={18} color={Colors.textMuted} />
-                      <Text style={styles.filmstripEmptyText}>Frame extraction not available on this device</Text>
-                    </View>
-                  ) : null}
-                </View>
-
-                {/* Timestamp bar */}
-                {(selectedWayinClip.start > 0 || selectedWayinClip.end > 0) ? (
-                  <View style={styles.clipTimestampBar}>
-                    <View style={styles.clipTimestampItem}>
-                      <Text style={styles.clipTimestampLabel}>START</Text>
-                      <Text style={styles.clipTimestampValue}>{formatTimestamp(selectedWayinClip.start)}</Text>
-                    </View>
-                    <View style={styles.clipDurationPill}>
-                      <MaterialCommunityIcons name="scissors-cutting" size={12} color="#6c47ff" />
-                      <Text style={styles.clipDurationText}>
-                        {formatTimestamp(Math.max(0, selectedWayinClip.end - selectedWayinClip.start))}
-                      </Text>
-                    </View>
-                    <View style={styles.clipTimestampItem}>
-                      <Text style={styles.clipTimestampLabel}>END</Text>
-                      <Text style={styles.clipTimestampValue}>{formatTimestamp(selectedWayinClip.end)}</Text>
-                    </View>
-                  </View>
-                ) : null}
-
-                {/* Virality score bar */}
-                {selectedWayinClip.virality_score > 0 ? (
-                  <View style={styles.clipViralRow}>
-                    <MaterialIcons name="trending-up" size={14} color="#6c47ff" />
-                    <Text style={styles.clipViralLabel}>Viral Score</Text>
-                    <View style={styles.clipViralBarBg}>
-                      <View style={[styles.clipViralBarFill, { width: `${Math.min(100, Math.round(selectedWayinClip.virality_score * 100))}%` as any }]} />
-                    </View>
-                    <Text style={styles.clipViralPct}>{Math.round(selectedWayinClip.virality_score * 100)}%</Text>
-                  </View>
-                ) : null}
-
-                {selectedWayinClip.title ? (
-                  <View style={styles.clipMetaSection}>
-                    <Text style={styles.clipMetaLabel}>HOOK / TITLE</Text>
-                    <Text style={styles.clipMetaValue}>{selectedWayinClip.title}</Text>
-                  </View>
-                ) : null}
-
-                {selectedWayinClip.description ? (
-                  <View style={styles.clipMetaSection}>
-                    <Text style={styles.clipMetaLabel}>CAPTION</Text>
-                    <Text style={styles.clipMetaValue}>{selectedWayinClip.description}</Text>
-                  </View>
-                ) : null}
-
-                {selectedWayinClip.hashtags?.length > 0 ? (
-                  <View style={styles.clipMetaSection}>
-                    <Text style={styles.clipMetaLabel}>HASHTAGS</Text>
-                    <View style={styles.clipHashtagRow}>
-                      {selectedWayinClip.hashtags.slice(0, 8).map((h, i) => (
-                        <View key={i} style={styles.clipHashtagChip}>
-                          <Text style={styles.clipHashtagText}>{h.startsWith('#') ? h : `#${h}`}</Text>
-                        </View>
-                      ))}
-                    </View>
-                  </View>
-                ) : null}
-
-                {/* Set as Thumbnail */}
-                {(selectedWayinClip.start >= 0) ? (
-                  <Pressable
-                    style={({ pressed }) => [styles.clipThumbBtn, pressed && { opacity: 0.85 }, generatingThumbnail && { opacity: 0.6 }]}
-                    onPress={() => {
-                      if (!video?.videoUri) return;
-                      generateWayinThumbnail(selectedWayinClip, wayinPublicUrlRef.current ?? video.videoUri);
-                    }}
-                    disabled={generatingThumbnail}
-                  >
-                    {generatingThumbnail ? (
-                      <><ActivityIndicator size="small" color="#6c47ff" /><Text style={styles.clipThumbBtnText}>Generating thumbnail...</Text></>
-                    ) : (
-                      <><MaterialIcons name="photo-camera" size={16} color="#6c47ff" /><Text style={styles.clipThumbBtnText}>Use Clip Frame as Thumbnail</Text>{thumbnailUri ? <View style={styles.thumbPreviewDot}><MaterialIcons name="check" size={10} color="#fff" /></View> : null}</>
-                    )}
-                  </Pressable>
-                ) : null}
-
-                {/* Primary action: Trim */}
-                <Pressable
-                  style={({ pressed }) => [styles.clipTrimBtn, pressed && { opacity: 0.85 }]}
-                  onPress={handleTrimToClip}
-                >
-                  <MaterialCommunityIcons name="scissors-cutting" size={20} color="#fff" />
-                  <View style={{ flex: 1 }}>
-                    <Text style={styles.clipTrimBtnTitle}>Trim Video to This Clip</Text>
-                    {(selectedWayinClip.start > 0 || selectedWayinClip.end > 0) ? (
-                      <Text style={styles.clipTrimBtnSub}>
-                        {formatTimestamp(selectedWayinClip.start)} – {formatTimestamp(selectedWayinClip.end)}
-                        {' · '}{formatTimestamp(Math.max(0, selectedWayinClip.end - selectedWayinClip.start))} segment
-                      </Text>
-                    ) : null}
-                  </View>
-                  <MaterialIcons name="chevron-right" size={20} color="rgba(255,255,255,0.7)" />
-                </Pressable>
-
-                {/* Secondary action: Apply content only */}
-                <Pressable
-                  style={({ pressed }) => [styles.clipActionBtnOutline, pressed && { opacity: 0.8 }]}
-                  onPress={applyWayinClipOnly}
-                >
-                  <MaterialCommunityIcons name="auto-fix" size={15} color="#6c47ff" />
-                  <Text style={styles.clipActionBtnOutlineText}>Apply Hook, Caption & Hashtags (no trim)</Text>
-                </Pressable>
-
-                <Text style={styles.clipTrimNote}>
-                  Trimming cuts your video file to just this segment before posting. Your original file stays on device.
-                </Text>
-              </ScrollView>
-            ) : null}
-
-            {trimPhase === 'trimming' ? (
-              <View style={styles.sheetPhase}>
-                {/* Circular spinner */}
-                <ActivityIndicator size="large" color="#6c47ff" />
-
-                <Text style={styles.sheetPhaseTitle}>Trimming video...</Text>
-                <Text style={styles.sheetPhaseSub}>
-                  Cutting to{' '}
-                  {selectedWayinClip
-                    ? `${formatTimestamp(selectedWayinClip.start)} – ${formatTimestamp(selectedWayinClip.end)}`
-                    : 'selected segment'}
-                </Text>
-
-                {/* Progress bar */}
-                <View style={styles.trimProgressWrap}>
-                  <View style={styles.trimProgressBg}>
-                    <View
-                      style={[
-                        styles.trimProgressFill,
-                        { width: `${trimProgress}%` as any },
-                      ]}
-                    />
-                  </View>
-                  <View style={styles.trimProgressRow}>
-                    <Text style={styles.trimProgressPct}>
-                      {trimProgress < 100 ? `${Math.round(trimProgress)}%` : '100%'}
-                    </Text>
-                    <Text style={styles.trimProgressTime}>
-                      {Math.floor(trimElapsed)}s elapsed
-                    </Text>
-                    {trimEstimate > 0 && trimElapsed < trimEstimate ? (
-                      <Text style={styles.trimProgressEst}>
-                        ~{Math.max(0, Math.ceil(trimEstimate - trimElapsed))}s left
-                      </Text>
-                    ) : null}
-                  </View>
-                </View>
-
-                {/* Stage label */}
-                <View style={styles.trimStageRow}>
-                  {[
-                    { label: 'Read', done: trimProgress >= 15 },
-                    { label: 'Decode', done: trimProgress >= 40 },
-                    { label: 'Encode', done: trimProgress >= 75 },
-                    { label: 'Write', done: trimProgress >= 100 },
-                  ].map((stage, i) => (
-                    <View key={i} style={styles.trimStageItem}>
-                      <View style={[styles.trimStageDot, stage.done && styles.trimStageDotDone]} />
-                      <Text style={[styles.trimStageLabel, stage.done && styles.trimStageLabelDone]}>
-                        {stage.label}
-                      </Text>
-                    </View>
-                  ))}
-                </View>
-
-                <Text style={styles.trimProgressNote}>
-                  Processing time varies with video length and device speed.
-                </Text>
-              </View>
-            ) : null}
-
-            {trimPhase === 'done' ? (
-              <View style={styles.sheetPhase}>
-                <MaterialIcons name="check-circle" size={56} color={Colors.emerald} />
-                <Text style={styles.sheetPhaseTitle}>Video Trimmed!</Text>
-                <Text style={styles.sheetPhaseSub}>
-                  Hook, caption and hashtags applied from WayinVideo. Ready to publish!
-                </Text>
-                <Pressable
-                  style={[styles.tiktokPublishBtn, { marginTop: Spacing.md, backgroundColor: '#6c47ff' }]}
-                  onPress={() => {
-                    setShowClipDetailSheet(false);
-                    setTrimPhase('idle');
-                    setSelectedWayinClip(null);
-                    setWayinPhase('idle');
-                    router.push('/(tabs)/library');
-                  }}
-                >
-                  <MaterialIcons name="video-library" size={18} color="#fff" />
-                  <Text style={styles.tiktokPublishBtnText}>View in Library</Text>
-                </Pressable>
-              </View>
-            ) : null}
-
-            {trimPhase === 'error' ? (
-              <View style={styles.sheetPhase}>
-                <MaterialIcons name="error-outline" size={52} color={Colors.error} />
-                <Text style={styles.sheetPhaseTitle}>Trim Failed</Text>
-                <Text style={styles.sheetPhaseSub}>{trimError}</Text>
-                <Pressable
-                  style={[styles.tiktokPublishBtn, { marginTop: Spacing.md, backgroundColor: Colors.error }]}
-                  onPress={() => setTrimPhase('idle')}
-                >
-                  <Text style={styles.tiktokPublishBtnText}>Try Again</Text>
-                </Pressable>
-                <Pressable
-                  style={[styles.clipActionBtnOutline, { marginTop: Spacing.sm }]}
-                  onPress={applyWayinClipOnly}
-                >
-                  <MaterialCommunityIcons name="auto-fix" size={14} color="#6c47ff" />
-                  <Text style={styles.clipActionBtnOutlineText}>Apply Content Only Instead</Text>
-                </Pressable>
-              </View>
-            ) : null}
-          </View>
-        </View>
-      </Modal>
 
       {/* ── TikTok Publish Sheet ── */}
       <Modal
@@ -1823,16 +891,11 @@ const styles = StyleSheet.create({
   },
   hookOverlayText: { fontSize: FontSize.xs, fontWeight: FontWeight.bold, color: '#fff', textAlign: 'center', includeFontPadding: false },
   playBtn: { position: 'absolute', top: 0, left: 0, right: 0, bottom: 0, alignItems: 'center', justifyContent: 'center' },
-
-  // Clips available banner
-  clipsBanner: {
-    flexDirection: 'row', alignItems: 'center', gap: 6,
-    backgroundColor: '#6c47ff18', borderRadius: Radius.md, marginHorizontal: Spacing.md,
-    marginBottom: Spacing.sm, paddingHorizontal: Spacing.sm + 2, paddingVertical: 8,
-    borderWidth: 1, borderColor: '#6c47ff33',
+  thumbRefreshBtn: {
+    position: 'absolute', bottom: 6, right: 6,
+    backgroundColor: 'rgba(0,0,0,0.55)', borderRadius: Radius.full,
+    width: 28, height: 28, alignItems: 'center', justifyContent: 'center',
   },
-  clipsBannerText: { flex: 1, fontSize: FontSize.sm, color: '#6c47ff', fontWeight: FontWeight.semibold, includeFontPadding: false },
-
   tabBar: {
     flexDirection: 'row', marginHorizontal: Spacing.md,
     backgroundColor: Colors.surfaceElevated, borderRadius: Radius.full,
@@ -1845,28 +908,13 @@ const styles = StyleSheet.create({
   tabContent: { paddingTop: Spacing.md },
   section: { paddingHorizontal: Spacing.md, gap: Spacing.sm },
   sectionLabel: { fontSize: FontSize.sm, fontWeight: FontWeight.semibold, color: Colors.textSecondary, includeFontPadding: false },
-
-  // WayinVideo-powered AI button (purple, solid)
-  wayinAiBtn: {
-    flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8,
-    backgroundColor: '#6c47ff', borderRadius: Radius.full, paddingVertical: 13, minHeight: 48,
-  },
-  wayinAiBtnText: { fontSize: FontSize.sm, fontWeight: FontWeight.bold, color: '#fff', includeFontPadding: false },
-  wayinBadge: {
-    backgroundColor: 'rgba(255,255,255,0.18)', borderRadius: Radius.full,
-    paddingHorizontal: 7, paddingVertical: 2,
-  },
-  wayinBadgeText: { fontSize: 9, fontWeight: FontWeight.bold, color: '#fff', includeFontPadding: false },
-
-  // Gemini AI button (outline, accent)
   aiBtn: {
     flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8,
-    backgroundColor: Colors.primaryGlow, borderRadius: Radius.full, paddingVertical: 12,
-    borderWidth: 1.5, borderColor: Colors.primary, minHeight: 46,
+    backgroundColor: Colors.primaryGlow, borderRadius: Radius.full, paddingVertical: 13,
+    borderWidth: 1.5, borderColor: Colors.primary, minHeight: 48,
   },
   aiBtnLoading: { opacity: 0.7 },
   aiBtnText: { fontSize: FontSize.sm, fontWeight: FontWeight.bold, color: Colors.primaryLight, includeFontPadding: false },
-
   aiPickedCard: {
     backgroundColor: Colors.primaryGlow, borderRadius: Radius.lg, padding: Spacing.sm,
     borderWidth: 1, borderColor: Colors.primary + '55', gap: Spacing.xs,
@@ -1916,10 +964,11 @@ const styles = StyleSheet.create({
   audioMeta: { alignItems: 'flex-end', gap: 3 },
   trendingBadge: {
     flexDirection: 'row', alignItems: 'center', gap: 2,
-    backgroundColor: Colors.primaryGlow, borderRadius: Radius.full, paddingHorizontal: 5, paddingVertical: 2,
+    backgroundColor: Colors.primaryGlow, borderRadius: Radius.full,
+    paddingHorizontal: 6, paddingVertical: 2, borderWidth: 1, borderColor: Colors.primary + '33',
   },
-  trendingText: { fontSize: 10, color: Colors.primaryLight, fontWeight: FontWeight.bold, includeFontPadding: false },
-  audioUses: { fontSize: 10, color: Colors.textMuted, includeFontPadding: false },
+  trendingText: { fontSize: 9, color: Colors.primary, fontWeight: FontWeight.bold, includeFontPadding: false },
+  audioUses: { fontSize: FontSize.xs, color: Colors.textMuted, includeFontPadding: false },
   platformRow: {
     flexDirection: 'row', alignItems: 'center', gap: Spacing.sm,
     backgroundColor: Colors.surfaceElevated, borderRadius: Radius.md,
@@ -1927,12 +976,18 @@ const styles = StyleSheet.create({
   },
   platformRowActive: { borderColor: Colors.primary, backgroundColor: Colors.primaryGlow },
   platformLabel: { flex: 1, fontSize: FontSize.md, fontWeight: FontWeight.semibold, color: Colors.textPrimary, includeFontPadding: false },
-  checkbox: { width: 22, height: 22, borderRadius: Radius.sm, borderWidth: 2, borderColor: Colors.surfaceBorder, alignItems: 'center', justifyContent: 'center' },
+  checkbox: {
+    width: 22, height: 22, borderRadius: 11, borderWidth: 2,
+    borderColor: Colors.textMuted, alignItems: 'center', justifyContent: 'center',
+  },
   checkboxActive: { backgroundColor: Colors.primary, borderColor: Colors.primary },
-  actions: { flexDirection: 'row', gap: Spacing.sm, paddingHorizontal: Spacing.md, paddingTop: Spacing.lg },
+  actions: {
+    flexDirection: 'row', gap: Spacing.sm,
+    paddingHorizontal: Spacing.md, paddingTop: Spacing.md,
+  },
   scheduleBtn: {
     flex: 1, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 6,
-    backgroundColor: Colors.surfaceElevated, borderRadius: Radius.full, paddingVertical: 14,
+    backgroundColor: Colors.primaryGlow, borderRadius: Radius.full, paddingVertical: 14,
     borderWidth: 1.5, borderColor: Colors.primary,
   },
   scheduleBtnText: { fontSize: FontSize.md, fontWeight: FontWeight.bold, color: Colors.primaryLight, includeFontPadding: false },
@@ -1941,270 +996,69 @@ const styles = StyleSheet.create({
     backgroundColor: Colors.primary, borderRadius: Radius.full, paddingVertical: 14,
   },
   publishBtnText: { fontSize: FontSize.md, fontWeight: FontWeight.bold, color: '#fff', includeFontPadding: false },
-  playerModal: { flex: 1, backgroundColor: '#000', justifyContent: 'center', alignItems: 'center' },
-  playerClose: {
-    position: 'absolute', top: Platform.OS === 'ios' ? 56 : 40, right: 20, zIndex: 10,
-    width: 40, height: 40, borderRadius: 20, backgroundColor: 'rgba(0,0,0,0.5)',
-    alignItems: 'center', justifyContent: 'center',
-  },
-  playerTitle: {
-    position: 'absolute', top: Platform.OS === 'ios' ? 56 : 40, left: 20, right: 70, zIndex: 10,
-    fontSize: FontSize.md, fontWeight: FontWeight.bold, color: '#fff', includeFontPadding: false,
-  },
-  videoView: { width: Dimensions.get('window').width, height: Dimensions.get('window').height },
-  noVideoContainer: {
-    width: Dimensions.get('window').width, height: Dimensions.get('window').height * 0.65,
-    borderRadius: Radius.lg, overflow: 'hidden', position: 'relative',
-  },
-  noVideoThumb: { width: '100%', height: '100%' },
-  noVideoOverlay: {
-    position: 'absolute', top: 0, left: 0, right: 0, bottom: 0,
-    backgroundColor: 'rgba(0,0,0,0.65)', alignItems: 'center', justifyContent: 'center',
-    gap: 10, paddingHorizontal: Spacing.lg,
-  },
-  noVideoText: { fontSize: FontSize.lg, fontWeight: FontWeight.bold, color: '#fff', textAlign: 'center', includeFontPadding: false },
-  noVideoSub: { fontSize: FontSize.sm, color: 'rgba(255,255,255,0.65)', textAlign: 'center', lineHeight: 20, includeFontPadding: false },
   emptyTitle: { fontSize: FontSize.lg, fontWeight: FontWeight.bold, color: Colors.textPrimary, includeFontPadding: false },
-  uploadBtn: { backgroundColor: Colors.primary, paddingHorizontal: 24, paddingVertical: 12, borderRadius: Radius.full },
-  uploadBtnText: { color: '#fff', fontSize: FontSize.md, fontWeight: FontWeight.bold, includeFontPadding: false },
-  progressBarBg: { width: '80%', height: 6, borderRadius: 3, backgroundColor: Colors.surfaceBorder, overflow: 'hidden', marginTop: 4 },
-  progressBarFill: { height: '100%', borderRadius: 3, backgroundColor: Colors.primaryLight },
+  uploadBtn: {
+    backgroundColor: Colors.primary, borderRadius: Radius.full,
+    paddingHorizontal: 24, paddingVertical: 12,
+  },
+  uploadBtnText: { fontSize: FontSize.md, fontWeight: FontWeight.bold, color: '#fff', includeFontPadding: false },
 
-  // WayinVideo results sheet
-  wayinSuccessBanner: {
-    flexDirection: 'row', alignItems: 'center', gap: 6,
-    backgroundColor: Colors.emerald + '18', borderRadius: Radius.md,
-    paddingHorizontal: Spacing.sm, paddingVertical: 8, marginBottom: Spacing.sm,
-  },
-  wayinSuccessText: { fontSize: FontSize.sm, color: Colors.emerald, fontWeight: FontWeight.semibold, includeFontPadding: false },
-  wayinClipCard: {
-    backgroundColor: Colors.surfaceElevated, borderRadius: Radius.lg,
-    padding: Spacing.md, marginBottom: Spacing.sm, borderWidth: 1.5, borderColor: '#6c47ff33', gap: Spacing.xs,
-  },
-  wayinClipHeader: { flexDirection: 'row', alignItems: 'center', gap: 6, marginBottom: 4 },
-  wayinRankBadge: { backgroundColor: '#6c47ff', borderRadius: Radius.full, paddingHorizontal: 7, paddingVertical: 2 },
-  wayinRankText: { fontSize: 10, fontWeight: FontWeight.bold, color: '#fff', includeFontPadding: false },
-  wayinScoreBadge: {
-    flexDirection: 'row', alignItems: 'center', gap: 2,
-    backgroundColor: '#6c47ff22', borderRadius: Radius.full, paddingHorizontal: 6, paddingVertical: 2,
-  },
-  wayinScoreText: { fontSize: 10, color: '#6c47ff', fontWeight: FontWeight.bold, includeFontPadding: false },
-  wayinTimestampBadge: {
-    flexDirection: 'row', alignItems: 'center', gap: 3,
-    backgroundColor: Colors.surfaceElevated, borderRadius: Radius.full, paddingHorizontal: 6, paddingVertical: 2,
-    borderWidth: 1, borderColor: Colors.surfaceBorder,
-  },
-  wayinTimestampText: { fontSize: 10, color: Colors.textMuted, fontWeight: FontWeight.medium, includeFontPadding: false },
-  wayinClipTitle: { fontSize: FontSize.md, fontWeight: FontWeight.bold, color: Colors.textPrimary, includeFontPadding: false },
-  wayinClipDesc: { fontSize: FontSize.sm, color: Colors.textSecondary, lineHeight: 18, includeFontPadding: false },
-  wayinClipTags: { fontSize: FontSize.xs, color: '#6c47ff', fontWeight: FontWeight.medium, includeFontPadding: false },
-  wayinApplyRow: { flexDirection: 'row', alignItems: 'center', gap: 4, marginTop: 2 },
-  wayinApplyText: { fontSize: FontSize.xs, color: '#6c47ff', fontWeight: FontWeight.semibold, includeFontPadding: false },
-
-  // Clip detail sheet
-  clipTimestampBar: {
-    flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between',
-    backgroundColor: '#6c47ff18', borderRadius: Radius.md, padding: Spacing.md,
-    marginBottom: Spacing.sm, borderWidth: 1, borderColor: '#6c47ff33',
-  },
-  clipTimestampItem: { alignItems: 'center', gap: 4 },
-  clipTimestampLabel: {
-    fontSize: 9, fontWeight: FontWeight.bold, color: Colors.textMuted,
-    textTransform: 'uppercase', letterSpacing: 0.8, includeFontPadding: false,
-  },
-  clipTimestampValue: { fontSize: 26, fontWeight: FontWeight.bold, color: '#6c47ff', includeFontPadding: false },
-  clipDurationPill: {
-    flexDirection: 'row', alignItems: 'center', gap: 5,
-    backgroundColor: '#6c47ff33', borderRadius: Radius.full, paddingHorizontal: 12, paddingVertical: 6,
-  },
-  clipDurationText: { fontSize: FontSize.sm, fontWeight: FontWeight.bold, color: '#6c47ff', includeFontPadding: false },
-  clipViralRow: { flexDirection: 'row', alignItems: 'center', gap: 8, marginBottom: Spacing.sm },
-  clipViralLabel: { fontSize: FontSize.xs, color: Colors.textSecondary, fontWeight: FontWeight.semibold, includeFontPadding: false },
-  clipViralBarBg: { flex: 1, height: 6, borderRadius: 3, backgroundColor: Colors.surfaceBorder, overflow: 'hidden' },
-  clipViralBarFill: { height: '100%', borderRadius: 3, backgroundColor: '#6c47ff' },
-  clipViralPct: { fontSize: FontSize.xs, fontWeight: FontWeight.bold, color: '#6c47ff', width: 32, textAlign: 'right', includeFontPadding: false },
-  clipMetaSection: { marginBottom: Spacing.sm },
-  clipMetaLabel: {
-    fontSize: 9, fontWeight: FontWeight.bold, color: Colors.textMuted,
-    textTransform: 'uppercase', letterSpacing: 0.8, marginBottom: 4, includeFontPadding: false,
-  },
-  clipMetaValue: { fontSize: FontSize.sm, color: Colors.textPrimary, lineHeight: 20, includeFontPadding: false },
-  clipHashtagRow: { flexDirection: 'row', flexWrap: 'wrap', gap: 6, marginTop: 4 },
-  clipHashtagChip: {
-    backgroundColor: '#6c47ff18', borderRadius: Radius.full,
-    paddingHorizontal: 10, paddingVertical: 4, borderWidth: 1, borderColor: '#6c47ff33',
-  },
-  clipHashtagText: { fontSize: FontSize.xs, color: '#6c47ff', fontWeight: FontWeight.semibold, includeFontPadding: false },
-  clipTrimBtn: {
-    flexDirection: 'row', alignItems: 'center', gap: 10,
-    backgroundColor: '#6c47ff', borderRadius: Radius.lg, padding: Spacing.md, marginBottom: Spacing.sm,
-  },
-  clipTrimBtnTitle: { fontSize: FontSize.md, fontWeight: FontWeight.bold, color: '#fff', includeFontPadding: false },
-  clipTrimBtnSub: { fontSize: FontSize.xs, color: 'rgba(255,255,255,0.7)', marginTop: 2, includeFontPadding: false },
-  clipActionBtnOutline: {
-    flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8,
-    borderRadius: Radius.full, paddingVertical: 13, borderWidth: 1.5, borderColor: '#6c47ff',
-    backgroundColor: '#6c47ff18', marginBottom: Spacing.sm,
-  },
-  clipActionBtnOutlineText: { fontSize: FontSize.sm, fontWeight: FontWeight.bold, color: '#6c47ff', includeFontPadding: false },
-  clipTrimNote: {
-    fontSize: FontSize.xs, color: Colors.textMuted, textAlign: 'center',
-    lineHeight: 16, paddingHorizontal: Spacing.sm, marginBottom: Spacing.md, includeFontPadding: false,
-  },
-  clipThumbBtn: {
-    flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8,
-    borderRadius: Radius.full, paddingVertical: 11, borderWidth: 1.5, borderColor: '#6c47ff',
-    backgroundColor: '#6c47ff18', marginBottom: Spacing.sm,
-  },
-  clipThumbBtnText: { fontSize: FontSize.sm, fontWeight: FontWeight.semibold, color: '#6c47ff', includeFontPadding: false },
-  thumbPreviewDot: {
-    width: 16, height: 16, borderRadius: 8, backgroundColor: Colors.emerald,
-    alignItems: 'center', justifyContent: 'center',
-  },
-  thumbRefreshBtn: {
-    position: 'absolute', top: 8, right: 8,
-    width: 28, height: 28, borderRadius: 14,
-    backgroundColor: 'rgba(0,0,0,0.65)', alignItems: 'center', justifyContent: 'center',
-  },
-
-  // Trim progress
-  trimProgressWrap: { width: '100%', paddingHorizontal: Spacing.md, gap: 6 },
-  trimProgressBg: {
-    height: 8, borderRadius: 4, backgroundColor: Colors.surfaceBorder,
-    overflow: 'hidden', width: '100%',
-  },
-  trimProgressFill: {
-    height: '100%', borderRadius: 4,
-    backgroundColor: '#6c47ff',
-  },
-  trimProgressRow: {
-    flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between',
-  },
-  trimProgressPct: {
-    fontSize: FontSize.sm, fontWeight: FontWeight.bold, color: '#6c47ff', includeFontPadding: false,
-  },
-  trimProgressTime: {
-    fontSize: FontSize.xs, color: Colors.textMuted, includeFontPadding: false,
-  },
-  trimProgressEst: {
-    fontSize: FontSize.xs, color: Colors.textSecondary, includeFontPadding: false,
-  },
-  trimStageRow: {
-    flexDirection: 'row', alignItems: 'center', gap: Spacing.md,
-    marginTop: 4,
-  },
-  trimStageItem: { alignItems: 'center', gap: 4 },
-  trimStageDot: {
-    width: 8, height: 8, borderRadius: 4,
-    backgroundColor: Colors.surfaceBorder, borderWidth: 1.5, borderColor: Colors.surfaceBorder,
-  },
-  trimStageDotDone: {
-    backgroundColor: '#6c47ff', borderColor: '#6c47ff',
-  },
-  trimStageLabel: {
-    fontSize: 9, color: Colors.textMuted, fontWeight: FontWeight.medium,
-    textTransform: 'uppercase', letterSpacing: 0.6, includeFontPadding: false,
-  },
-  trimStageLabelDone: { color: '#6c47ff' },
-  trimProgressNote: {
-    fontSize: FontSize.xs, color: Colors.textMuted, textAlign: 'center',
-    paddingHorizontal: Spacing.md, includeFontPadding: false,
-  },
-
-  // Filmstrip
-  filmstripSection: {
-    marginBottom: Spacing.md,
-    backgroundColor: Colors.surfaceElevated,
-    borderRadius: Radius.lg,
-    borderWidth: 1,
-    borderColor: '#6c47ff33',
-    overflow: 'hidden',
-    paddingVertical: Spacing.sm,
-  },
-  filmstripHeader: {
-    flexDirection: 'row', alignItems: 'center', gap: 5,
-    paddingHorizontal: Spacing.sm + 4, marginBottom: Spacing.xs,
-  },
-  filmstripLabel: {
-    fontSize: 9, fontWeight: FontWeight.bold, color: Colors.textMuted,
-    textTransform: 'uppercase', letterSpacing: 0.9, includeFontPadding: false,
-  },
-  filmstripHint: {
-    marginLeft: 'auto' as any, fontSize: 9, color: '#6c47ff',
-    fontWeight: FontWeight.semibold, includeFontPadding: false,
-  },
-  filmstripScroll: {
-    flexDirection: 'row', gap: 6,
-    paddingHorizontal: Spacing.sm + 4, paddingBottom: 2,
-  },
-  filmstripFrame: {
-    width: 72, height: 100, borderRadius: Radius.md,
-    overflow: 'hidden', borderWidth: 2.5, borderColor: 'transparent',
-    position: 'relative',
-  },
-  filmstripFrameSelected: {
-    borderColor: '#6c47ff',
-  },
-  filmstripImg: { width: '100%', height: '100%' },
-  filmstripTs: {
-    position: 'absolute', bottom: 0, left: 0, right: 0,
-    backgroundColor: 'rgba(0,0,0,0.68)',
-    paddingVertical: 3, alignItems: 'center',
-  },
-  filmstripTsText: { fontSize: 9, color: '#fff', fontWeight: FontWeight.semibold, includeFontPadding: false },
-  filmstripSelectedOverlay: {
-    position: 'absolute', top: 0, left: 0, right: 0, bottom: 0,
-    backgroundColor: 'rgba(108,71,255,0.22)',
-    alignItems: 'flex-start', justifyContent: 'flex-start',
-    padding: 4,
-  },
-  filmstripCheckCircle: {
-    width: 18, height: 18, borderRadius: 9,
-    backgroundColor: '#6c47ff', alignItems: 'center', justifyContent: 'center',
-  },
-  filmstripSkeleton: {
-    flexDirection: 'row', gap: 6,
-    paddingHorizontal: Spacing.sm + 4, paddingBottom: 2,
-  },
-  filmstripSkeletonFrame: {
-    width: 72, height: 100, borderRadius: Radius.md,
-    backgroundColor: Colors.surfaceBorder,
-  },
-  filmstripEmpty: {
-    flexDirection: 'row', alignItems: 'center', gap: 6,
-    paddingHorizontal: Spacing.sm + 4, paddingVertical: Spacing.xs,
-  },
-  filmstripEmptyText: { fontSize: FontSize.xs, color: Colors.textMuted, flex: 1, includeFontPadding: false },
-
-  // Shared sheet styles
-  sheetOverlay: { flex: 1, justifyContent: 'flex-end', backgroundColor: 'rgba(0,0,0,0.6)' },
+  // Sheets
+  sheetOverlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.5)', justifyContent: 'flex-end' },
   tiktokSheet: {
-    backgroundColor: Colors.surface, borderTopLeftRadius: Radius.xl, borderTopRightRadius: Radius.xl,
-    padding: Spacing.lg, paddingBottom: Spacing.xxl, gap: Spacing.md,
-    borderTopWidth: 1, borderColor: Colors.surfaceBorder,
+    backgroundColor: Colors.surfaceElevated, borderTopLeftRadius: 24, borderTopRightRadius: 24,
+    paddingHorizontal: Spacing.md, paddingBottom: 36, gap: Spacing.sm,
   },
-  sheetHandle: { width: 36, height: 4, borderRadius: 2, backgroundColor: Colors.surfaceBorder, alignSelf: 'center', marginBottom: Spacing.xs },
-  sheetHeader: { flexDirection: 'row', alignItems: 'center', gap: Spacing.sm, marginBottom: 4 },
-  sheetIcon: { width: 44, height: 44, borderRadius: Radius.md, alignItems: 'center', justifyContent: 'center' },
+  sheetHandle: {
+    width: 40, height: 4, borderRadius: 2, backgroundColor: Colors.surfaceBorder,
+    alignSelf: 'center', marginTop: 12, marginBottom: 4,
+  },
+  sheetHeader: { flexDirection: 'row', alignItems: 'center', gap: Spacing.sm, paddingVertical: Spacing.sm },
+  sheetIcon: {
+    width: 44, height: 44, borderRadius: 22, alignItems: 'center', justifyContent: 'center',
+  },
   sheetTitle: { fontSize: FontSize.lg, fontWeight: FontWeight.bold, color: Colors.textPrimary, includeFontPadding: false },
-  sheetSub: { fontSize: FontSize.xs, color: Colors.textMuted, includeFontPadding: false },
-  sheetSectionLabel: { fontSize: FontSize.xs, fontWeight: FontWeight.bold, color: Colors.textMuted, textTransform: 'uppercase', letterSpacing: 0.8, includeFontPadding: false },
+  sheetSub: { fontSize: FontSize.sm, color: Colors.textSecondary, includeFontPadding: false },
+  sheetSectionLabel: { fontSize: FontSize.xs, fontWeight: FontWeight.bold, color: Colors.textMuted, textTransform: 'uppercase', letterSpacing: 1, includeFontPadding: false, marginTop: Spacing.xs },
+  sheetNote: { flexDirection: 'row', alignItems: 'center', gap: 5 },
+  sheetNoteText: { flex: 1, fontSize: FontSize.xs, color: Colors.textMuted, includeFontPadding: false },
+  sheetPhase: { alignItems: 'center', paddingVertical: Spacing.xl, gap: Spacing.sm },
+  sheetPhaseTitle: { fontSize: FontSize.lg, fontWeight: FontWeight.bold, color: Colors.textPrimary, includeFontPadding: false },
+  sheetPhaseSub: { fontSize: FontSize.sm, color: Colors.textSecondary, textAlign: 'center', includeFontPadding: false },
   privacyRow: {
     flexDirection: 'row', alignItems: 'center', gap: Spacing.sm,
-    backgroundColor: Colors.surfaceElevated, borderRadius: Radius.md,
+    backgroundColor: Colors.surface, borderRadius: Radius.md,
     padding: Spacing.sm + 4, borderWidth: 1.5, borderColor: Colors.surfaceBorder,
   },
   privacyRowActive: { borderColor: Colors.primary, backgroundColor: Colors.primaryGlow },
-  privacyLabel: { flex: 1, fontSize: FontSize.md, fontWeight: FontWeight.semibold, color: Colors.textSecondary, includeFontPadding: false },
-  privacyLabelActive: { color: Colors.textPrimary },
-  sheetNote: { flexDirection: 'row', gap: 6, alignItems: 'flex-start', paddingHorizontal: 2 },
-  sheetNoteText: { flex: 1, fontSize: FontSize.xs, color: Colors.textMuted, lineHeight: 16, includeFontPadding: false },
+  privacyLabel: { flex: 1, fontSize: FontSize.md, color: Colors.textSecondary, includeFontPadding: false },
+  privacyLabelActive: { color: Colors.primaryLight, fontWeight: FontWeight.semibold },
   tiktokPublishBtn: {
-    backgroundColor: '#010101', borderRadius: Radius.full, paddingVertical: 16,
-    alignItems: 'center', justifyContent: 'center', flexDirection: 'row', gap: 8,
+    flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8,
+    backgroundColor: Colors.primary, borderRadius: Radius.full, paddingVertical: 14,
+    marginTop: Spacing.sm,
   },
   tiktokPublishBtnText: { fontSize: FontSize.md, fontWeight: FontWeight.bold, color: '#fff', includeFontPadding: false },
-  sheetPhase: { alignItems: 'center', gap: 12, paddingVertical: Spacing.lg },
-  sheetPhaseTitle: { fontSize: FontSize.lg, fontWeight: FontWeight.bold, color: Colors.textPrimary, textAlign: 'center', includeFontPadding: false },
-  sheetPhaseSub: { fontSize: FontSize.sm, color: Colors.textSecondary, textAlign: 'center', lineHeight: 20, paddingHorizontal: Spacing.md, includeFontPadding: false },
+  progressBarBg: {
+    width: '100%', height: 6, backgroundColor: Colors.surfaceBorder,
+    borderRadius: 3, overflow: 'hidden', marginTop: Spacing.sm,
+  },
+  progressBarFill: { height: '100%', backgroundColor: Colors.primary, borderRadius: 3 },
+
+  // Player
+  playerModal: { flex: 1, backgroundColor: '#000', justifyContent: 'center' },
+  playerClose: { position: 'absolute', top: 52, right: 16, zIndex: 10, padding: 8 },
+  playerTitle: {
+    position: 'absolute', top: 52, left: 16, right: 60, zIndex: 10,
+    color: '#fff', fontSize: FontSize.md, fontWeight: FontWeight.bold, includeFontPadding: false,
+  },
+  videoView: { width: '100%', height: '100%' },
+  noVideoContainer: { flex: 1, position: 'relative' },
+  noVideoThumb: { width: '100%', height: '100%' },
+  noVideoOverlay: {
+    ...StyleSheet.absoluteFillObject, backgroundColor: 'rgba(0,0,0,0.6)',
+    alignItems: 'center', justifyContent: 'center', gap: 8,
+  },
+  noVideoText: { fontSize: FontSize.lg, fontWeight: FontWeight.bold, color: '#fff', includeFontPadding: false },
+  noVideoSub: { fontSize: FontSize.sm, color: 'rgba(255,255,255,0.7)', textAlign: 'center', paddingHorizontal: 32, includeFontPadding: false },
 });
