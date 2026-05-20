@@ -1,3 +1,4 @@
+
 import React, { useState, useCallback, useRef, useEffect } from 'react';
 import {
   View, Text, ScrollView, StyleSheet, Pressable, TextInput,
@@ -141,6 +142,49 @@ export default function EditorScreen() {
   const [uploadProgress, setUploadProgress] = useState(0);
   const [generatingThumbnail, setGeneratingThumbnail] = useState(false);
   const [thumbnailUri, setThumbnailUri] = useState<string | null>(video?.thumbnail ?? null);
+
+  // ── Edge Function Test Panel ──
+  const [showTestModal, setShowTestModal] = useState(false);
+  type TestKey = 'ai-content-generator' | 'wayinvideo-analyzer' | 'tiktok-publisher';
+  const [testLoading, setTestLoading] = useState<Record<TestKey, boolean>>({
+    'ai-content-generator': false,
+    'wayinvideo-analyzer': false,
+    'tiktok-publisher': false,
+  });
+  const [testResults, setTestResults] = useState<Record<TestKey, string | null>>({
+    'ai-content-generator': null,
+    'wayinvideo-analyzer': null,
+    'tiktok-publisher': null,
+  });
+
+  const runFunctionTest = async (fn: TestKey) => {
+    setTestLoading(prev => ({ ...prev, [fn]: true }));
+    setTestResults(prev => ({ ...prev, [fn]: null }));
+    const client = getSupabaseClient();
+    try {
+      let body: Record<string, unknown> = {};
+      if (fn === 'ai-content-generator') {
+        body = { type: 'hook', videoTitle: 'test video', hookType: 'question', platforms: ['tiktok'] };
+      } else if (fn === 'wayinvideo-analyzer') {
+        body = { action: 'ping' };
+      } else if (fn === 'tiktok-publisher') {
+        body = { action: 'status' };
+      }
+      const { data, error } = await client.functions.invoke(fn, { body });
+      if (error) {
+        let errMsg = error.message;
+        if (error instanceof FunctionsHttpError) {
+          try { const t = await error.context?.text(); errMsg = `[${error.context?.status}] ${t || errMsg}`; } catch { /* ignore */ }
+        }
+        setTestResults(prev => ({ ...prev, [fn]: `ERROR: ${errMsg}` }));
+      } else {
+        setTestResults(prev => ({ ...prev, [fn]: JSON.stringify(data, null, 2) }));
+      }
+    } catch (e) {
+      setTestResults(prev => ({ ...prev, [fn]: `EXCEPTION: ${String(e)}` }));
+    }
+    setTestLoading(prev => ({ ...prev, [fn]: false }));
+  };
 
   const frameCache = useRef<{ base64: string; mime: string } | null | 'pending'>('pending');
   const tiktok = useTikTok();
@@ -388,6 +432,13 @@ export default function EditorScreen() {
               <Text style={styles.duration}>{formatDuration(video.duration)}</Text>
             </View>
           </View>
+          <Pressable
+            style={({ pressed }) => [styles.testIconBtn, pressed && { opacity: 0.7 }]}
+            onPress={() => setShowTestModal(true)}
+            hitSlop={6}
+          >
+            <MaterialIcons name="bug-report" size={18} color={Colors.amber} />
+          </Pressable>
           <Pressable style={({ pressed }) => [styles.saveBtn, pressed && { opacity: 0.8 }]} onPress={handleSave}>
             <Text style={styles.saveBtnText}>Save</Text>
           </Pressable>
@@ -808,6 +859,69 @@ export default function EditorScreen() {
         </View>
       </Modal>
 
+      {/* ── Edge Function Test Modal ── */}
+      <Modal
+        visible={showTestModal}
+        animationType="slide"
+        transparent
+        onRequestClose={() => setShowTestModal(false)}
+      >
+        <View style={styles.sheetOverlay}>
+          <Pressable style={StyleSheet.absoluteFillObject} onPress={() => setShowTestModal(false)} />
+          <View style={[styles.tiktokSheet, { maxHeight: '90%' }]}>
+            <View style={styles.sheetHandle} />
+            <View style={styles.sheetHeader}>
+              <View style={[styles.sheetIcon, { backgroundColor: Colors.amber + '22' }]}>
+                <MaterialIcons name="bug-report" size={22} color={Colors.amber} />
+              </View>
+              <View style={{ flex: 1 }}>
+                <Text style={styles.sheetTitle}>Edge Function Tests</Text>
+                <Text style={styles.sheetSub}>Verify each function is deployed and reachable</Text>
+              </View>
+              <Pressable onPress={() => setShowTestModal(false)} hitSlop={8}>
+                <MaterialIcons name="close" size={20} color={Colors.textMuted} />
+              </Pressable>
+            </View>
+            <ScrollView showsVerticalScrollIndicator={false} style={{ flex: 1 }}>
+              {([
+                { key: 'ai-content-generator' as TestKey, label: 'AI Content Generator', desc: 'Sends a test hook request (type=hook)', icon: 'auto-fix', color: Colors.primaryLight },
+                { key: 'wayinvideo-analyzer' as TestKey, label: 'WayinVideo Analyzer', desc: 'Sends a ping/action=ping request', icon: 'movie-filter', color: Colors.emerald },
+                { key: 'tiktok-publisher' as TestKey, label: 'TikTok Publisher', desc: 'Sends a status check request', icon: 'music-note', color: '#ee1d52' },
+              ]).map(fn => (
+                <View key={fn.key} style={styles.testCard}>
+                  <View style={styles.testCardHeader}>
+                    <View style={[styles.testCardIcon, { backgroundColor: fn.color + '22' }]}>
+                      <MaterialCommunityIcons name={fn.icon as any} size={18} color={fn.color} />
+                    </View>
+                    <View style={{ flex: 1 }}>
+                      <Text style={styles.testCardLabel}>{fn.label}</Text>
+                      <Text style={styles.testCardDesc}>{fn.desc}</Text>
+                    </View>
+                    <Pressable
+                      style={({ pressed }) => [styles.testRunBtn, { borderColor: fn.color + '88', backgroundColor: fn.color + '18' }, pressed && { opacity: 0.75 }, testLoading[fn.key] && { opacity: 0.5 }]}
+                      onPress={() => runFunctionTest(fn.key)}
+                      disabled={testLoading[fn.key]}
+                    >
+                      {testLoading[fn.key]
+                        ? <ActivityIndicator size="small" color={fn.color} />
+                        : <Text style={[styles.testRunBtnText, { color: fn.color }]}>Run</Text>}
+                    </Pressable>
+                  </View>
+                  {testResults[fn.key] ? (
+                    <View style={[styles.testResultBox, testResults[fn.key]?.startsWith('ERROR') || testResults[fn.key]?.startsWith('EXCEPTION') ? styles.testResultBoxError : styles.testResultBoxOk]}>
+                      <ScrollView horizontal showsHorizontalScrollIndicator={false}>
+                        <Text style={styles.testResultText} selectable>{testResults[fn.key]}</Text>
+                      </ScrollView>
+                    </View>
+                  ) : null}
+                </View>
+              ))}
+              <View style={{ height: 20 }} />
+            </ScrollView>
+          </View>
+        </View>
+      </Modal>
+
       {/* ── Video Player Modal ── */}
       <Modal
         visible={showPlayer}
@@ -1044,6 +1158,33 @@ const styles = StyleSheet.create({
     borderRadius: 3, overflow: 'hidden', marginTop: Spacing.sm,
   },
   progressBarFill: { height: '100%', backgroundColor: Colors.primary, borderRadius: 3 },
+  testIconBtn: {
+    width: 36, height: 36, borderRadius: Radius.full,
+    backgroundColor: Colors.amber + '1A', alignItems: 'center', justifyContent: 'center',
+    borderWidth: 1, borderColor: Colors.amber + '44',
+  },
+  testCard: {
+    backgroundColor: Colors.surface, borderRadius: Radius.lg, padding: Spacing.sm + 4,
+    borderWidth: 1, borderColor: Colors.surfaceBorder, marginBottom: Spacing.sm, gap: Spacing.sm,
+  },
+  testCardHeader: { flexDirection: 'row', alignItems: 'center', gap: Spacing.sm },
+  testCardIcon: {
+    width: 36, height: 36, borderRadius: Radius.md, alignItems: 'center', justifyContent: 'center',
+  },
+  testCardLabel: { fontSize: FontSize.sm, fontWeight: FontWeight.bold, color: Colors.textPrimary, includeFontPadding: false },
+  testCardDesc: { fontSize: FontSize.xs, color: Colors.textMuted, includeFontPadding: false, marginTop: 1 },
+  testRunBtn: {
+    paddingHorizontal: 14, paddingVertical: 7, borderRadius: Radius.full,
+    borderWidth: 1.5, minWidth: 52, alignItems: 'center', justifyContent: 'center',
+  },
+  testRunBtnText: { fontSize: FontSize.sm, fontWeight: FontWeight.bold, includeFontPadding: false },
+  testResultBox: {
+    borderRadius: Radius.md, padding: Spacing.sm, maxHeight: 140,
+    borderWidth: 1, overflow: 'hidden',
+  },
+  testResultBoxOk: { backgroundColor: Colors.emerald + '11', borderColor: Colors.emerald + '44' },
+  testResultBoxError: { backgroundColor: Colors.error + '11', borderColor: Colors.error + '44' },
+  testResultText: { fontSize: 11, color: Colors.textSecondary, fontFamily: Platform.OS === 'ios' ? 'Menlo' : 'monospace', includeFontPadding: false },
 
   // Player
   playerModal: { flex: 1, backgroundColor: '#000', justifyContent: 'center' },
