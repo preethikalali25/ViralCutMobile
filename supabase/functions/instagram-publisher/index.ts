@@ -109,7 +109,7 @@ Deno.serve(async (req) => {
         user_id: userId,
         ig_user_id: igUserId,
         username,
-        access_token: pageToken,
+        access_token: accessToken,
         expires_at: expiresAt,
         updated_at: new Date().toISOString(),
       }, { onConflict: 'user_id' });
