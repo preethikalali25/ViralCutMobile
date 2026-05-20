@@ -245,7 +245,7 @@ export default function EditorScreen() {
       videoTitle: cleanTitle(video.title), hookType, platforms, ...framePayload,
     });
     setGeneratingHook(false);
-    if (error) { showAlert('AI Error', 'Could not generate hook. Please try again.'); return; }
+    if (error) { showAlert('AI Error', error); return; }
     if (data?.result) {
       setHookText(data.result);
       updateVideo(video.id, { hook: { type: hookType, text: data.result } });
