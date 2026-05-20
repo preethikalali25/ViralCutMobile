@@ -1,8 +1,9 @@
 import { corsHeaders } from '../_shared/cors.ts';
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
 
-const FB_AUTH_URL = 'https://www.facebook.com/dialog/oauth';
-const FB_TOKEN_URL = 'https://graph.facebook.com/oauth/access_token';
+const IG_AUTH_URL = 'https://api.instagram.com/oauth/authorize';
+const IG_TOKEN_URL = 'https://api.instagram.com/oauth/access_token';
+const IG_GRAPH_URL = 'https://graph.instagram.com/v21.0';
 const FB_GRAPH_URL = 'https://graph.facebook.com/v19.0';
 const APP_DEEP_LINK = 'viralcut://instagram-callback';
 
@@ -54,11 +55,11 @@ Deno.serve(async (req) => {
       const params = new URLSearchParams({
         client_id: appId,
         redirect_uri: redirectUri,
-        scope: 'instagram_basic,instagram_content_publish,pages_show_list,pages_read_engagement',
+        scope: 'instagram_business_basic,instagram_business_content_publish',
         response_type: 'code',
       });
       return new Response(
-        JSON.stringify({ authUrl: `${FB_AUTH_URL}?${params}` }),
+        JSON.stringify({ authUrl: `${IG_AUTH_URL}?${params}` }),
         { headers: { ...corsHeaders, 'Content-Type': 'application/json' } },
       );
     }
@@ -69,26 +70,28 @@ Deno.serve(async (req) => {
         code: string; redirectUri: string; userId: string;
       };
 
-      // Short-lived token
-      const tokenRes = await fetch(
-        `${FB_TOKEN_URL}?${new URLSearchParams({ client_id: appId, client_secret: appSecret, redirect_uri: redirectUri, code })}`,
-      );
+      // Short-lived token via Instagram Login
+      const tokenRes = await fetch(IG_TOKEN_URL, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+        body: new URLSearchParams({ client_id: appId, client_secret: appSecret, grant_type: 'authorization_code', redirect_uri: redirectUri, code }),
+      });
       const tokenData = await tokenRes.json();
-      if (tokenData.error) {
+      if (tokenData.error_type || tokenData.error) {
         return new Response(
-          JSON.stringify({ error: `Facebook: ${tokenData.error.message ?? tokenData.error}` }),
+          JSON.stringify({ error: `Instagram: ${tokenData.error_message ?? tokenData.error}` }),
           { status: 400, headers: { ...corsHeaders, 'Content-Type': 'application/json' } },
         );
       }
       const shortToken = tokenData.access_token;
+      const igUserId = String(tokenData.user_id ?? '');
 
       // Long-lived token (60 days)
       const longRes = await fetch(
-        `${FB_GRAPH_URL}/oauth/access_token?${new URLSearchParams({
-          grant_type: 'fb_exchange_token',
-          client_id: appId,
+        `${IG_GRAPH_URL}/access_token?${new URLSearchParams({
+          grant_type: 'ig_exchange_token',
           client_secret: appSecret,
-          fb_exchange_token: shortToken,
+          access_token: shortToken,
         })}`,
       );
       const longData = await longRes.json();
@@ -96,40 +99,11 @@ Deno.serve(async (req) => {
       const expiresIn = longData.expires_in ?? 5184000;
       const expiresAt = new Date(Date.now() + expiresIn * 1000).toISOString();
 
-      // Get Facebook Pages → Instagram Business Account
-      let igUserId = '';
-      let username = '';
-      let pageToken = accessToken;
-
-      const pagesRes = await fetch(`${FB_GRAPH_URL}/me/accounts?access_token=${accessToken}`);
-      const pagesData = await pagesRes.json();
-      console.log('[instagram-publisher] pages:', JSON.stringify(pagesData).slice(0, 300));
-
-      if (pagesData.data?.length > 0) {
-        const page = pagesData.data[0];
-        pageToken = page.access_token ?? accessToken;
-        const igRes = await fetch(
-          `${FB_GRAPH_URL}/${page.id}?fields=instagram_business_account&access_token=${pageToken}`,
-        );
-        const igData = await igRes.json();
-        igUserId = igData.instagram_business_account?.id ?? '';
-        if (igUserId) {
-          const profileRes = await fetch(
-            `${FB_GRAPH_URL}/${igUserId}?fields=username&access_token=${pageToken}`,
-          );
-          const profileData = await profileRes.json();
-          username = profileData.username ?? '';
-        }
-      }
-
-      // Fallback to personal account id
-      if (!igUserId) {
-        const meRes = await fetch(`${FB_GRAPH_URL}/me?fields=id,name&access_token=${accessToken}`);
-        const meData = await meRes.json();
-        igUserId = meData.id ?? '';
-        username = meData.name ?? 'Instagram User';
-        pageToken = accessToken;
-      }
+      // Get username
+      const profileRes = await fetch(`${IG_GRAPH_URL}/me?fields=username&access_token=${accessToken}`);
+      const profileData = await profileRes.json();
+      const username = profileData.username ?? 'Instagram User';
+      console.log('[instagram-publisher] user:', igUserId, username);
 
       const { error: dbError } = await supabase.from('instagram_tokens').upsert({
         user_id: userId,
@@ -198,7 +172,7 @@ Deno.serve(async (req) => {
         return new Response(JSON.stringify({ error: 'Instagram token expired. Please reconnect.' }), { status: 401, headers: { ...corsHeaders, 'Content-Type': 'application/json' } });
       }
 
-      const containerRes = await fetch(`${FB_GRAPH_URL}/${tokenRow.ig_user_id}/media`, {
+      const containerRes = await fetch(`${IG_GRAPH_URL}/${tokenRow.ig_user_id}/media`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -239,7 +213,7 @@ Deno.serve(async (req) => {
       }
 
       const statusRes = await fetch(
-        `${FB_GRAPH_URL}/${containerId}?fields=status_code,status&access_token=${tokenRow.access_token}`,
+        `${IG_GRAPH_URL}/${containerId}?fields=status_code,status&access_token=${tokenRow.access_token}`,
       );
       const statusData = await statusRes.json();
       console.log('[instagram-publisher] status:', JSON.stringify(statusData).slice(0, 200));
@@ -263,7 +237,7 @@ Deno.serve(async (req) => {
         return new Response(JSON.stringify({ error: 'Not connected' }), { status: 401, headers: { ...corsHeaders, 'Content-Type': 'application/json' } });
       }
 
-      const publishRes = await fetch(`${FB_GRAPH_URL}/${tokenRow.ig_user_id}/media_publish`, {
+      const publishRes = await fetch(`${IG_GRAPH_URL}/${tokenRow.ig_user_id}/media_publish`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
