@@ -97,17 +97,32 @@ function cleanTitle(raw: string): string {
 
 async function callAIGenerator(type: string, payload: Record<string, unknown>) {
   const client = getSupabaseClient();
-  const { data, error } = await client.functions.invoke('ai-content-generator', {
-    body: { type, ...payload },
-  });
-  if (error) {
-    let msg = error.message;
-    if (error instanceof FunctionsHttpError) {
-      try { const text = await error.context?.text(); msg = text || msg; } catch { /* ignore */ }
+
+  const attempt = async (body: Record<string, unknown>) => {
+    const { data, error } = await client.functions.invoke('ai-content-generator', { body });
+    if (error) {
+      let msg = error.message;
+      if (error instanceof FunctionsHttpError) {
+        try { const text = await error.context?.text(); msg = text || msg; } catch { /* ignore */ }
+      }
+      return { data: null, error: msg };
     }
-    return { data: null, error: msg };
+    return { data, error: null };
+  };
+
+  // First try with full payload (may include frame)
+  const first = await attempt({ type, ...payload });
+  if (!first.error) return first;
+
+  // If it timed out and we sent a frame, retry without the frame
+  const hasFrame = 'videoFrameBase64' in payload;
+  if (hasFrame && (first.error.includes('504') || first.error.includes('timeout') || first.error.includes('Gateway'))) {
+    console.warn('[AI] frame attempt timed out, retrying without frame');
+    const { videoFrameBase64: _f, videoFrameMime: _m, ...payloadWithoutFrame } = payload as any;
+    return attempt({ type, ...payloadWithoutFrame });
   }
-  return { data, error: null };
+
+  return first;
 }
 
 export default function EditorScreen() {
