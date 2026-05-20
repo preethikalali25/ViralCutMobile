@@ -371,10 +371,10 @@ export default function EditorScreen() {
       const { outputUri, error } = await burnHookOverlay(videoUrl, hook);
       setBurningOverlay(false);
       if (error) {
-        console.warn('[publish] hook burn failed, using original:', error);
-      } else {
-        videoUrl = outputUri;
+        showAlert('Hook Burn Failed', error);
+        return { videoUrl: '' };
       }
+      videoUrl = outputUri;
     }
 
     if (videoUrl.startsWith('file://') || videoUrl.startsWith('ph://')) {
