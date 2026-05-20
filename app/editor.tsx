@@ -20,6 +20,7 @@ import { FunctionsHttpError } from '@supabase/supabase-js';
 import { useTikTok } from '@/hooks/useTikTok';
 import { useInstagram } from '@/hooks/useInstagram';
 import { uploadVideoToStorage } from '@/services/tiktokService';
+import { burnHookOverlay } from '@/services/videoOverlayService';
 import * as FileSystem from 'expo-file-system';
 
 type Tab = 'hook' | 'caption' | 'audio' | 'platforms';
@@ -141,6 +142,7 @@ export default function EditorScreen() {
   const [tiktokPrivacy, setTiktokPrivacy] = useState('SELF_ONLY');
   const [uploadingToStorage, setUploadingToStorage] = useState(false);
   const [uploadProgress, setUploadProgress] = useState(0);
+  const [burningOverlay, setBurningOverlay] = useState(false);
   const [generatingThumbnail, setGeneratingThumbnail] = useState(false);
   const [thumbnailUri, setThumbnailUri] = useState<string | null>(video?.thumbnail ?? null);
 
@@ -343,22 +345,44 @@ export default function EditorScreen() {
     ]);
   };
 
-  const handleTikTokPublish = async () => {
-    const snap = snapshotEditorState();
-    let videoUrl = video?.videoUri ?? '';
-    if (!videoUrl) { showAlert('No Video File', 'Select a video before publishing to TikTok.'); return; }
+  const prepareVideoForPublish = async (
+    videoUri: string,
+    hook: string,
+  ): Promise<{ videoUrl: string; error?: string }> => {
+    let videoUrl = videoUri;
+
+    if ((videoUrl.startsWith('file://') || videoUrl.startsWith('ph://')) && hook.trim()) {
+      setBurningOverlay(true);
+      const { outputUri, error } = await burnHookOverlay(videoUrl, hook);
+      setBurningOverlay(false);
+      if (error) {
+        console.warn('[publish] hook burn failed, using original:', error);
+      } else {
+        videoUrl = outputUri;
+      }
+    }
 
     if (videoUrl.startsWith('file://') || videoUrl.startsWith('ph://')) {
       setUploadingToStorage(true);
       setUploadProgress(0);
       const { publicUrl, error } = await uploadVideoToStorage(
-        videoUrl, user?.id ?? 'unknown', video.id, (pct) => setUploadProgress(pct),
+        videoUrl, user?.id ?? 'unknown', video!.id, (pct) => setUploadProgress(pct),
       );
       setUploadingToStorage(false);
-      if (error || !publicUrl) { showAlert('Upload Failed', error ?? 'Could not upload video.'); return; }
-      videoUrl = publicUrl;
-      updateVideo(video.id, { videoUri: publicUrl });
+      if (error || !publicUrl) return { videoUrl: '', error: error ?? 'Could not upload video.' };
+      updateVideo(video!.id, { videoUri: publicUrl });
+      return { videoUrl: publicUrl };
     }
+
+    return { videoUrl };
+  };
+
+  const handleTikTokPublish = async () => {
+    const snap = snapshotEditorState();
+    if (!video?.videoUri) { showAlert('No Video File', 'Select a video before publishing to TikTok.'); return; }
+
+    const { videoUrl, error: prepError } = await prepareVideoForPublish(video.videoUri, snap.hook?.text ?? '');
+    if (prepError || !videoUrl) { showAlert('Upload Failed', prepError ?? 'Could not upload video.'); return; }
 
     updateVideo(video.id, { ...snap, title: videoTitle });
     const { error } = await tiktok.publish(
@@ -369,20 +393,10 @@ export default function EditorScreen() {
 
   const handleInstagramPublish = async () => {
     const snap = snapshotEditorState();
-    let videoUrl = video?.videoUri ?? '';
-    if (!videoUrl) { showAlert('No Video File', 'Select a video before publishing to Instagram.'); return; }
+    if (!video?.videoUri) { showAlert('No Video File', 'Select a video before publishing to Instagram.'); return; }
 
-    if (videoUrl.startsWith('file://') || videoUrl.startsWith('ph://')) {
-      setUploadingToStorage(true);
-      setUploadProgress(0);
-      const { publicUrl, error } = await uploadVideoToStorage(
-        videoUrl, user?.id ?? 'unknown', video.id, (pct) => setUploadProgress(pct),
-      );
-      setUploadingToStorage(false);
-      if (error || !publicUrl) { showAlert('Upload Failed', error ?? 'Could not upload video.'); return; }
-      videoUrl = publicUrl;
-      updateVideo(video.id, { videoUri: publicUrl });
-    }
+    const { videoUrl, error: prepError } = await prepareVideoForPublish(video.videoUri, snap.hook?.text ?? '');
+    if (prepError || !videoUrl) { showAlert('Upload Failed', prepError ?? 'Could not upload video.'); return; }
 
     const captionText = [snap.caption, snap.hashtags.join(' ')].filter(Boolean).join('\n\n');
     updateVideo(video.id, { ...snap, title: videoTitle });
@@ -777,7 +791,15 @@ export default function EditorScreen() {
               </>
             ) : null}
 
-            {uploadingToStorage ? (
+            {burningOverlay ? (
+              <View style={styles.sheetPhase}>
+                <ActivityIndicator size="large" color={Colors.primaryLight} />
+                <Text style={styles.sheetPhaseTitle}>Burning hook overlay...</Text>
+                <Text style={styles.sheetPhaseSub}>Adding your hook text to the video.</Text>
+              </View>
+            ) : null}
+
+            {uploadingToStorage && !burningOverlay ? (
               <View style={styles.sheetPhase}>
                 <ActivityIndicator size="large" color={Colors.primaryLight} />
                 <Text style={styles.sheetPhaseTitle}>Uploading video...</Text>
@@ -886,7 +908,15 @@ export default function EditorScreen() {
               </>
             ) : null}
 
-            {uploadingToStorage ? (
+            {burningOverlay ? (
+              <View style={styles.sheetPhase}>
+                <ActivityIndicator size="large" color="#e1306c" />
+                <Text style={styles.sheetPhaseTitle}>Burning hook overlay...</Text>
+                <Text style={styles.sheetPhaseSub}>Adding your hook text to the Reel.</Text>
+              </View>
+            ) : null}
+
+            {uploadingToStorage && !burningOverlay ? (
               <View style={styles.sheetPhase}>
                 <ActivityIndicator size="large" color="#e1306c" />
                 <Text style={styles.sheetPhaseTitle}>Uploading video...</Text>
