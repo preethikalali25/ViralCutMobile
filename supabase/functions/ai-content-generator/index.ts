@@ -176,6 +176,7 @@ Return ONLY the title, 4–10 words.`;
 
     const aiResponse = await fetch(ANTHROPIC_API_URL, {
       method: 'POST',
+      signal: AbortSignal.timeout(25000),
       headers: {
         'Content-Type': 'application/json',
         'x-api-key': apiKey,

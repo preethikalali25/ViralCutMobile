@@ -73,7 +73,7 @@ async function extractVideoFrame(videoUri: string): Promise<{ base64: string; mi
     let frameUri: string | null = null;
     for (const seekMs of [2000, 1000, 500, 0]) {
       try {
-        const { uri } = await VideoThumbnails.getThumbnailAsync(resolvedUri, { time: seekMs, quality: 0.6 });
+        const { uri } = await VideoThumbnails.getThumbnailAsync(resolvedUri, { time: seekMs, quality: 0.4, maxWidth: 512 });
         if (uri) { frameUri = uri; break; }
       } catch { /* try next */ }
     }
