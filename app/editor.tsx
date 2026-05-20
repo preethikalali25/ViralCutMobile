@@ -1029,7 +1029,14 @@ export default function EditorScreen() {
           <Text style={styles.playerTitle} numberOfLines={2}>{video.title}</Text>
 
           {video.videoUri ? (
-            <VideoView player={videoPlayer} style={styles.videoView} contentFit="contain" nativeControls />
+            <View style={{ flex: 1, justifyContent: 'center' }}>
+              <VideoView player={videoPlayer} style={styles.videoView} contentFit="contain" nativeControls />
+              {hookText ? (
+                <View style={styles.playerHookOverlay} pointerEvents="none">
+                  <Text style={styles.playerHookText}>{hookText}</Text>
+                </View>
+              ) : null}
+            </View>
           ) : (
             <View style={styles.noVideoContainer}>
               <Image source={{ uri: video.thumbnail }} style={styles.noVideoThumb} contentFit="cover" transition={200} />
@@ -1256,6 +1263,16 @@ const styles = StyleSheet.create({
     color: '#fff', fontSize: FontSize.md, fontWeight: FontWeight.bold, includeFontPadding: false,
   },
   videoView: { width: '100%', height: '100%' },
+  playerHookOverlay: {
+    position: 'absolute', top: '8%', left: 16, right: 16,
+    alignItems: 'center', pointerEvents: 'none',
+  },
+  playerHookText: {
+    color: '#fff', fontSize: 22, fontWeight: '800', textAlign: 'center',
+    textShadowColor: 'rgba(0,0,0,0.9)', textShadowOffset: { width: 2, height: 2 }, textShadowRadius: 6,
+    backgroundColor: 'rgba(0,0,0,0.35)', paddingHorizontal: 12, paddingVertical: 6, borderRadius: 8,
+    overflow: 'hidden',
+  },
   noVideoContainer: { flex: 1, position: 'relative' },
   noVideoThumb: { width: '100%', height: '100%' },
   noVideoOverlay: {
