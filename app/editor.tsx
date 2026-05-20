@@ -366,6 +366,20 @@ export default function EditorScreen() {
   ): Promise<{ videoUrl: string; error?: string }> => {
     let videoUrl = videoUri;
 
+    // If remote URL and hook exists, download to local first so we can burn
+    if (videoUrl.startsWith('https://') && hook.trim()) {
+      setBurningOverlay(true);
+      try {
+        const localPath = `${FileSystem.cacheDirectory}download_${Date.now()}.mp4`;
+        await FileSystem.downloadAsync(videoUrl, localPath);
+        videoUrl = localPath;
+      } catch (e) {
+        setBurningOverlay(false);
+        showAlert('Download Failed', 'Could not download video for processing.');
+        return { videoUrl: '' };
+      }
+    }
+
     if ((videoUrl.startsWith('file://') || videoUrl.startsWith('ph://')) && hook.trim()) {
       setBurningOverlay(true);
       const { outputUri, error } = await burnHookOverlay(videoUrl, hook);
