@@ -340,24 +340,22 @@ export default function EditorScreen() {
   };
 
   const handlePublish = () => {
-    const snap = snapshotEditorState();
     if (platforms.includes('tiktok') && tiktok.status.connected) {
       setShowTikTokSheet(true);
       return;
     }
-    if (platforms.includes('reels') && instagram.status.connected) {
+    if (instagram.status.connected) {
       setShowInstagramSheet(true);
       return;
     }
-    showAlert('Publish Now?', 'This will publish your video locally.', [
-      {
-        text: 'Publish', onPress: () => {
-          updateVideo(video.id, { ...snap, status: 'published', publishedAt: new Date().toISOString() });
-          router.push('/(tabs)/library');
-        },
-      },
-      { text: 'Cancel', style: 'cancel' },
-    ]);
+    showAlert(
+      'Instagram Not Connected',
+      'Connect your Instagram account in the Profile tab to publish Reels.',
+      [
+        { text: 'Go to Profile', onPress: () => router.push('/(tabs)/profile') },
+        { text: 'Cancel', style: 'cancel' },
+      ],
+    );
   };
 
   const prepareVideoForPublish = async (
