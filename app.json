@@ -60,6 +60,6 @@
     "experiments": {
       "typedRoutes": true
     },
-    "ffmpegKitPackage": "https-gpl"
+    "ffmpegKitPackage": "min"
   }
 }
