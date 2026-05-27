@@ -12,7 +12,6 @@ class VideoTextOverlay: NSObject {
   // Resolve ph:// and file:// URIs to a local file URL
   private func resolveToFileURL(_ uri: String, completion: @escaping (URL?) -> Void) {
     if uri.hasPrefix("ph://") {
-      // Extract the local identifier (everything after "ph://")
       let raw = uri.dropFirst("ph://".count)
       let localId = String(raw.prefix(upTo: raw.firstIndex(of: "?") ?? raw.endIndex))
       let result = PHAsset.fetchAssets(withLocalIdentifiers: [localId], options: nil)
@@ -32,11 +31,13 @@ class VideoTextOverlay: NSObject {
     }
   }
 
+  // RCTPromiseResolveBlock = void(^)(id) → Swift: (Any?) -> Void
+  // RCTPromiseRejectBlock  = void(^)(NSString*, NSString*, NSError*) → Swift: (String?, String?, Error?) -> Void
   @objc
   func burnText(_ videoUri: String,
                 text: String,
-                resolver resolve: @escaping RCTPromiseResolveBlock,
-                rejecter _: @escaping RCTPromiseRejectBlock) {
+                resolver resolve: @escaping (Any?) -> Void,
+                rejecter _: @escaping (String?, String?, Error?) -> Void) {
 
     guard !text.trimmingCharacters(in: .whitespaces).isEmpty else {
       resolve(videoUri); return
@@ -49,7 +50,7 @@ class VideoTextOverlay: NSObject {
   }
 
   private func compose(inputUrl: URL, text: String, originalUri: String,
-                        resolve: @escaping RCTPromiseResolveBlock) {
+                        resolve: @escaping (Any?) -> Void) {
     let asset = AVURLAsset(url: inputUrl)
 
     Task {
@@ -83,24 +84,24 @@ class VideoTextOverlay: NSObject {
         }
 
         // Text layer — Core Animation y=0 is at the BOTTOM of the frame
-        let fontSize   = renderSize.width * 0.072
-        let padding    = renderSize.width * 0.045
-        let textW      = renderSize.width - padding * 2
-        let textH      = fontSize * 2.4
+        let fontSize: CGFloat = renderSize.width * 0.072
+        let padding:  CGFloat = renderSize.width * 0.045
+        let textW:    CGFloat = renderSize.width - padding * 2
+        let textH:    CGFloat = fontSize * 2.4
         let yFromBottom: CGFloat = 80
 
         let textLayer = CATextLayer()
-        textLayer.string         = text
+        textLayer.string          = text
         textLayer.foregroundColor = UIColor.white.cgColor
         textLayer.backgroundColor = UIColor.black.withAlphaComponent(0.55).cgColor
-        textLayer.alignmentMode  = .center
-        textLayer.contentsScale  = 1.0
-        textLayer.isWrapped      = true
-        textLayer.font           = CTFontCreateWithName("Helvetica-Bold" as CFString, fontSize, nil)
-        textLayer.fontSize       = fontSize
-        textLayer.cornerRadius   = 10
-        textLayer.masksToBounds  = true
-        textLayer.frame          = CGRect(x: padding, y: yFromBottom, width: textW, height: textH)
+        textLayer.alignmentMode   = .center
+        textLayer.contentsScale   = 1.0
+        textLayer.isWrapped       = true
+        textLayer.font            = CTFontCreateWithName("Helvetica-Bold" as CFString, fontSize, nil)
+        textLayer.fontSize        = fontSize
+        textLayer.cornerRadius    = 10
+        textLayer.masksToBounds   = true
+        textLayer.frame           = CGRect(x: padding, y: yFromBottom, width: textW, height: textH)
 
         let parentLayer = CALayer()
         let videoLayer  = CALayer()
@@ -134,8 +135,8 @@ class VideoTextOverlay: NSObject {
           presetName: AVAssetExportPresetHighestQuality
         ) else { resolve(originalUri); return }
 
-        session.outputURL       = outputUrl
-        session.outputFileType  = .mp4
+        session.outputURL        = outputUrl
+        session.outputFileType   = .mp4
         session.videoComposition = videoComp
 
         await session.export()
