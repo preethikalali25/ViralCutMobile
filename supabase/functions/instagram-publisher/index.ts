@@ -60,7 +60,7 @@ Deno.serve(async (req) => {
       const params = new URLSearchParams({
         client_id: appId,
         redirect_uri: redirectUri,
-        scope: 'instagram_basic,instagram_content_publish,pages_read_engagement',
+        scope: 'instagram_basic,instagram_content_publish',
         response_type: 'code',
         state,
       });
@@ -200,10 +200,6 @@ Deno.serve(async (req) => {
     }
 
     // ── 5. Publish Reel ──────────────────────────────────────────────────────
-    // Instagram Reels publishing flow:
-    // 1. POST /me/media — create media container (returns container_id)
-    // 2. Poll /me/media/{id} until status_code === 'FINISHED'
-    // 3. POST /me/media_publish — publish the container
     if (action === 'publish') {
       const { userId, videoUrl, caption = '', coverUrl } = body as {
         userId: string; videoUrl: string; caption?: string; coverUrl?: string;
