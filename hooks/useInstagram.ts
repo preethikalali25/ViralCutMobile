@@ -50,48 +50,50 @@ export function useInstagram() {
       if (!user?.id) return resolve({ error: 'Not logged in' });
       setConnectingOAuth(true);
 
+      let resolved = false;
+      let cancelTimer: ReturnType<typeof setTimeout> | null = null;
       let subscription: ReturnType<typeof Linking.addEventListener> | null = null;
-      const cleanup = () => {
+
+      const safeResolve = (result: { error?: string }) => {
+        if (resolved) return;
+        resolved = true;
+        if (cancelTimer) clearTimeout(cancelTimer);
         subscription?.remove();
-        WebBrowser.dismissBrowser();
+        setConnectingOAuth(false);
+        resolve(result);
       };
 
       try {
         const result = await getInstagramAuthUrl(INSTAGRAM_REDIRECT_URI);
         if ('error' in result) {
-          setConnectingOAuth(false);
-          return resolve({ error: result.error });
+          safeResolve({ error: result.error });
+          return;
         }
 
         subscription = Linking.addEventListener('url', async ({ url }) => {
           if (!url.startsWith('viralcut://instagram-callback')) return;
-          cleanup();
+          WebBrowser.dismissBrowser();
           try {
             const urlObj = new URL(url);
             const code = urlObj.searchParams.get('code');
             const errorParam = urlObj.searchParams.get('error');
 
             if (errorParam) {
-              setConnectingOAuth(false);
-              return resolve({ error: `Instagram denied access: ${errorParam}` });
+              return safeResolve({ error: `Instagram denied access: ${errorParam}` });
             }
             if (!code) {
-              setConnectingOAuth(false);
-              return resolve({ error: 'No authorization code received' });
+              return safeResolve({ error: 'No authorization code received' });
             }
 
             const exchangeResult = await exchangeInstagramCode(code, INSTAGRAM_REDIRECT_URI, user!.id);
             if ('error' in exchangeResult) {
-              setConnectingOAuth(false);
-              return resolve({ error: exchangeResult.error });
+              return safeResolve({ error: exchangeResult.error });
             }
 
             await loadStatus();
-            setConnectingOAuth(false);
-            resolve({});
+            safeResolve({});
           } catch (e: any) {
-            setConnectingOAuth(false);
-            resolve({ error: String(e?.message ?? e) });
+            safeResolve({ error: String(e?.message ?? e) });
           }
         });
 
@@ -100,19 +102,17 @@ export function useInstagram() {
           enableBarCollapsing: true,
         }).then((browserResult) => {
           if (browserResult.type === 'cancel' || browserResult.type === 'dismiss') {
-            cleanup();
-            setConnectingOAuth(false);
-            resolve({ error: 'OAuth cancelled' });
+            // Wait 2s for the deep link event to fire before treating as user cancellation.
+            // The browser auto-dismisses when iOS routes viralcut:// — this is not a cancel.
+            cancelTimer = setTimeout(() => {
+              safeResolve({ error: 'OAuth cancelled' });
+            }, 2000);
           }
         }).catch(() => {
-          cleanup();
-          setConnectingOAuth(false);
-          resolve({ error: 'Failed to open browser' });
+          safeResolve({ error: 'Failed to open browser' });
         });
       } catch (e: any) {
-        cleanup();
-        setConnectingOAuth(false);
-        resolve({ error: String(e?.message ?? e) });
+        safeResolve({ error: String(e?.message ?? e) });
       }
     });
   }, [user?.id, loadStatus]);
@@ -126,8 +126,6 @@ export function useInstagram() {
   }, [user?.id]);
 
   // ── Publish Reel ──────────────────────────────────────────────────────────
-  // videoUrl must be a publicly accessible URL — upload to Supabase Storage first.
-  // Instagram processes the video asynchronously; we poll until FINISHED then finalize.
   const publish = useCallback(async (
     videoUrl: string,
     caption: string,
@@ -150,7 +148,7 @@ export function useInstagram() {
 
   const startPolling = (containerId: string) => {
     let attempts = 0;
-    const MAX = 24; // 24 × 5s = 2 minutes
+    const MAX = 24;
 
     if (pollRef.current) clearInterval(pollRef.current);
 
