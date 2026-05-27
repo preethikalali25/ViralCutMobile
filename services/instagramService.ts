@@ -1,4 +1,3 @@
-import { getSupabaseClient } from '@/template';
 import { FunctionsHttpError } from '@supabase/supabase-js';
 
 export interface InstagramStatus {
@@ -8,18 +7,22 @@ export interface InstagramStatus {
   igUserId?: string;
 }
 
+const INSTAGRAM_FN_URL =
+  'https://gohuutzixvtavhdtdyon.supabase.co/functions/v1/instagram-publisher';
+const INSTAGRAM_FN_ANON_KEY =
+  'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImdvaHV1dHppeHZ0YXZoZHRkeW9uIiwicm9sZSI6ImFub24iLCJpYXQiOjE3Nzg2Nzg4NDksImV4cCI6MjA5NDI1NDg0OX0.KoI4GG2oJC8UGsnZQru3ti2h0bjoFWTabxwogjaBvJY';
+
 async function invoke(action: string, payload: Record<string, unknown>) {
-  const client = getSupabaseClient();
-  const { data, error } = await client.functions.invoke('instagram-publisher', {
-    body: { action, ...payload },
+  const res = await fetch(INSTAGRAM_FN_URL, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'Authorization': `Bearer ${INSTAGRAM_FN_ANON_KEY}`,
+    },
+    body: JSON.stringify({ action, ...payload }),
   });
-  if (error) {
-    let msg = error.message;
-    if (error instanceof FunctionsHttpError) {
-      try { msg = await error.context?.text() ?? msg; } catch { /* ignore */ }
-    }
-    return { data: null, error: msg };
-  }
+  const data = await res.json();
+  if (!res.ok) return { data: null, error: data.message ?? data.msg ?? 'Unknown error' };
   return { data, error: null };
 }
 
