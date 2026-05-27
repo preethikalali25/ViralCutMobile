@@ -2,6 +2,192 @@
 #import <AVFoundation/AVFoundation.h>
 #import <UIKit/UIKit.h>
 #import <Photos/Photos.h>
+#import <CoreImage/CoreImage.h>
+#import <CoreGraphics/CoreGraphics.h>
+
+// ---------------------------------------------------------------------------
+// Custom compositor — draws text directly onto CVPixelBuffer frames using
+// CoreGraphics. No CALayer / QuartzCore / IOSurface / XPC involved.
+// ---------------------------------------------------------------------------
+
+@interface VTOCompositorInstruction : NSObject <AVVideoCompositionInstruction>
+@property (nonatomic, strong) NSString *text;
+@property (nonatomic, assign) CGFloat fontSize;
+@property (nonatomic, assign) CGFloat padX;
+@property (nonatomic, assign) CGFloat padY;
+@property (nonatomic, assign) CMPersistentTrackID trackID;
+- (instancetype)initWithText:(NSString *)text
+                    fontSize:(CGFloat)fs
+                        padX:(CGFloat)px
+                        padY:(CGFloat)py
+                     trackID:(CMPersistentTrackID)tid
+                   timeRange:(CMTimeRange)range;
+@end
+
+@implementation VTOCompositorInstruction
+@synthesize timeRange, enablePostProcessing, containsTweening, requiredSourceSampleDataRenderers;
+
+- (instancetype)initWithText:(NSString *)text
+                    fontSize:(CGFloat)fs
+                        padX:(CGFloat)px
+                        padY:(CGFloat)py
+                     trackID:(CMPersistentTrackID)tid
+                   timeRange:(CMTimeRange)range {
+    self = [super init];
+    _text     = text;
+    _fontSize = fs;
+    _padX     = px;
+    _padY     = py;
+    _trackID  = tid;
+    self.timeRange = range;
+    enablePostProcessing = NO;
+    containsTweening     = NO;
+    return self;
+}
+
+- (NSArray *)requiredSourceTrackIDs {
+    return @[@(_trackID)];
+}
+
+@end
+
+// ---------------------------------------------------------------------------
+
+@interface VTOCompositor : NSObject <AVVideoCompositing>
+@end
+
+@implementation VTOCompositor {
+    dispatch_queue_t _queue;
+    CIContext        *_ciCtx;
+}
+
+- (instancetype)init {
+    self = [super init];
+    _queue = dispatch_queue_create("vto.compositor", DISPATCH_QUEUE_SERIAL);
+    // software renderer — never touches GPU/IOSurface
+    _ciCtx = [CIContext contextWithOptions:@{kCIContextUseSoftwareRenderer: @YES}];
+    return self;
+}
+
+- (NSDictionary *)sourcePixelBufferAttributes {
+    return @{ (NSString *)kCVPixelBufferPixelFormatTypeKey:
+                  @[@(kCVPixelFormatType_32BGRA)] };
+}
+
+- (NSDictionary *)requiredPixelBufferAttributesForRenderContext {
+    return @{ (NSString *)kCVPixelBufferPixelFormatTypeKey:
+                  @[@(kCVPixelFormatType_32BGRA)] };
+}
+
+- (void)renderContextChanged:(AVVideoCompositionRenderContext *)newRenderContext {}
+- (void)anticipateRenderingUsingHint:(AVVideoCompositionRenderHint *)renderHint {}
+- (void)prerollForRenderingUsingHint:(AVVideoCompositionRenderHint *)renderHint {}
+
+- (void)startVideoCompositionRequest:(AVAsynchronousVideoCompositionRequest *)request {
+    dispatch_async(_queue, ^{
+        [self _handleRequest:request];
+    });
+}
+
+- (void)_handleRequest:(AVAsynchronousVideoCompositionRequest *)request {
+    VTOCompositorInstruction *inst = (VTOCompositorInstruction *)request.videoCompositionInstruction;
+    CVPixelBufferRef src = [request sourceFrameByTrackID:inst.trackID];
+    if (!src) { [request finishWithError:[NSError errorWithDomain:@"VTO" code:1 userInfo:nil]]; return; }
+
+    CVPixelBufferRef dst = [request.renderContext newPixelBuffer];
+    if (!dst) { [request finishWithError:[NSError errorWithDomain:@"VTO" code:2 userInfo:nil]]; return; }
+
+    CVPixelBufferLockBaseAddress(src, kCVPixelBufferLock_ReadOnly);
+    CVPixelBufferLockBaseAddress(dst, 0);
+
+    size_t w  = CVPixelBufferGetWidth(src);
+    size_t h  = CVPixelBufferGetHeight(src);
+    size_t bpr = CVPixelBufferGetBytesPerRow(src);
+    void  *srcBase = CVPixelBufferGetBaseAddress(src);
+    void  *dstBase = CVPixelBufferGetBaseAddress(dst);
+
+    // Copy source frame into destination (BGRA → BGRA)
+    size_t dstBpr = CVPixelBufferGetBytesPerRow(dst);
+    if (bpr == dstBpr) {
+        memcpy(dstBase, srcBase, h * bpr);
+    } else {
+        for (size_t row = 0; row < h; row++) {
+            memcpy((uint8_t *)dstBase + row * dstBpr,
+                   (uint8_t *)srcBase + row * bpr,
+                   MIN(bpr, dstBpr));
+        }
+    }
+
+    CVPixelBufferUnlockBaseAddress(src, kCVPixelBufferLock_ReadOnly);
+
+    // Draw text overlay with CoreGraphics — no CALayer, no IOSurface
+    CGColorSpaceRef cs = CGColorSpaceCreateDeviceRGB();
+    CGContextRef cgCtx = CGBitmapContextCreate(dstBase, w, h, 8, dstBpr, cs,
+                                               kCGBitmapByteOrder32Little | kCGImageAlphaPremultipliedFirst);
+    CGColorSpaceRelease(cs);
+
+    if (cgCtx) {
+        CGFloat fs  = inst.fontSize;
+        CGFloat px  = inst.padX;
+        CGFloat py  = inst.padY;
+        CGFloat tw  = (CGFloat)w - px * 2;
+        CGFloat th  = fs * 2.4;
+        // text box near top: y from top = py; CoreGraphics origin is bottom-left
+        CGFloat boxY = (CGFloat)h - py - th;
+
+        // Semi-transparent background
+        CGContextSetRGBFillColor(cgCtx, 0, 0, 0, 0.55);
+        CGFloat radius = 10.0;
+        CGRect boxRect = CGRectMake(px, boxY, tw, th);
+        CGContextBeginPath(cgCtx);
+        CGContextMoveToPoint   (cgCtx, CGRectGetMinX(boxRect) + radius, CGRectGetMinY(boxRect));
+        CGContextAddArcToPoint (cgCtx, CGRectGetMaxX(boxRect), CGRectGetMinY(boxRect),
+                                CGRectGetMaxX(boxRect), CGRectGetMinY(boxRect) + radius, radius);
+        CGContextAddArcToPoint (cgCtx, CGRectGetMaxX(boxRect), CGRectGetMaxY(boxRect),
+                                CGRectGetMaxX(boxRect) - radius, CGRectGetMaxY(boxRect), radius);
+        CGContextAddArcToPoint (cgCtx, CGRectGetMinX(boxRect), CGRectGetMaxY(boxRect),
+                                CGRectGetMinX(boxRect), CGRectGetMaxY(boxRect) - radius, radius);
+        CGContextAddArcToPoint (cgCtx, CGRectGetMinX(boxRect), CGRectGetMinY(boxRect),
+                                CGRectGetMinX(boxRect) + radius, CGRectGetMinY(boxRect), radius);
+        CGContextClosePath(cgCtx);
+        CGContextFillPath(cgCtx);
+
+        // Flip context to draw UIKit string (UIKit uses top-left origin)
+        CGContextSaveGState(cgCtx);
+        CGContextTranslateCTM(cgCtx, 0, (CGFloat)h);
+        CGContextScaleCTM(cgCtx, 1.0, -1.0);
+
+        // Text attributes
+        NSMutableParagraphStyle *ps = [[NSMutableParagraphStyle alloc] init];
+        ps.alignment     = NSTextAlignmentCenter;
+        ps.lineBreakMode = NSLineBreakByWordWrapping;
+        NSDictionary *attrs = @{
+            NSFontAttributeName:            [UIFont boldSystemFontOfSize:fs],
+            NSForegroundColorAttributeName: [UIColor whiteColor],
+            NSParagraphStyleAttributeName:  ps
+        };
+        // In the flipped coordinate system, y=py puts it near the top
+        CGRect textRect = CGRectMake(px + 8, py + (th - fs * 1.3) / 2.0, tw - 16, fs * 1.6);
+        UIGraphicsPushContext(cgCtx);
+        [inst.text drawInRect:textRect withAttributes:attrs];
+        UIGraphicsPopContext();
+
+        CGContextRestoreGState(cgCtx);
+        CGContextRelease(cgCtx);
+    }
+
+    CVPixelBufferUnlockBaseAddress(dst, 0);
+    [request finishWithComposedVideoFrame:dst];
+    CVPixelBufferRelease(dst);
+}
+
+- (void)cancelAllPendingVideoCompositionRequests {}
+
+@end
+
+// ---------------------------------------------------------------------------
+// React Native module
+// ---------------------------------------------------------------------------
 
 @interface VideoTextOverlay : NSObject <RCTBridgeModule>
 @end
@@ -9,7 +195,6 @@
 @implementation VideoTextOverlay
 
 RCT_EXPORT_MODULE();
-
 + (BOOL)requiresMainQueueSetup { return NO; }
 
 - (void)processVideoAtURL:(NSURL *)inputUrl
@@ -17,116 +202,94 @@ RCT_EXPORT_MODULE();
               originalUri:(NSString *)originalUri
                   resolve:(RCTPromiseResolveBlock)resolve {
 
-  // Step 1: load asset metadata on a background thread (safe for AVFoundation)
-  dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
-
+    dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
+        @try {
 #pragma clang diagnostic push
 #pragma clang diagnostic ignored "-Wdeprecated-declarations"
-    AVURLAsset *asset    = [AVURLAsset URLAssetWithURL:inputUrl options:nil];
-    NSArray *videoTracks = [asset tracksWithMediaType:AVMediaTypeVideo];
-    if (!videoTracks.count) { resolve(originalUri); return; }
+            AVURLAsset *asset    = [AVURLAsset URLAssetWithURL:inputUrl options:nil];
+            NSArray *videoTracks = [asset tracksWithMediaType:AVMediaTypeVideo];
+            if (!videoTracks.count) { resolve(originalUri); return; }
 
-    AVAssetTrack *vTrack   = videoTracks.firstObject;
-    CGSize naturalSize     = vTrack.naturalSize;
-    CGAffineTransform pref = vTrack.preferredTransform;
-    CMTime duration        = asset.duration;
-    NSArray *audioTracks   = [asset tracksWithMediaType:AVMediaTypeAudio];
+            AVAssetTrack *vTrack   = videoTracks.firstObject;
+            CGSize naturalSize     = vTrack.naturalSize;
+            CGAffineTransform pref = vTrack.preferredTransform;
+            CMTime duration        = asset.duration;
+            NSArray *audioTracks   = [asset tracksWithMediaType:AVMediaTypeAudio];
 #pragma clang diagnostic pop
 
-    CMTimeRange timeRange = CMTimeRangeMake(kCMTimeZero, duration);
+            CMTimeRange timeRange = CMTimeRangeMake(kCMTimeZero, duration);
+            CGSize ts = CGSizeApplyAffineTransform(naturalSize, pref);
+            CGSize renderSize = CGSizeMake(fabs(ts.width), fabs(ts.height));
+            if (renderSize.width < 1 || renderSize.height < 1) { resolve(originalUri); return; }
 
-    // Compute display size (handles portrait/landscape rotation)
-    CGSize t = CGSizeApplyAffineTransform(naturalSize, pref);
-    CGSize renderSize = CGSizeMake(fabs(t.width), fabs(t.height));
-    if (renderSize.width < 1 || renderSize.height < 1) { resolve(originalUri); return; }
+            AVMutableComposition *comp = [AVMutableComposition composition];
+            AVMutableCompositionTrack *cv =
+                [comp addMutableTrackWithMediaType:AVMediaTypeVideo
+                                  preferredTrackID:kCMPersistentTrackID_Invalid];
+            if (!cv) { resolve(originalUri); return; }
+            NSError *err = nil;
+            [cv insertTimeRange:timeRange ofTrack:vTrack atTime:kCMTimeZero error:&err];
+            if (err) { resolve(originalUri); return; }
 
-    // Build AVMutableComposition on background thread (AVFoundation is thread-safe)
-    AVMutableComposition *comp = [AVMutableComposition composition];
-    AVMutableCompositionTrack *cv =
-      [comp addMutableTrackWithMediaType:AVMediaTypeVideo
-                        preferredTrackID:kCMPersistentTrackID_Invalid];
-    NSError *err = nil;
-    [cv insertTimeRange:timeRange ofTrack:vTrack atTime:kCMTimeZero error:&err];
-    if (err) { resolve(originalUri); return; }
+            if (audioTracks.count) {
+                AVMutableCompositionTrack *ca =
+                    [comp addMutableTrackWithMediaType:AVMediaTypeAudio
+                                      preferredTrackID:kCMPersistentTrackID_Invalid];
+                [ca insertTimeRange:timeRange ofTrack:audioTracks.firstObject atTime:kCMTimeZero error:nil];
+            }
 
-    if (audioTracks.count) {
-      AVMutableCompositionTrack *ca =
-        [comp addMutableTrackWithMediaType:AVMediaTypeAudio
-                          preferredTrackID:kCMPersistentTrackID_Invalid];
-      [ca insertTimeRange:timeRange ofTrack:audioTracks.firstObject atTime:kCMTimeZero error:nil];
-    }
+            // Video composition using custom compositor (no CALayer, no IOSurface)
+            CGFloat fs  = renderSize.width * 0.072;
+            CGFloat pad = renderSize.width * 0.045;
 
-    // Step 2: CALayer/CATextLayer MUST be created on the main thread
-    dispatch_async(dispatch_get_main_queue(), ^{
+            VTOCompositorInstruction *inst =
+                [[VTOCompositorInstruction alloc] initWithText:text
+                                                      fontSize:fs
+                                                          padX:pad
+                                                          padY:pad
+                                                       trackID:cv.trackID
+                                                     timeRange:timeRange];
 
-      CGFloat fs  = renderSize.width * 0.072;
-      CGFloat pad = renderSize.width * 0.045;
-      CGFloat tw  = renderSize.width - pad * 2;
-      CGFloat th  = fs * 2.4;
+            AVMutableVideoCompositionLayerInstruction *li =
+                [AVMutableVideoCompositionLayerInstruction
+                   videoCompositionLayerInstructionWithAssetTrack:cv];
+            [li setTransform:pref atTime:kCMTimeZero];
+            // (layer instruction stored on inst for the compositor's reference)
 
-      CATextLayer *tl    = [CATextLayer layer];
-      tl.string          = text;
-      tl.foregroundColor = [UIColor whiteColor].CGColor;
-      tl.backgroundColor = [UIColor colorWithRed:0 green:0 blue:0 alpha:0.55].CGColor;
-      tl.alignmentMode   = kCAAlignmentCenter;
-      tl.contentsScale   = 1.0;
-      tl.wrapped         = YES;
-      tl.font            = CFSTR("Helvetica-Bold");
-      tl.fontSize        = fs;
-      tl.cornerRadius    = 10;
-      tl.masksToBounds   = YES;
-      tl.frame           = CGRectMake(pad, 80, tw, th);
+            AVMutableVideoComposition *vc = [AVMutableVideoComposition videoComposition];
+            vc.customVideoCompositorClass = [VTOCompositor class];
+            vc.frameDuration = CMTimeMake(1, 30);
+            vc.renderSize    = renderSize;
+            vc.instructions  = @[inst];
 
-      CALayer *parent = [CALayer layer];
-      CALayer *vLayer = [CALayer layer];
-      parent.frame    = CGRectMake(0, 0, renderSize.width, renderSize.height);
-      vLayer.frame    = CGRectMake(0, 0, renderSize.width, renderSize.height);
-      [parent addSublayer:vLayer];
-      [parent addSublayer:tl];
+            NSString *fname = [NSString stringWithFormat:@"hook_%ld.mp4",
+                               (long)[[NSDate date] timeIntervalSince1970]];
+            NSURL *out = [NSFileManager.defaultManager.temporaryDirectory
+                          URLByAppendingPathComponent:fname];
+            [NSFileManager.defaultManager removeItemAtURL:out error:nil];
 
-      // Wire layers into video composition
-      AVMutableVideoComposition *vc = [AVMutableVideoComposition videoComposition];
-      vc.frameDuration = CMTimeMake(1, 30);
-      vc.renderSize    = renderSize;
-      vc.animationTool =
-        [AVVideoCompositionCoreAnimationTool
-           videoCompositionCoreAnimationToolWithPostProcessingAsVideoLayer:vLayer
-                                                                  inLayer:parent];
+            AVAssetExportSession *ses =
+                [[AVAssetExportSession alloc] initWithAsset:comp
+                                                 presetName:AVAssetExportPresetHighestQuality];
+            if (!ses) { resolve(originalUri); return; }
+            ses.outputURL        = out;
+            ses.outputFileType   = AVFileTypeMPEG4;
+            ses.videoComposition = vc;
 
-      AVMutableVideoCompositionInstruction *inst =
-        [AVMutableVideoCompositionInstruction videoCompositionInstruction];
-      inst.timeRange = timeRange;
-      AVMutableVideoCompositionLayerInstruction *li =
-        [AVMutableVideoCompositionLayerInstruction
-           videoCompositionLayerInstructionWithAssetTrack:cv];
-      [li setTransform:pref atTime:kCMTimeZero];
-      inst.layerInstructions = @[li];
-      vc.instructions = @[inst];
+            [ses exportAsynchronouslyWithCompletionHandler:^{
+                if (ses.status == AVAssetExportSessionStatusCompleted) {
+                    resolve(out.absoluteString);
+                } else {
+                    NSLog(@"[VideoTextOverlay] export error: %@", ses.error.localizedDescription);
+                    resolve(originalUri);
+                }
+            }];
 
-      // Export (runs asynchronously on its own internal thread)
-      NSString *fname = [NSString stringWithFormat:@"hook_%ld.mp4",
-                         (long)[[NSDate date] timeIntervalSince1970]];
-      NSURL *out = [NSFileManager.defaultManager.temporaryDirectory
-                    URLByAppendingPathComponent:fname];
-      [NSFileManager.defaultManager removeItemAtURL:out error:nil];
-
-      AVAssetExportSession *ses =
-        [[AVAssetExportSession alloc] initWithAsset:comp
-                                         presetName:AVAssetExportPresetHighestQuality];
-      ses.outputURL        = out;
-      ses.outputFileType   = AVFileTypeMPEG4;
-      ses.videoComposition = vc;
-
-      [ses exportAsynchronouslyWithCompletionHandler:^{
-        if (ses.status == AVAssetExportSessionStatusCompleted) {
-          resolve(out.absoluteString);
-        } else {
-          NSLog(@"[VideoTextOverlay] export failed: %@", ses.error.localizedDescription);
-          resolve(originalUri);
+        } @catch (NSException *e) {
+            NSLog(@"[VideoTextOverlay] exception: %@ — %@", e.name, e.reason);
+            resolve(originalUri);
         }
-      }];
-    }); // end main thread
-  }); // end background thread
+    });
 }
 
 RCT_EXPORT_METHOD(burnText:(NSString *)videoUri
@@ -134,32 +297,34 @@ RCT_EXPORT_METHOD(burnText:(NSString *)videoUri
                   resolver:(RCTPromiseResolveBlock)resolve
                   rejecter:(RCTPromiseRejectBlock)reject) {
 
-  if ([[text stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceCharacterSet]] length] == 0) {
-    resolve(videoUri); return;
-  }
+    if (!videoUri || !text ||
+        [[text stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceCharacterSet]] length] == 0) {
+        resolve(videoUri ?: @""); return;
+    }
 
-  if ([videoUri hasPrefix:@"ph://"]) {
-    NSString *localId = [[videoUri substringFromIndex:5] componentsSeparatedByString:@"?"].firstObject;
-    PHFetchResult *r  = [PHAsset fetchAssetsWithLocalIdentifiers:@[localId] options:nil];
-    PHAsset *phAsset  = r.firstObject;
-    if (!phAsset || phAsset.mediaType != PHAssetMediaTypeVideo) { resolve(videoUri); return; }
+    if ([videoUri hasPrefix:@"ph://"]) {
+        NSString *localId = [[videoUri substringFromIndex:5] componentsSeparatedByString:@"?"].firstObject;
+        PHFetchResult *r  = [PHAsset fetchAssetsWithLocalIdentifiers:@[localId] options:nil];
+        PHAsset *phAsset  = r.firstObject;
+        if (!phAsset || phAsset.mediaType != PHAssetMediaTypeVideo) { resolve(videoUri); return; }
 
-    PHVideoRequestOptions *opts = [[PHVideoRequestOptions alloc] init];
-    opts.version = PHVideoRequestOptionsVersionCurrent;
-    opts.networkAccessAllowed = NO;
-    [[PHImageManager defaultManager]
-       requestAVAssetForVideo:phAsset options:opts
-                resultHandler:^(AVAsset *av, AVAudioMix *mix, NSDictionary *info) {
-      AVURLAsset *ua = (AVURLAsset *)av;
-      if (!ua) { resolve(videoUri); return; }
-      [self processVideoAtURL:ua.URL text:text originalUri:videoUri resolve:resolve];
-    }];
-  } else {
-    NSURL *fileUrl = [videoUri hasPrefix:@"file://"]
-      ? [NSURL URLWithString:videoUri]
-      : [NSURL fileURLWithPath:videoUri];
-    [self processVideoAtURL:fileUrl text:text originalUri:videoUri resolve:resolve];
-  }
+        PHVideoRequestOptions *opts = [[PHVideoRequestOptions alloc] init];
+        opts.version = PHVideoRequestOptionsVersionCurrent;
+        opts.networkAccessAllowed = NO;
+        [[PHImageManager defaultManager]
+           requestAVAssetForVideo:phAsset options:opts
+                    resultHandler:^(AVAsset *av, AVAudioMix *mix, NSDictionary *info) {
+            AVURLAsset *ua = (AVURLAsset *)av;
+            if (!ua) { resolve(videoUri); return; }
+            [self processVideoAtURL:ua.URL text:text originalUri:videoUri resolve:resolve];
+        }];
+    } else {
+        NSURL *fileUrl = [videoUri hasPrefix:@"file://"]
+            ? [NSURL URLWithString:videoUri]
+            : [NSURL fileURLWithPath:videoUri];
+        if (!fileUrl) { resolve(videoUri); return; }
+        [self processVideoAtURL:fileUrl text:text originalUri:videoUri resolve:resolve];
+    }
 }
 
 @end
