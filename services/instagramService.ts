@@ -1,5 +1,3 @@
-import { FunctionsHttpError } from '@supabase/supabase-js';
-
 export interface InstagramStatus {
   connected: boolean;
   expired?: boolean;
@@ -22,7 +20,10 @@ async function invoke(action: string, payload: Record<string, unknown>) {
     body: JSON.stringify({ action, ...payload }),
   });
   const data = await res.json();
-  if (!res.ok) return { data: null, error: data.message ?? data.msg ?? 'Unknown error' };
+  if (!res.ok) {
+    const msg = data.error ?? data.message ?? data.msg ?? JSON.stringify(data);
+    return { data: null, error: msg };
+  }
   return { data, error: null };
 }
 
