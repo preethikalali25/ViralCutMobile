@@ -12,7 +12,7 @@ export async function burnHookOverlay(
   // Escape characters that are special in FFmpeg drawtext filter
   const escaped = hookText
     .replace(/\\/g, '\\\\')
-    .replace(/'/g, "\\'")   
+    .replace(/'/g, "\\'")
     .replace(/:/g, '\\:')
     .replace(/\[/g, '\\[')
     .replace(/\]/g, '\\]')
