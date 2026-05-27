@@ -425,7 +425,7 @@ export default function EditorScreen() {
     const { videoUrl, error: prepError } = await prepareVideoForPublish(video.videoUri, snap.hook?.text ?? '');
     if (prepError || !videoUrl) { showAlert('Upload Failed', prepError ?? 'Could not upload video.'); return; }
 
-    const captionText = [snap.hook?.text, snap.caption, snap.hashtags.join(' ')].filter(Boolean).join('\n\n');
+    const captionText = [snap.caption, snap.hashtags.join(' ')].filter(Boolean).join('\n\n');
     updateVideo(video.id, { ...snap, title: videoTitle });
     const { error } = await instagram.publish(videoUrl, captionText);
     if (error) showAlert('Instagram Error', error);
