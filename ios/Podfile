@@ -14,6 +14,8 @@ install! 'cocoapods',
 prepare_react_native_project!
 
 target 'ViralCut' do
+  pod 'VideoTextOverlay', :path => '../modules/video-text-overlay'
+
   use_expo_modules!
 
   if ENV['EXPO_USE_COMMUNITY_AUTOLINKING'] == '1'

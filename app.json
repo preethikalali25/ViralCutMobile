@@ -55,12 +55,6 @@
           "resizeMode": "contain",
           "backgroundColor": "#080a14"
         }
-      ],
-      [
-        "ffmpeg-kit-react-native",
-        {
-          "package": "min"
-        }
       ]
     ],
     "experiments": {
