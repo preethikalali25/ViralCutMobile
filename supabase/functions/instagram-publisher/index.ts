@@ -4,7 +4,6 @@ import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
 const IG_AUTH_URL = 'https://api.instagram.com/oauth/authorize';
 const IG_TOKEN_URL = 'https://api.instagram.com/oauth/access_token';
 const IG_GRAPH_URL = 'https://graph.instagram.com/v21.0';
-const FB_GRAPH_URL = 'https://graph.facebook.com/v19.0';
 const APP_DEEP_LINK = 'viralcut://instagram-callback';
 
 function getEnv(key: string): string {
@@ -20,8 +19,16 @@ Deno.serve(async (req) => {
 
   const url = new URL(req.url);
 
-  // ── OAuth Callback (GET — Facebook redirects here) ─────────────────────
-  if (req.method === 'GET' && url.searchParams.get('action') === 'callback') {
+  // ── OAuth Callback (GET — Instagram redirects here) ────────────────────
+  // Instagram strips existing query params (like ?action=callback) from the
+  // redirect URI, so we detect the callback by checking for 'code' or 'error'.
+  const isCallback =
+    req.method === 'GET' &&
+    (url.searchParams.get('action') === 'callback' ||
+      url.searchParams.has('code') ||
+      url.searchParams.has('error'));
+
+  if (isCallback) {
     const code = url.searchParams.get('code') ?? '';
     const error = url.searchParams.get('error') ?? '';
     const errorDesc = url.searchParams.get('error_description') ?? error;
