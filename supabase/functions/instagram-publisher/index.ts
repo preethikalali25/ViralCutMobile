@@ -1,7 +1,7 @@
 import { corsHeaders } from '../_shared/cors.ts';
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
 
-const IG_AUTH_URL = 'https://api.instagram.com/oauth/authorize';
+const IG_AUTH_URL = 'https://www.instagram.com/oauth/authorize';
 const IG_TOKEN_URL = 'https://api.instagram.com/oauth/access_token';
 const IG_GRAPH_URL = 'https://graph.instagram.com/v21.0';
 const APP_DEEP_LINK = 'viralcut://instagram-callback';
