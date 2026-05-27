@@ -11,7 +11,6 @@ import {
   finalizeReel,
 } from '@/services/instagramService';
 import * as WebBrowser from 'expo-web-browser';
-import { Linking } from 'react-native';
 
 export const INSTAGRAM_REDIRECT_URI =
   'https://gohuutzixvtavhdtdyon.supabase.co/functions/v1/instagram-publisher';
@@ -45,76 +44,55 @@ export function useInstagram() {
   }, [loadStatus]);
 
   // ── OAuth Connect ─────────────────────────────────────────────────────────
-  const connect = useCallback((): Promise<{ error?: string }> => {
-    return new Promise(async (resolve) => {
-      if (!user?.id) return resolve({ error: 'Not logged in' });
-      setConnectingOAuth(true);
+  const connect = useCallback(async (): Promise<{ error?: string }> => {
+    if (!user?.id) return { error: 'Not logged in' };
+    setConnectingOAuth(true);
 
-      let resolved = false;
-      let cancelTimer: ReturnType<typeof setTimeout> | null = null;
-      let subscription: ReturnType<typeof Linking.addEventListener> | null = null;
-
-      const safeResolve = (result: { error?: string }) => {
-        if (resolved) return;
-        resolved = true;
-        if (cancelTimer) clearTimeout(cancelTimer);
-        subscription?.remove();
+    try {
+      const result = await getInstagramAuthUrl(INSTAGRAM_REDIRECT_URI);
+      if ('error' in result) {
         setConnectingOAuth(false);
-        resolve(result);
-      };
-
-      try {
-        const result = await getInstagramAuthUrl(INSTAGRAM_REDIRECT_URI);
-        if ('error' in result) {
-          safeResolve({ error: result.error });
-          return;
-        }
-
-        subscription = Linking.addEventListener('url', async ({ url }) => {
-          if (!url.startsWith('viralcut://instagram-callback')) return;
-          WebBrowser.dismissBrowser();
-          try {
-            const urlObj = new URL(url);
-            const code = urlObj.searchParams.get('code');
-            const errorParam = urlObj.searchParams.get('error');
-
-            if (errorParam) {
-              return safeResolve({ error: `Instagram denied access: ${errorParam}` });
-            }
-            if (!code) {
-              return safeResolve({ error: 'No authorization code received' });
-            }
-
-            const exchangeResult = await exchangeInstagramCode(code, INSTAGRAM_REDIRECT_URI, user!.id);
-            if ('error' in exchangeResult) {
-              return safeResolve({ error: exchangeResult.error });
-            }
-
-            await loadStatus();
-            safeResolve({});
-          } catch (e: any) {
-            safeResolve({ error: String(e?.message ?? e) });
-          }
-        });
-
-        WebBrowser.openBrowserAsync(result.authUrl, {
-          showTitle: false,
-          enableBarCollapsing: true,
-        }).then((browserResult) => {
-          if (browserResult.type === 'cancel' || browserResult.type === 'dismiss') {
-            // Wait 2s for the deep link event to fire before treating as user cancellation.
-            // The browser auto-dismisses when iOS routes viralcut:// — this is not a cancel.
-            cancelTimer = setTimeout(() => {
-              safeResolve({ error: 'OAuth cancelled' });
-            }, 2000);
-          }
-        }).catch(() => {
-          safeResolve({ error: 'Failed to open browser' });
-        });
-      } catch (e: any) {
-        safeResolve({ error: String(e?.message ?? e) });
+        return { error: result.error };
       }
-    });
+
+      // openAuthSessionAsync uses ASWebAuthenticationSession on iOS which
+      // properly intercepts the viralcut:// callback URL without needing Linking.
+      const browserResult = await WebBrowser.openAuthSessionAsync(
+        result.authUrl,
+        'viralcut://',
+      );
+
+      if (browserResult.type !== 'success') {
+        setConnectingOAuth(false);
+        return { error: 'OAuth cancelled' };
+      }
+
+      const urlObj = new URL(browserResult.url);
+      const code = urlObj.searchParams.get('code');
+      const errorParam = urlObj.searchParams.get('error');
+
+      if (errorParam) {
+        setConnectingOAuth(false);
+        return { error: `Instagram denied access: ${errorParam}` };
+      }
+      if (!code) {
+        setConnectingOAuth(false);
+        return { error: 'No authorization code received' };
+      }
+
+      const exchangeResult = await exchangeInstagramCode(code, INSTAGRAM_REDIRECT_URI, user.id);
+      if ('error' in exchangeResult) {
+        setConnectingOAuth(false);
+        return { error: exchangeResult.error };
+      }
+
+      await loadStatus();
+      setConnectingOAuth(false);
+      return {};
+    } catch (e: any) {
+      setConnectingOAuth(false);
+      return { error: String(e?.message ?? e) };
+    }
   }, [user?.id, loadStatus]);
 
   // ── Disconnect ────────────────────────────────────────────────────────────
