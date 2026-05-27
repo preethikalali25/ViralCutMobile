@@ -14,7 +14,7 @@ import * as WebBrowser from 'expo-web-browser';
 import { Linking } from 'react-native';
 
 export const INSTAGRAM_REDIRECT_URI =
-  'https://mrsvovoywukechawmrsv.backend.onspace.ai/functions/v1/instagram-publisher?action=callback';
+  'https://gohuutzixvtavhdtdyon.supabase.co/functions/v1/instagram-publisher';
 
 export type PublishPhase = 'idle' | 'uploading' | 'processing' | 'publishing' | 'success' | 'error';
 
