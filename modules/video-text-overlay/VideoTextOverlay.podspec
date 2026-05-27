@@ -6,9 +6,8 @@ Pod::Spec.new do |s|
   s.license      = { :type => 'MIT' }
   s.authors      = { 'ViralCut' => 'preethika.kallaguntla@gmail.com' }
   s.platform     = :ios, '15.1'
-  s.swift_version = '5.7'
   s.source       = { :path => '.' }
-  s.source_files = 'ios/**/*.{h,m,mm,swift}'
+  s.source_files = 'ios/**/*.{h,m,mm}'
   s.frameworks   = 'AVFoundation', 'UIKit', 'Foundation', 'Photos'
   s.dependency   'React-Core'
 end
