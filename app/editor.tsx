@@ -387,7 +387,7 @@ export default function EditorScreen() {
     try {
       setUploadingToStorage(true);
       setBurningOverlay(true);
-      const burnedUri = await burnHookOverlay(videoUri, hookText);
+      const { outputUri: burnedUri } = await burnHookOverlay(videoUri, hookText);
       setBurningOverlay(false);
       const resolvedUri = await resolveVideoUri(burnedUri);
       const { url, error } = await uploadVideoToStorage(resolvedUri, (p) => setUploadProgress(p));
