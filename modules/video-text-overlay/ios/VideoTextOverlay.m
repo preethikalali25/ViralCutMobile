@@ -263,6 +263,9 @@ RCT_EXPORT_MODULE();
             NSError *err = nil;
             [cv insertTimeRange:timeRange ofTrack:vTrack atTime:kCMTimeZero error:&err];
             if (err) { resolve(originalUri); return; }
+            // Pixels are already rotated by the vImage compositor, so clear the
+            // track transform — otherwise players apply the rotation a second time.
+            [cv setPreferredTransform:CGAffineTransformIdentity];
 
             if (audioTracks.count) {
                 AVMutableCompositionTrack *ca =
