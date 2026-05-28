@@ -1,8 +1,9 @@
 import { corsHeaders } from '../_shared/cors.ts';
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
 
-const IG_AUTH_URL = 'https://www.facebook.com/dialog/oauth';
-const FB_TOKEN_URL = 'https://graph.facebook.com/v21.0/oauth/access_token';
+const IG_AUTH_URL = 'https://www.instagram.com/oauth/authorize';
+const IG_TOKEN_URL = 'https://api.instagram.com/oauth/access_token';
+const IG_LONG_TOKEN_URL = 'https://graph.instagram.com/access_token';
 const IG_GRAPH_URL = 'https://graph.instagram.com/v21.0';
 
 const APP_DEEP_LINK = 'viralcut://instagram-callback';
@@ -59,7 +60,7 @@ Deno.serve(async (req) => {
       const params = new URLSearchParams({
         client_id: appId,
         redirect_uri: redirectUri,
-        scope: 'instagram_basic,instagram_content_publish,pages_read_engagement',
+        scope: 'instagram_business_basic,instagram_business_content_publish',
         response_type: 'code',
         state,
       });
@@ -76,37 +77,36 @@ Deno.serve(async (req) => {
         code: string; redirectUri: string; userId: string;
       };
 
-      // Step 1: short-lived token via Facebook Graph API (Basic Display API was shut down Dec 2024)
-      const shortParams = new URLSearchParams({
-        client_id: appId,
-        client_secret: appSecret,
-        grant_type: 'authorization_code',
-        redirect_uri: redirectUri,
-        code,
-      });
+      // Step 1: short-lived token via Instagram Login API
+      const shortForm = new FormData();
+      shortForm.append('client_id', appId);
+      shortForm.append('client_secret', appSecret);
+      shortForm.append('grant_type', 'authorization_code');
+      shortForm.append('redirect_uri', redirectUri);
+      shortForm.append('code', code);
 
-      const shortRes = await fetch(`${FB_TOKEN_URL}?${shortParams}`);
+      const shortRes = await fetch(IG_TOKEN_URL, { method: 'POST', body: shortForm });
       const shortData = await shortRes.json();
       console.log('[instagram] short token response:', JSON.stringify(shortData).slice(0, 300));
 
-      if (shortData.error) {
+      if (shortData.error_type || shortData.error) {
         return new Response(
-          JSON.stringify({ error: `Instagram: ${shortData.error.message ?? shortData.error_description ?? 'OAuth failed'}` }),
+          JSON.stringify({ error: `Instagram: ${shortData.error_message ?? shortData.error_description ?? shortData.error ?? 'OAuth failed'}` }),
           { status: 400, headers: { ...corsHeaders, 'Content-Type': 'application/json' } },
         );
       }
 
       const shortToken = shortData.access_token;
+      const igUserId = shortData.user_id?.toString() ?? '';
 
-      // Step 2: exchange for long-lived token (60-day) via fb_exchange_token
+      // Step 2: exchange for long-lived token (60-day)
       const longParams = new URLSearchParams({
-        grant_type: 'fb_exchange_token',
-        client_id: appId,
+        grant_type: 'ig_exchange_token',
         client_secret: appSecret,
-        fb_exchange_token: shortToken,
+        access_token: shortToken,
       });
 
-      const longRes = await fetch(`${FB_TOKEN_URL}?${longParams}`);
+      const longRes = await fetch(`${IG_LONG_TOKEN_URL}?${longParams}`);
       const longData = await longRes.json();
       console.log('[instagram] long token response:', JSON.stringify(longData).slice(0, 200));
 
@@ -114,11 +114,10 @@ Deno.serve(async (req) => {
       const expiresInSec = longData.expires_in ?? 5183944; // ~60 days
       const expiresAt = new Date(Date.now() + expiresInSec * 1000).toISOString();
 
-      // Step 3: fetch Instagram user profile (includes IG user ID)
+      // Step 3: fetch user profile
       let username = '';
       let profilePictureUrl = '';
       let followersCount = 0;
-      let igUserId = '';
 
       try {
         const profileRes = await fetch(
@@ -126,7 +125,6 @@ Deno.serve(async (req) => {
         );
         const profileData = await profileRes.json();
         console.log('[instagram] profile:', JSON.stringify(profileData).slice(0, 200));
-        igUserId = profileData.id?.toString() ?? '';
         username = profileData.username ?? '';
         profilePictureUrl = profileData.profile_picture_url ?? '';
         followersCount = profileData.followers_count ?? 0;
