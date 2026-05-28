@@ -215,15 +215,12 @@ RCT_EXPORT_MODULE();
 + (BOOL)requiresMainQueueSetup { return NO; }
 
 // Derive vImage rotation constant from AVFoundation's preferredTransform.
-// AVFoundation / UIKit: origin top-left, y-down.
-// vImage:               origin top-left, y-down  (same convention).
-// So the transform.b sign maps directly to CCW/CW without coordinate flip.
-//   b > 0, c < 0  =>  90° CCW in UIKit  =>  vImage constant 1
-//   b < 0, c > 0  =>  90° CW  in UIKit  =>  vImage constant 3
-//   a < 0, d < 0  =>  180°              =>  vImage constant 2
-//   identity                            =>  vImage constant 0
+// vImageRotate90_ARGB8888 constants: 0=0° 1=90°CW 2=180° 3=90°CCW
+//   b > 0, c < 0  =>  90° CCW needed  =>  vImage constant 3
+//   b < 0, c > 0  =>  90° CW  needed  =>  vImage constant 1
+//   a < 0, d < 0  =>  180°             =>  vImage constant 2
 + (uint8_t)vRotationForTransform:(CGAffineTransform)t {
-    if (fabs(t.b) > 0.5) return (t.b > 0) ? 1 : 3;
+    if (fabs(t.b) > 0.5) return (t.b > 0) ? 3 : 1;
     if (t.a < -0.5)      return 2;
     return 0;
 }
