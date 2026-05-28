@@ -417,49 +417,6 @@ export default function EditorScreen() {
     ]);
   };
 
-  const handleInstagramPublish = async () => {
-    const snap = snapshotEditorState();
-    let videoUrl = video?.videoUri ?? '';
-    if (!videoUrl) { showAlert('No Video File', 'Select a video before publishing to Instagram.'); return; }
-
-    if (videoUrl.startsWith('file://') || videoUrl.startsWith('ph://')) {
-      setUploadingToStorage(true);
-      setUploadProgress(0);
-      const { publicUrl, error } = await uploadVideoToStorage(
-        videoUrl, user?.id ?? 'unknown', video.id, (pct) => setUploadProgress(pct),
-      );
-      setUploadingToStorage(false);
-      if (error || !publicUrl) { showAlert('Upload Failed', error ?? 'Could not upload video.'); return; }
-      videoUrl = publicUrl;
-      updateVideo(video.id, { videoUri: publicUrl });
-    }
-
-    updateVideo(video.id, { ...snap, title: videoTitle });
-    const fullCaption = [caption, hashtags].filter(Boolean).join('\n\n');
-    const { error } = await instagram.publish(videoUrl, fullCaption, thumbnailUri ?? undefined);
-    if (error) showAlert('Instagram Error', error);
-  };
-
-  const handleTikTokPublish = async () => {
-    const snap = snapshotEditorState();
-    let videoUrl = video?.videoUri ?? '';
-    if (!videoUrl) { showAlert('No Video File', 'Select a video before publishing to TikTok.'); return; }
-
-    if (videoUrl.startsWith('file://') || videoUrl.startsWith('ph://')) {
-      setUploadingToStorage(true);
-      setUploadProgress(0);
-      const { publicUrl, error } = await uploadVideoToStorage(
-        videoUrl, user?.id ?? 'unknown', video!.id, (pct) => setUploadProgress(pct),
-      );
-      setUploadingToStorage(false);
-      if (error || !publicUrl) return { videoUrl: '', error: error ?? 'Could not upload video.' };
-      updateVideo(video!.id, { videoUri: publicUrl });
-      return { videoUrl: publicUrl };
-    }
-
-    return { videoUrl };
-  };
-
   const handleTikTokPublish = async () => {
     const snap = snapshotEditorState();
     if (!video?.videoUri) { showAlert('No Video File', 'Select a video before publishing to TikTok.'); return; }
