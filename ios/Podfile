@@ -52,17 +52,16 @@ target 'ViralCut' do
       :ccache_enabled => podfile_properties['apple.ccacheEnabled'] == 'true',
     )
 
-    # fmt 10+ marks format-string constructors consteval; Xcode 16 / clang 16
-    # rejects those calls with non-constant arguments. Apply the disable flag
-    # to every pod target so it lands wherever fmt headers are compiled.
-    installer.pods_project.targets.each do |target|
-      target.build_configurations.each do |cfg|
-        flags = cfg.build_settings['OTHER_CPLUSPLUSFLAGS'] || '$(inherited)'
-        unless flags.include?('FMT_CONSTEVAL')
-          cfg.build_settings['OTHER_CPLUSPLUSFLAGS'] =
-            "#{flags} -DFMT_CONSTEVAL= -DFMT_USE_CONSTEVAL=0"
-        end
-      end
+    # fmt 10+ marks FMT_CONSTEVAL as `consteval`; clang 16 rejects consteval
+    # calls with runtime arguments. Patch the installed headers directly so
+    # FMT_CONSTEVAL becomes constexpr (callable at runtime), which is safe
+    # because the actual format-string type-checking still works.
+    Dir.glob(File.join(installer.sandbox.root, 'fmt', 'include', '**', '*.h')).each do |path|
+      content = File.read(path)
+      patched = content
+        .gsub(/^(#\s*define\s+FMT_CONSTEVAL)\s+consteval\s*$/, '\1 constexpr')
+        .gsub(/^(#\s*define\s+FMT_CONSTEVAL)\s+consteval(\s+\/\/)/, '\1 constexpr\2')
+      File.write(path, patched) if patched != content
     end
 
     # This is necessary for Xcode 14, because it signs resource bundles by default
