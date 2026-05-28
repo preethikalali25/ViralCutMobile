@@ -152,11 +152,29 @@
         CGFloat px = inst.padX;
         CGFloat py = inst.padY;
         CGFloat tw = (CGFloat)dstW - px * 2.0;
-        CGFloat th = fs * 2.4;
+        CGFloat radius = 10.0;
+
+        // Measure the actual text height so the box expands for multi-line hooks
+        NSMutableParagraphStyle *ps = [[NSMutableParagraphStyle alloc] init];
+        ps.alignment     = NSTextAlignmentCenter;
+        ps.lineBreakMode = NSLineBreakByWordWrapping;
+        NSDictionary *attrs = @{
+            NSFontAttributeName:            [UIFont boldSystemFontOfSize:fs],
+            NSForegroundColorAttributeName: [UIColor whiteColor],
+            NSParagraphStyleAttributeName:  ps
+        };
+        CGFloat textW = tw - 16.0;
+        CGRect measured = [inst.text
+            boundingRectWithSize:CGSizeMake(textW, CGFLOAT_MAX)
+                         options:NSStringDrawingUsesLineFragmentOrigin |
+                                 NSStringDrawingUsesFontLeading
+                     attributes:attrs
+                        context:nil];
+        CGFloat textH = ceil(measured.size.height);
+        CGFloat th    = textH + py;
         // CG origin is bottom-left; boxY positions the box near the top of frame
         CGFloat boxY   = (CGFloat)dstH - py - th;
         CGRect boxRect = CGRectMake(px, boxY, tw, th);
-        CGFloat radius = 10.0;
 
         // Semi-transparent rounded background
         CGContextSetRGBFillColor(cgCtx, 0, 0, 0, 0.55);
@@ -178,19 +196,11 @@
         CGContextTranslateCTM(cgCtx, 0, (CGFloat)dstH);
         CGContextScaleCTM(cgCtx, 1.0, -1.0);
 
-        NSMutableParagraphStyle *ps = [[NSMutableParagraphStyle alloc] init];
-        ps.alignment     = NSTextAlignmentCenter;
-        ps.lineBreakMode = NSLineBreakByWordWrapping;
-        NSDictionary *attrs = @{
-            NSFontAttributeName:            [UIFont boldSystemFontOfSize:fs],
-            NSForegroundColorAttributeName: [UIColor whiteColor],
-            NSParagraphStyleAttributeName:  ps
-        };
-        // In flipped (UIKit) coords, py from top aligns with the box
+        // In flipped (UIKit) coords, py from top aligns with the box; centre text vertically
         CGRect textRect = CGRectMake(px + 8,
-                                     py + (th - fs * 1.3) / 2.0,
-                                     tw - 16,
-                                     fs * 1.6);
+                                     py + (th - textH) / 2.0,
+                                     textW,
+                                     textH);
         UIGraphicsPushContext(cgCtx);
         [inst.text drawInRect:textRect withAttributes:attrs];
         UIGraphicsPopContext();
@@ -255,6 +265,9 @@ RCT_EXPORT_MODULE();
             NSError *err = nil;
             [cv insertTimeRange:timeRange ofTrack:vTrack atTime:kCMTimeZero error:&err];
             if (err) { resolve(originalUri); return; }
+            // The compositor already applies the rotation to each pixel buffer,
+            // so clear the track metadata transform to avoid a double-rotation.
+            cv.preferredTransform = CGAffineTransformIdentity;
 
             if (audioTracks.count) {
                 AVMutableCompositionTrack *ca =
@@ -266,6 +279,27 @@ RCT_EXPORT_MODULE();
 
             CGFloat fs  = renderSize.width * 0.072;
             CGFloat pad = renderSize.width * 0.045;
+
+            // Shrink font until the hook text fits within 3 lines
+            {
+                CGFloat maxTextW = renderSize.width - pad * 2.0 - 16.0;
+                NSMutableParagraphStyle *sp = [[NSMutableParagraphStyle alloc] init];
+                sp.lineBreakMode = NSLineBreakByWordWrapping;
+                CGFloat minFs = floor(renderSize.width * 0.036);
+                for (;;) {
+                    NSDictionary *a = @{
+                        NSFontAttributeName:      [UIFont boldSystemFontOfSize:fs],
+                        NSParagraphStyleAttributeName: sp
+                    };
+                    CGRect br = [text boundingRectWithSize:CGSizeMake(maxTextW, CGFLOAT_MAX)
+                                                   options:NSStringDrawingUsesLineFragmentOrigin |
+                                                           NSStringDrawingUsesFontLeading
+                                               attributes:a
+                                                  context:nil];
+                    if (br.size.height <= fs * 1.4 * 3.0 || fs <= minFs) break;
+                    fs = MAX(fs * 0.85, minFs);
+                }
+            }
 
             // Pass the preferred transform so the compositor can orient each frame
             VTOCompositorInstruction *inst =
