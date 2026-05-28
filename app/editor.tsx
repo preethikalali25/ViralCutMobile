@@ -390,10 +390,10 @@ export default function EditorScreen() {
       const { outputUri: burnedUri } = await burnHookOverlay(videoUri, hookText);
       setBurningOverlay(false);
       const resolvedUri = await resolveVideoUri(burnedUri);
-      const { url, error } = await uploadVideoToStorage(resolvedUri, (p) => setUploadProgress(p));
+      const { publicUrl, error } = await uploadVideoToStorage(resolvedUri, user!.id, video.id, (p) => setUploadProgress(p));
       setUploadingToStorage(false);
-      if (error || !url) return { error: error ?? 'Upload failed' };
-      return { videoUrl: url };
+      if (error || !publicUrl) return { error: error ?? 'Upload failed' };
+      return { videoUrl: publicUrl };
     } catch (e: any) {
       setBurningOverlay(false);
       setUploadingToStorage(false);
