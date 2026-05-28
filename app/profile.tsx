@@ -107,34 +107,6 @@ export default function ProfileScreen() {
     ]);
   };
 
-  // ── Instagram OAuth Connect ────────────────────────────────────────────
-  const handleInstagramConnect = async () => {
-    const { error } = await instagram.connect();
-    if (error) {
-      showAlert('Instagram Connect Failed', error);
-    } else {
-      showAlert('Instagram Connected!', `@${instagram.status.username || 'account'} is now connected.`);
-    }
-  };
-
-  const handleInstagramDisconnect = () => {
-    showAlert(
-      'Disconnect Instagram?',
-      'Your Instagram access will be removed. You can reconnect anytime.',
-      [
-        { text: 'Cancel', style: 'cancel' },
-        {
-          text: 'Disconnect',
-          style: 'destructive',
-          onPress: async () => {
-            const { error } = await instagram.disconnect();
-            if (error) showAlert('Error', error);
-          },
-        },
-      ],
-    );
-  };
-
   // ── TikTok OAuth Connect ────────────────────────────────────────────────
   const handleTikTokConnect = async () => {
     const { error } = await tiktok.connect();
