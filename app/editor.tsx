@@ -402,6 +402,8 @@ export default function EditorScreen() {
   };
 
   const handlePublish = () => {
+    const snap = snapshotEditorState();
+    const hasTikTok = platforms.includes('tiktok') && tiktok.status.connected;
     const hasInstagram = platforms.includes('reels') && instagram.status.connected;
 
     if (hasTikTok || hasInstagram) {
