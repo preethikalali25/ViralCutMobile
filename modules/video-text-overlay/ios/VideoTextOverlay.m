@@ -4,6 +4,7 @@
 #import <Photos/Photos.h>
 #import <CoreImage/CoreImage.h>
 #import <CoreGraphics/CoreGraphics.h>
+#import <ImageIO/ImageIO.h>
 
 // ---------------------------------------------------------------------------
 // Instruction object — carries all per-segment data the compositor needs.
@@ -53,6 +54,16 @@
 }
 
 @end
+
+// preferredTransform is in UIKit space (y-down); imageByApplyingTransform on a
+// CIImage (y-up) produces the wrong rotation. Map to CGImagePropertyOrientation
+// and let imageByApplyingCGOrientation handle the coordinate flip.
+static CGImagePropertyOrientation orientationForTransform(CGAffineTransform t) {
+    if (t.b > 0 && t.c < 0) return kCGImagePropertyOrientationRight;
+    if (t.b < 0 && t.c > 0) return kCGImagePropertyOrientationLeft;
+    if (t.a < 0 && t.d < 0) return kCGImagePropertyOrientationDown;
+    return kCGImagePropertyOrientationUp;
+}
 
 // ---------------------------------------------------------------------------
 // Custom compositor — no CALayer, no CoreAnimation tool, no IOSurface/XPC.
@@ -119,14 +130,14 @@
     // transform; the resulting extent may have a non-zero origin, so we
     // translate it back to {0,0} before rendering.
     // ------------------------------------------------------------------
-    CIImage *srcCI   = [CIImage imageWithCVPixelBuffer:src];
-    CIImage *rotated = [srcCI imageByApplyingTransform:inst.preferredTransform];
-    CGRect   extent  = rotated.extent;
+    CIImage *srcCI = [CIImage imageWithCVPixelBuffer:src];
+    CGImagePropertyOrientation orient = orientationForTransform(inst.preferredTransform);
+    CIImage *rotated = [srcCI imageByApplyingCGOrientation:orient];
+    CGRect extent = rotated.extent;
     if (extent.origin.x != 0 || extent.origin.y != 0) {
         rotated = [rotated imageByApplyingTransform:
                    CGAffineTransformMakeTranslation(-extent.origin.x, -extent.origin.y)];
     }
-    // CIContext handles locking the dst buffer internally
     [_ciCtx render:rotated toCVPixelBuffer:dst];
 
     // ------------------------------------------------------------------
