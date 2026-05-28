@@ -383,9 +383,25 @@ export default function EditorScreen() {
     ]);
   };
 
+  const prepareVideoForPublish = async (videoUri: string, hookText: string): Promise<{ videoUrl?: string; error?: string }> => {
+    try {
+      setUploadingToStorage(true);
+      setBurningOverlay(true);
+      const burnedUri = await burnHookOverlay(videoUri, hookText);
+      setBurningOverlay(false);
+      const resolvedUri = await resolveVideoUri(burnedUri);
+      const { url, error } = await uploadVideoToStorage(resolvedUri, (p) => setUploadProgress(p));
+      setUploadingToStorage(false);
+      if (error || !url) return { error: error ?? 'Upload failed' };
+      return { videoUrl: url };
+    } catch (e: any) {
+      setBurningOverlay(false);
+      setUploadingToStorage(false);
+      return { error: String(e?.message ?? e) };
+    }
+  };
+
   const handlePublish = () => {
-    const snap = snapshotEditorState();
-    const hasTikTok = platforms.includes('tiktok') && tiktok.status.connected;
     const hasInstagram = platforms.includes('reels') && instagram.status.connected;
 
     if (hasTikTok || hasInstagram) {
