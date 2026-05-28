@@ -2584,6 +2584,8 @@ PODS:
   - StripeUICore (24.12.1):
     - StripeCore (= 24.12.1)
   - UMAppLoader (5.1.3)
+  - VideoTextOverlay (0.1.0):
+    - React-Core
   - Yoga (0.0.0)
   - ZXingObjC/Core (3.6.9)
   - ZXingObjC/OneD (3.6.9):
@@ -2745,6 +2747,7 @@ DEPENDENCIES:
   - RNVectorIcons (from `../node_modules/react-native-vector-icons`)
   - "stripe-react-native (from `../node_modules/@stripe/stripe-react-native`)"
   - "UMAppLoader (from `../node_modules/.pnpm/unimodules-app-loader@5.1.3/node_modules/unimodules-app-loader/ios`)"
+  - VideoTextOverlay (from `../modules/video-text-overlay`)
   - "Yoga (from `../node_modules/.pnpm/react-native@0.79.3_@babel+core@7.27.4_@types+react@19.0.14_react@19.0.0/node_modules/react-native/ReactCommon/yoga`)"
 
 SPEC REPOS:
@@ -3073,6 +3076,8 @@ EXTERNAL SOURCES:
     :path: "../node_modules/@stripe/stripe-react-native"
   UMAppLoader:
     :path: "../node_modules/.pnpm/unimodules-app-loader@5.1.3/node_modules/unimodules-app-loader/ios"
+  VideoTextOverlay:
+    :path: "../modules/video-text-overlay"
   Yoga:
     :path: "../node_modules/.pnpm/react-native@0.79.3_@babel+core@7.27.4_@types+react@19.0.14_react@19.0.0/node_modules/react-native/ReactCommon/yoga"
 
@@ -3246,9 +3251,10 @@ SPEC CHECKSUMS:
   StripePaymentsUI: 9b84384e81adc9c24f599f1a8991fb52c767fc62
   StripeUICore: 186f245526e86ab02578abcc6bb6d27cc34084c6
   UMAppLoader: 55159b69750129faa7a51c493cb8ea55a7b64eb9
+  VideoTextOverlay: 95ae805884555682e4aac3b29734858af3a5bb39
   Yoga: 29f74a5b77dca8c37669e1e1e867e5f4e12407df
   ZXingObjC: 8898711ab495761b2dbbdec76d90164a6d7e14c5
 
-PODFILE CHECKSUM: a7c9d744f83bb55ffe0766562a69fd659be2ad57
+PODFILE CHECKSUM: 1739786529d5900c3b1d62ae9c50954c9828afe4
 
 COCOAPODS: 1.16.2
