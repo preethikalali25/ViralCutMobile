@@ -21,6 +21,7 @@ import { FunctionsHttpError } from '@supabase/supabase-js';
 import { useTikTok } from '@/hooks/useTikTok';
 import { useInstagram } from '@/hooks/useInstagram';
 import { uploadVideoToStorage } from '@/services/tiktokService';
+import { burnHookOverlay } from '@/services/videoOverlayService';
 import * as FileSystem from 'expo-file-system';
 
 type Tab = 'hook' | 'caption' | 'audio' | 'platforms';
@@ -73,7 +74,7 @@ async function extractVideoFrame(videoUri: string): Promise<{ base64: string; mi
     let frameUri: string | null = null;
     for (const seekMs of [2000, 1000, 500, 0]) {
       try {
-        const { uri } = await VideoThumbnails.getThumbnailAsync(resolvedUri, { time: seekMs, quality: 0.6 });
+        const { uri } = await VideoThumbnails.getThumbnailAsync(resolvedUri, { time: seekMs, quality: 0.4, maxWidth: 512 });
         if (uri) { frameUri = uri; break; }
       } catch { /* try next */ }
     }
@@ -97,17 +98,32 @@ function cleanTitle(raw: string): string {
 
 async function callAIGenerator(type: string, payload: Record<string, unknown>) {
   const client = getSupabaseClient();
-  const { data, error } = await client.functions.invoke('ai-content-generator', {
-    body: { type, ...payload },
-  });
-  if (error) {
-    let msg = error.message;
-    if (error instanceof FunctionsHttpError) {
-      try { const text = await error.context?.text(); msg = text || msg; } catch { /* ignore */ }
+
+  const attempt = async (body: Record<string, unknown>) => {
+    const { data, error } = await client.functions.invoke('ai-content-generator', { body });
+    if (error) {
+      let msg = error.message;
+      if (error instanceof FunctionsHttpError) {
+        try { const text = await error.context?.text(); msg = text || msg; } catch { /* ignore */ }
+      }
+      return { data: null, error: msg };
     }
-    return { data: null, error: msg };
+    return { data, error: null };
+  };
+
+  // First try with full payload (may include frame)
+  const first = await attempt({ type, ...payload });
+  if (!first.error) return first;
+
+  // If it timed out and we sent a frame, retry without the frame
+  const hasFrame = 'videoFrameBase64' in payload;
+  if (hasFrame && (first.error.includes('504') || first.error.includes('timeout') || first.error.includes('Gateway'))) {
+    console.warn('[AI] frame attempt timed out, retrying without frame');
+    const { videoFrameBase64: _f, videoFrameMime: _m, ...payloadWithoutFrame } = payload as any;
+    return attempt({ type, ...payloadWithoutFrame });
   }
-  return { data, error: null };
+
+  return first;
 }
 
 export default function EditorScreen() {
@@ -138,10 +154,11 @@ export default function EditorScreen() {
   const [videoTitle, setVideoTitle] = useState('');
   const [generatingTitle, setGeneratingTitle] = useState(false);
   const [showTikTokSheet, setShowTikTokSheet] = useState(false);
-  const [tiktokPrivacy, setTiktokPrivacy] = useState('SELF_ONLY');
   const [showInstagramSheet, setShowInstagramSheet] = useState(false);
+  const [tiktokPrivacy, setTiktokPrivacy] = useState('SELF_ONLY');
   const [uploadingToStorage, setUploadingToStorage] = useState(false);
   const [uploadProgress, setUploadProgress] = useState(0);
+  const [burningOverlay, setBurningOverlay] = useState(false);
   const [generatingThumbnail, setGeneratingThumbnail] = useState(false);
   const [thumbnailUri, setThumbnailUri] = useState<string | null>(video?.thumbnail ?? null);
 
@@ -287,7 +304,7 @@ export default function EditorScreen() {
       videoTitle: cleanTitle(video.title), hookType, platforms, ...framePayload,
     });
     setGeneratingHook(false);
-    if (error) { showAlert('AI Error', 'Could not generate hook. Please try again.'); return; }
+    if (error) { showAlert('AI Error', error); return; }
     if (data?.result) {
       setHookText(data.result);
       updateVideo(video.id, { hook: { type: hookType, text: data.result } });
@@ -366,6 +383,24 @@ export default function EditorScreen() {
     ]);
   };
 
+  const prepareVideoForPublish = async (videoUri: string, hookText: string): Promise<{ videoUrl?: string; error?: string }> => {
+    try {
+      setUploadingToStorage(true);
+      setBurningOverlay(true);
+      const { outputUri: burnedUri } = await burnHookOverlay(videoUri, hookText);
+      setBurningOverlay(false);
+      const resolvedUri = await resolveVideoUri(burnedUri);
+      const { publicUrl, error } = await uploadVideoToStorage(resolvedUri, user!.id, video.id, (p) => setUploadProgress(p));
+      setUploadingToStorage(false);
+      if (error || !publicUrl) return { error: error ?? 'Upload failed' };
+      return { videoUrl: publicUrl };
+    } catch (e: any) {
+      setBurningOverlay(false);
+      setUploadingToStorage(false);
+      return { error: String(e?.message ?? e) };
+    }
+  };
+
   const handlePublish = () => {
     const snap = snapshotEditorState();
     const hasTikTok = platforms.includes('tiktok') && tiktok.status.connected;
@@ -400,51 +435,31 @@ export default function EditorScreen() {
     ]);
   };
 
-  const handleInstagramPublish = async () => {
-    const snap = snapshotEditorState();
-    let videoUrl = video?.videoUri ?? '';
-    if (!videoUrl) { showAlert('No Video File', 'Select a video before publishing to Instagram.'); return; }
-
-    if (videoUrl.startsWith('file://') || videoUrl.startsWith('ph://')) {
-      setUploadingToStorage(true);
-      setUploadProgress(0);
-      const { publicUrl, error } = await uploadVideoToStorage(
-        videoUrl, user?.id ?? 'unknown', video.id, (pct) => setUploadProgress(pct),
-      );
-      setUploadingToStorage(false);
-      if (error || !publicUrl) { showAlert('Upload Failed', error ?? 'Could not upload video.'); return; }
-      videoUrl = publicUrl;
-      updateVideo(video.id, { videoUri: publicUrl });
-    }
-
-    updateVideo(video.id, { ...snap, title: videoTitle });
-    const fullCaption = [caption, hashtags].filter(Boolean).join('\n\n');
-    const { error } = await instagram.publish(videoUrl, fullCaption, thumbnailUri ?? undefined);
-    if (error) showAlert('Instagram Error', error);
-  };
-
   const handleTikTokPublish = async () => {
     const snap = snapshotEditorState();
-    let videoUrl = video?.videoUri ?? '';
-    if (!videoUrl) { showAlert('No Video File', 'Select a video before publishing to TikTok.'); return; }
+    if (!video?.videoUri) { showAlert('No Video File', 'Select a video before publishing to TikTok.'); return; }
 
-    if (videoUrl.startsWith('file://') || videoUrl.startsWith('ph://')) {
-      setUploadingToStorage(true);
-      setUploadProgress(0);
-      const { publicUrl, error } = await uploadVideoToStorage(
-        videoUrl, user?.id ?? 'unknown', video.id, (pct) => setUploadProgress(pct),
-      );
-      setUploadingToStorage(false);
-      if (error || !publicUrl) { showAlert('Upload Failed', error ?? 'Could not upload video.'); return; }
-      videoUrl = publicUrl;
-      updateVideo(video.id, { videoUri: publicUrl });
-    }
+    const { videoUrl, error: prepError } = await prepareVideoForPublish(video.videoUri, snap.hook?.text ?? '');
+    if (prepError || !videoUrl) { showAlert('Upload Failed', prepError ?? 'Could not upload video.'); return; }
 
     updateVideo(video.id, { ...snap, title: videoTitle });
     const { error } = await tiktok.publish(
       videoUrl, videoTitle || snap.hook.text || 'ViralCut video', tiktokPrivacy,
     );
     if (error) showAlert('TikTok Error', error);
+  };
+
+  const handleInstagramPublish = async () => {
+    const snap = snapshotEditorState();
+    if (!video?.videoUri) { showAlert('No Video File', 'Select a video before publishing to Instagram.'); return; }
+
+    const { videoUrl, error: prepError } = await prepareVideoForPublish(video.videoUri, snap.hook?.text ?? '');
+    if (prepError || !videoUrl) { showAlert('Upload Failed', prepError ?? 'Could not upload video.'); return; }
+
+    const captionText = [snap.caption, snap.hashtags.join(' ')].filter(Boolean).join('\n\n');
+    updateVideo(video.id, { ...snap, title: videoTitle });
+    const { error } = await instagram.publish(videoUrl, captionText);
+    if (error) showAlert('Instagram Error', error);
   };
 
   const togglePlatform = (p: PlatformType) => {
@@ -961,7 +976,15 @@ export default function EditorScreen() {
               </>
             ) : null}
 
-            {uploadingToStorage ? (
+            {burningOverlay ? (
+              <View style={styles.sheetPhase}>
+                <ActivityIndicator size="large" color={Colors.primaryLight} />
+                <Text style={styles.sheetPhaseTitle}>Burning hook overlay...</Text>
+                <Text style={styles.sheetPhaseSub}>Adding your hook text to the video.</Text>
+              </View>
+            ) : null}
+
+            {uploadingToStorage && !burningOverlay ? (
               <View style={styles.sheetPhase}>
                 <ActivityIndicator size="large" color={Colors.primaryLight} />
                 <Text style={styles.sheetPhaseTitle}>Uploading video...</Text>
@@ -1103,7 +1126,14 @@ export default function EditorScreen() {
           <Text style={styles.playerTitle} numberOfLines={2}>{video.title}</Text>
 
           {video.videoUri ? (
-            <VideoView player={videoPlayer} style={styles.videoView} contentFit="contain" nativeControls />
+            <View style={{ flex: 1, justifyContent: 'center' }}>
+              <VideoView player={videoPlayer} style={styles.videoView} contentFit="contain" nativeControls />
+              {hookText ? (
+                <View style={styles.playerHookOverlay} pointerEvents="none">
+                  <Text style={styles.playerHookText}>{hookText}</Text>
+                </View>
+              ) : null}
+            </View>
           ) : (
             <View style={styles.noVideoContainer}>
               <Image source={{ uri: video.thumbnail }} style={styles.noVideoThumb} contentFit="cover" transition={200} />
@@ -1357,6 +1387,16 @@ const styles = StyleSheet.create({
     color: '#fff', fontSize: FontSize.md, fontWeight: FontWeight.bold, includeFontPadding: false,
   },
   videoView: { width: '100%', height: '100%' },
+  playerHookOverlay: {
+    position: 'absolute', top: '8%', left: 16, right: 16,
+    alignItems: 'center', pointerEvents: 'none',
+  },
+  playerHookText: {
+    color: '#fff', fontSize: 22, fontWeight: '800', textAlign: 'center',
+    textShadowColor: 'rgba(0,0,0,0.9)', textShadowOffset: { width: 2, height: 2 }, textShadowRadius: 6,
+    backgroundColor: 'rgba(0,0,0,0.35)', paddingHorizontal: 12, paddingVertical: 6, borderRadius: 8,
+    overflow: 'hidden',
+  },
   noVideoContainer: { flex: 1, position: 'relative' },
   noVideoThumb: { width: '100%', height: '100%' },
   noVideoOverlay: {

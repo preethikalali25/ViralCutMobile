@@ -1,7 +1,7 @@
 import { corsHeaders } from '../_shared/cors.ts';
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
 
-const IG_AUTH_URL = 'https://api.instagram.com/oauth/authorize';
+const IG_AUTH_URL = 'https://www.instagram.com/oauth/authorize';
 const IG_TOKEN_URL = 'https://api.instagram.com/oauth/access_token';
 const IG_LONG_TOKEN_URL = 'https://graph.instagram.com/access_token';
 const IG_GRAPH_URL = 'https://graph.instagram.com/v21.0';
@@ -22,7 +22,8 @@ Deno.serve(async (req) => {
   const url = new URL(req.url);
 
   // ─── OAuth Callback (GET — Instagram/Meta redirects here) ──────────────────
-  if (req.method === 'GET' && url.searchParams.get('action') === 'callback') {
+  // Instagram may strip ?action=callback, so also detect by presence of code/error params
+  if (req.method === 'GET' && (url.searchParams.get('action') === 'callback' || url.searchParams.has('code') || url.searchParams.has('error'))) {
     const code = url.searchParams.get('code') ?? '';
     const state = url.searchParams.get('state') ?? '';
     const error = url.searchParams.get('error') ?? '';
@@ -77,7 +78,7 @@ Deno.serve(async (req) => {
         code: string; redirectUri: string; userId: string;
       };
 
-      // Step 1: short-lived token
+      // Step 1: short-lived token via Instagram Login API
       const shortForm = new FormData();
       shortForm.append('client_id', appId);
       shortForm.append('client_secret', appSecret);
@@ -91,7 +92,7 @@ Deno.serve(async (req) => {
 
       if (shortData.error_type || shortData.error) {
         return new Response(
-          JSON.stringify({ error: `Instagram: ${shortData.error_message ?? shortData.error ?? 'OAuth failed'}` }),
+          JSON.stringify({ error: `Instagram: ${shortData.error_message ?? shortData.error_description ?? shortData.error ?? 'OAuth failed'}` }),
           { status: 400, headers: { ...corsHeaders, 'Content-Type': 'application/json' } },
         );
       }
@@ -121,7 +122,7 @@ Deno.serve(async (req) => {
 
       try {
         const profileRes = await fetch(
-          `${IG_GRAPH_URL}/me?fields=username,profile_picture_url,followers_count&access_token=${accessToken}`,
+          `${IG_GRAPH_URL}/me?fields=id,username,profile_picture_url,followers_count&access_token=${accessToken}`,
         );
         const profileData = await profileRes.json();
         console.log('[instagram] profile:', JSON.stringify(profileData).slice(0, 200));

@@ -107,34 +107,6 @@ export default function ProfileScreen() {
     ]);
   };
 
-  // ── Instagram OAuth Connect ────────────────────────────────────────────
-  const handleInstagramConnect = async () => {
-    const { error } = await instagram.connect();
-    if (error) {
-      showAlert('Instagram Connect Failed', error);
-    } else {
-      showAlert('Instagram Connected!', `@${instagram.status.username || 'account'} is now connected.`);
-    }
-  };
-
-  const handleInstagramDisconnect = () => {
-    showAlert(
-      'Disconnect Instagram?',
-      'Your Instagram access will be removed. You can reconnect anytime.',
-      [
-        { text: 'Cancel', style: 'cancel' },
-        {
-          text: 'Disconnect',
-          style: 'destructive',
-          onPress: async () => {
-            const { error } = await instagram.disconnect();
-            if (error) showAlert('Error', error);
-          },
-        },
-      ],
-    );
-  };
-
   // ── TikTok OAuth Connect ────────────────────────────────────────────────
   const handleTikTokConnect = async () => {
     const { error } = await tiktok.connect();
@@ -163,7 +135,35 @@ export default function ProfileScreen() {
     );
   };
 
-  // ── Manual account connect (Instagram / YouTube) ────────────────────────
+  // ── Instagram OAuth Connect ─────────────────────────────────────────────
+  const handleInstagramConnect = async () => {
+    const { error } = await instagram.connect();
+    if (error) {
+      showAlert('Instagram Connect Failed', error);
+    } else {
+      showAlert('Instagram Connected!', `Welcome, @${instagram.status.username || 'creator'}! You can now publish Reels directly to Instagram.`);
+    }
+  };
+
+  const handleInstagramDisconnect = () => {
+    showAlert(
+      'Disconnect Instagram?',
+      'Your Instagram access will be removed. You can reconnect anytime.',
+      [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: 'Disconnect',
+          style: 'destructive',
+          onPress: async () => {
+            const { error } = await instagram.disconnect();
+            if (error) showAlert('Error', error);
+          },
+        },
+      ],
+    );
+  };
+
+  // ── Manual account connect (YouTube) ────────────────────────────────────
   const openConnect = (platform: PlatformMeta) => {
     const existing = getAccount(platform.id);
     setHandle(existing?.handle ?? '');
@@ -401,7 +401,7 @@ export default function ProfileScreen() {
           <ActivityIndicator color={Colors.primaryLight} style={{ marginVertical: 24 }} />
         ) : (
           <View style={styles.platformList}>
-            {PLATFORMS.filter(p => !p.supportsOAuth).map(platform => {
+            {PLATFORMS.filter(p => !p.supportsOAuth && p.id !== 'reels').map(platform => {
               const account = getAccount(platform.id);
               const isConnected = !!account;
 
