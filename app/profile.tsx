@@ -107,6 +107,34 @@ export default function ProfileScreen() {
     ]);
   };
 
+  // ── Instagram OAuth Connect ────────────────────────────────────────────
+  const handleInstagramConnect = async () => {
+    const { error } = await instagram.connect();
+    if (error) {
+      showAlert('Instagram Connect Failed', error);
+    } else {
+      showAlert('Instagram Connected!', `@${instagram.status.username || 'account'} is now connected.`);
+    }
+  };
+
+  const handleInstagramDisconnect = () => {
+    showAlert(
+      'Disconnect Instagram?',
+      'Your Instagram access will be removed. You can reconnect anytime.',
+      [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: 'Disconnect',
+          style: 'destructive',
+          onPress: async () => {
+            const { error } = await instagram.disconnect();
+            if (error) showAlert('Error', error);
+          },
+        },
+      ],
+    );
+  };
+
   // ── TikTok OAuth Connect ────────────────────────────────────────────────
   const handleTikTokConnect = async () => {
     const { error } = await tiktok.connect();
@@ -329,13 +357,12 @@ export default function ProfileScreen() {
           </View>
         ) : null}
 
-        {/* ── Instagram OAuth Card ──────────────────────────────────────── */}
+        {/* ── Instagram OAuth Card ─────────────────────────────────────── */}
         <Text style={[styles.sectionLabel, { marginTop: Spacing.md }]}>Instagram</Text>
-        <View style={[styles.tiktokCard, { borderColor: '#e1306c' }]}>
+        <View style={[styles.tiktokCard, { borderColor: '#e1306c55' }]}>
           <View style={[styles.platformIcon, { backgroundColor: '#e1306c' }]}>
             <MaterialCommunityIcons name="instagram" size={20} color="#fff" />
           </View>
-
           <View style={styles.platformInfo}>
             <Text style={styles.platformCardLabel}>Instagram Reels</Text>
             {instagram.loadingStatus ? (
@@ -343,7 +370,7 @@ export default function ProfileScreen() {
             ) : instagram.status.connected ? (
               <View style={styles.connectedMeta}>
                 <Text style={styles.platformHandle}>
-                  @{instagram.status.username || 'Connected'}
+                  {instagram.status.username ? `@${instagram.status.username}` : 'Connected'}
                 </Text>
                 {instagram.status.expired ? (
                   <View style={styles.expiredBadge}>
@@ -361,7 +388,6 @@ export default function ProfileScreen() {
               <Text style={styles.notConnected}>Not connected</Text>
             )}
           </View>
-
           {instagram.status.connected ? (
             <Pressable
               style={({ pressed }) => [styles.disconnectBtn, pressed && { opacity: 0.7 }]}
@@ -388,10 +414,10 @@ export default function ProfileScreen() {
         </View>
 
         {!instagram.status.connected ? (
-          <View style={styles.infoNote}>
+          <View style={[styles.infoNote, { marginBottom: Spacing.sm }]}>
             <MaterialIcons name="info-outline" size={13} color={Colors.textMuted} />
             <Text style={styles.infoText}>
-              Requires a Professional (Business or Creator) Instagram account connected to a Facebook Page. Uses the official Instagram Graph API to publish Reels directly.
+              Connect via OAuth to publish Reels directly to Instagram using the official Graph API.
             </Text>
           </View>
         ) : null}
