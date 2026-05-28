@@ -2,13 +2,10 @@
 #import <AVFoundation/AVFoundation.h>
 #import <UIKit/UIKit.h>
 #import <Photos/Photos.h>
-#import <CoreImage/CoreImage.h>
-#import <CoreGraphics/CoreGraphics.h>
+#import <Accelerate/Accelerate.h>
 
 // ---------------------------------------------------------------------------
-// Instruction object — carries all per-segment data the compositor needs.
-// All AVVideoCompositionInstruction protocol properties are redeclared as
-// readwrite so the compiler can synthesise ivars for them.
+// Compositor instruction — carries text/style + vImage rotation constant.
 // ---------------------------------------------------------------------------
 
 @interface VTOCompositorInstruction : NSObject <AVVideoCompositionInstruction>
@@ -16,21 +13,18 @@
 @property (nonatomic) BOOL                 enablePostProcessing;
 @property (nonatomic) BOOL                 containsTweening;
 @property (nonatomic, strong) NSString    *text;
-@property (nonatomic) CGFloat              fontSize;
-@property (nonatomic) CGFloat              padX;
-@property (nonatomic) CGFloat              padY;
-@property (nonatomic) CMPersistentTrackID  trackID;
-@property (nonatomic) CGAffineTransform    preferredTransform;
+@property (nonatomic)         CGFloat      fontSize;
+@property (nonatomic)         CGFloat      padX;
+@property (nonatomic)         CGFloat      padY;
+@property (nonatomic)         CMPersistentTrackID trackID;
+// vImage rotation constants: 0=0° 1=90°CCW 2=180° 3=90°CW
+@property (nonatomic)         uint8_t      vRotation;
 @end
 
 @implementation VTOCompositorInstruction
 
-- (NSArray<NSValue *> *)requiredSourceTrackIDs {
-    return @[@(_trackID)];
-}
-- (CMPersistentTrackID)passthroughTrackID {
-    return kCMPersistentTrackID_Invalid;
-}
+- (NSArray<NSValue *> *)requiredSourceTrackIDs { return @[@(_trackID)]; }
+- (CMPersistentTrackID)passthroughTrackID      { return kCMPersistentTrackID_Invalid; }
 
 - (instancetype)initWithText:(NSString *)text
                     fontSize:(CGFloat)fs
@@ -38,32 +32,26 @@
                         padY:(CGFloat)py
                      trackID:(CMPersistentTrackID)tid
                    timeRange:(CMTimeRange)range
-                   transform:(CGAffineTransform)xform {
+                   vRotation:(uint8_t)rot {
     self = [super init];
-    _text                 = text;
-    _fontSize             = fs;
-    _padX                 = px;
-    _padY                 = py;
-    _trackID              = tid;
-    _timeRange            = range;
-    _preferredTransform   = xform;
-    _enablePostProcessing = NO;
-    _containsTweening     = NO;
+    _text = text; _fontSize = fs; _padX = px; _padY = py;
+    _trackID = tid; _timeRange = range; _vRotation = rot;
+    _enablePostProcessing = NO; _containsTweening = NO;
     return self;
 }
 
 @end
 
 // ---------------------------------------------------------------------------
-// Custom compositor — no CALayer, no CoreAnimation tool, no IOSurface/XPC.
+// Custom compositor — 100% CPU, zero CALayer / IOSurface / XPC.
 //
 // Per-frame pipeline:
-//   1. Wrap source CVPixelBuffer in a CIImage.
-//   2. Apply the track's preferredTransform via CIImage (CPU-only soft renderer)
-//      so portrait videos render upright even though the raw buffer is landscape.
-//   3. Render the rotated CIImage into the destination CVPixelBuffer.
-//   4. Overlay text using a CGBitmapContext pointing at the same destination
-//      memory — pure CoreGraphics, no IOSurface involved.
+//   1. Lock src + dst pixel buffers.
+//   2. Rotate src into dst using vImageRotate90_ARGB8888 (Accelerate).
+//      For landscape src / portrait dst this handles the 90° rotation that
+//      AVFoundation's preferredTransform requests.
+//   3. Draw text on the dst buffer with a CGBitmapContext.
+//   4. Unlock, finish request.
 // ---------------------------------------------------------------------------
 
 @interface VTOCompositor : NSObject <AVVideoCompositing>
@@ -71,15 +59,11 @@
 
 @implementation VTOCompositor {
     dispatch_queue_t _queue;
-    CIContext       *_ciCtx;
 }
 
 - (instancetype)init {
     self = [super init];
     _queue = dispatch_queue_create("vto.compositor", DISPATCH_QUEUE_SERIAL);
-    // kCIContextUseSoftwareRenderer forces CPU rendering — no Metal/GPU,
-    // no IOSurface creation, works in both Simulator and device.
-    _ciCtx = [CIContext contextWithOptions:@{kCIContextUseSoftwareRenderer: @YES}];
     return self;
 }
 
@@ -111,72 +95,81 @@
         return;
     }
 
-    // ------------------------------------------------------------------
-    // Step 1: Rotate / orient the source frame into the destination buffer
-    // using a software-only CIContext (no GPU, no IOSurface).
-    //
-    // CIImage.imageByApplyingTransform uses the AVFoundation preferred
-    // transform; the resulting extent may have a non-zero origin, so we
-    // translate it back to {0,0} before rendering.
-    // ------------------------------------------------------------------
-    CIImage *srcCI   = [CIImage imageWithCVPixelBuffer:src];
-    CIImage *rotated = [srcCI imageByApplyingTransform:inst.preferredTransform];
-    CGRect   extent  = rotated.extent;
-    if (extent.origin.x != 0 || extent.origin.y != 0) {
-        rotated = [rotated imageByApplyingTransform:
-                   CGAffineTransformMakeTranslation(-extent.origin.x, -extent.origin.y)];
-    }
-    // CIContext handles locking the dst buffer internally
-    [_ciCtx render:rotated toCVPixelBuffer:dst];
-
-    // ------------------------------------------------------------------
-    // Step 2: Draw text overlay directly onto the destination pixel buffer
-    // with CoreGraphics — zero CALayer / QuartzCore involvement.
-    // Use the DESTINATION dimensions (post-rotation) throughout.
-    // ------------------------------------------------------------------
+    CVPixelBufferLockBaseAddress(src, kCVPixelBufferLock_ReadOnly);
     CVPixelBufferLockBaseAddress(dst, 0);
-    void  *dstBase = CVPixelBufferGetBaseAddress(dst);
-    size_t dstW    = CVPixelBufferGetWidth(dst);
-    size_t dstH    = CVPixelBufferGetHeight(dst);
-    size_t dstBpr  = CVPixelBufferGetBytesPerRow(dst);
 
+    size_t srcW   = CVPixelBufferGetWidth(src);
+    size_t srcH   = CVPixelBufferGetHeight(src);
+    size_t srcBpr = CVPixelBufferGetBytesPerRow(src);
+    void  *srcPtr = CVPixelBufferGetBaseAddress(src);
+
+    size_t dstW   = CVPixelBufferGetWidth(dst);
+    size_t dstH   = CVPixelBufferGetHeight(dst);
+    size_t dstBpr = CVPixelBufferGetBytesPerRow(dst);
+    void  *dstPtr = CVPixelBufferGetBaseAddress(dst);
+
+    // ------------------------------------------------------------------
+    // Step 1: Rotate / copy source pixels into destination.
+    // vImageRotate90_ARGB8888 treats every 4-byte pixel as an opaque unit,
+    // so it works identically for BGRA buffers.
+    // ------------------------------------------------------------------
+    vImage_Buffer srcVImg = { srcPtr, srcH, srcW, srcBpr };
+    vImage_Buffer dstVImg = { dstPtr, dstH, dstW, dstBpr };
+    uint8_t bg[4] = { 0, 0, 0, 255 };
+
+    if (inst.vRotation == 0) {
+        // Identity — plain row copy (src and dst should be the same size)
+        size_t rows = MIN(srcH, dstH);
+        size_t bpr  = MIN(srcBpr, dstBpr);
+        for (size_t r = 0; r < rows; r++) {
+            memcpy((uint8_t *)dstPtr + r * dstBpr,
+                   (uint8_t *)srcPtr + r * srcBpr, bpr);
+        }
+    } else {
+        vImageRotate90_ARGB8888(&srcVImg, &dstVImg, inst.vRotation, bg, 0);
+    }
+
+    // ------------------------------------------------------------------
+    // Step 2: Draw text overlay with CoreGraphics on the rotated frame.
+    // CGBitmapContext writes directly to the dst pixel buffer memory.
+    // kCGBitmapByteOrder32Little | kCGImageAlphaPremultipliedFirst = BGRA.
+    // ------------------------------------------------------------------
     CGColorSpaceRef cs = CGColorSpaceCreateDeviceRGB();
-    // BGRA pixel format: ByteOrder32Little + PremultipliedFirst
-    CGBitmapInfo bitmapInfo = (CGBitmapInfo)(kCGBitmapByteOrder32Little |
-                                             kCGImageAlphaPremultipliedFirst);
-    CGContextRef cgCtx = CGBitmapContextCreate(dstBase, dstW, dstH, 8, dstBpr, cs, bitmapInfo);
+    CGBitmapInfo bi = (CGBitmapInfo)(kCGBitmapByteOrder32Little |
+                                     kCGImageAlphaPremultipliedFirst);
+    CGContextRef ctx = CGBitmapContextCreate(dstPtr, dstW, dstH, 8, dstBpr, cs, bi);
     CGColorSpaceRelease(cs);
 
-    if (cgCtx) {
+    if (ctx) {
         CGFloat fs = inst.fontSize;
         CGFloat px = inst.padX;
         CGFloat py = inst.padY;
         CGFloat tw = (CGFloat)dstW - px * 2.0;
         CGFloat th = fs * 2.4;
-        // CG origin is bottom-left; boxY positions the box near the top of frame
+        // CG origin is bottom-left; boxY near top of frame
         CGFloat boxY   = (CGFloat)dstH - py - th;
-        CGRect boxRect = CGRectMake(px, boxY, tw, th);
-        CGFloat radius = 10.0;
+        CGRect  boxRect = CGRectMake(px, boxY, tw, th);
+        CGFloat radius  = 10.0;
 
         // Semi-transparent rounded background
-        CGContextSetRGBFillColor(cgCtx, 0, 0, 0, 0.55);
-        CGContextBeginPath(cgCtx);
-        CGContextMoveToPoint(cgCtx, CGRectGetMinX(boxRect) + radius, CGRectGetMinY(boxRect));
-        CGContextAddArcToPoint(cgCtx, CGRectGetMaxX(boxRect), CGRectGetMinY(boxRect),
-                               CGRectGetMaxX(boxRect), CGRectGetMinY(boxRect) + radius, radius);
-        CGContextAddArcToPoint(cgCtx, CGRectGetMaxX(boxRect), CGRectGetMaxY(boxRect),
-                               CGRectGetMaxX(boxRect) - radius, CGRectGetMaxY(boxRect), radius);
-        CGContextAddArcToPoint(cgCtx, CGRectGetMinX(boxRect), CGRectGetMaxY(boxRect),
-                               CGRectGetMinX(boxRect), CGRectGetMaxY(boxRect) - radius, radius);
-        CGContextAddArcToPoint(cgCtx, CGRectGetMinX(boxRect), CGRectGetMinY(boxRect),
-                               CGRectGetMinX(boxRect) + radius, CGRectGetMinY(boxRect), radius);
-        CGContextClosePath(cgCtx);
-        CGContextFillPath(cgCtx);
+        CGContextSetRGBFillColor(ctx, 0, 0, 0, 0.55);
+        CGContextBeginPath(ctx);
+        CGContextMoveToPoint   (ctx, CGRectGetMinX(boxRect) + radius, CGRectGetMinY(boxRect));
+        CGContextAddArcToPoint (ctx, CGRectGetMaxX(boxRect), CGRectGetMinY(boxRect),
+                                     CGRectGetMaxX(boxRect), CGRectGetMinY(boxRect) + radius, radius);
+        CGContextAddArcToPoint (ctx, CGRectGetMaxX(boxRect), CGRectGetMaxY(boxRect),
+                                     CGRectGetMaxX(boxRect) - radius, CGRectGetMaxY(boxRect), radius);
+        CGContextAddArcToPoint (ctx, CGRectGetMinX(boxRect), CGRectGetMaxY(boxRect),
+                                     CGRectGetMinX(boxRect), CGRectGetMaxY(boxRect) - radius, radius);
+        CGContextAddArcToPoint (ctx, CGRectGetMinX(boxRect), CGRectGetMinY(boxRect),
+                                     CGRectGetMinX(boxRect) + radius, CGRectGetMinY(boxRect), radius);
+        CGContextClosePath(ctx);
+        CGContextFillPath(ctx);
 
-        // Flip context to UIKit's top-left origin for NSString drawing
-        CGContextSaveGState(cgCtx);
-        CGContextTranslateCTM(cgCtx, 0, (CGFloat)dstH);
-        CGContextScaleCTM(cgCtx, 1.0, -1.0);
+        // Flip ctx to UIKit's top-left origin so NSString drawing works
+        CGContextSaveGState(ctx);
+        CGContextTranslateCTM(ctx, 0, (CGFloat)dstH);
+        CGContextScaleCTM(ctx, 1.0, -1.0);
 
         NSMutableParagraphStyle *ps = [[NSMutableParagraphStyle alloc] init];
         ps.alignment     = NSTextAlignmentCenter;
@@ -186,20 +179,21 @@
             NSForegroundColorAttributeName: [UIColor whiteColor],
             NSParagraphStyleAttributeName:  ps
         };
-        // In flipped (UIKit) coords, py from top aligns with the box
         CGRect textRect = CGRectMake(px + 8,
                                      py + (th - fs * 1.3) / 2.0,
                                      tw - 16,
                                      fs * 1.6);
-        UIGraphicsPushContext(cgCtx);
+        UIGraphicsPushContext(ctx);
         [inst.text drawInRect:textRect withAttributes:attrs];
         UIGraphicsPopContext();
 
-        CGContextRestoreGState(cgCtx);
-        CGContextRelease(cgCtx);
+        CGContextRestoreGState(ctx);
+        CGContextRelease(ctx);
     }
 
     CVPixelBufferUnlockBaseAddress(dst, 0);
+    CVPixelBufferUnlockBaseAddress(src, kCVPixelBufferLock_ReadOnly);
+
     [request finishWithComposedVideoFrame:dst];
     CVPixelBufferRelease(dst);
 }
@@ -219,6 +213,20 @@
 
 RCT_EXPORT_MODULE();
 + (BOOL)requiresMainQueueSetup { return NO; }
+
+// Derive vImage rotation constant from AVFoundation's preferredTransform.
+// AVFoundation / UIKit: origin top-left, y-down.
+// vImage:               origin top-left, y-down  (same convention).
+// So the transform.b sign maps directly to CCW/CW without coordinate flip.
+//   b > 0, c < 0  =>  90° CCW in UIKit  =>  vImage constant 1
+//   b < 0, c > 0  =>  90° CW  in UIKit  =>  vImage constant 3
+//   a < 0, d < 0  =>  180°              =>  vImage constant 2
+//   identity                            =>  vImage constant 0
++ (uint8_t)vRotationForTransform:(CGAffineTransform)t {
+    if (fabs(t.b) > 0.5) return (t.b > 0) ? 1 : 3;
+    if (t.a < -0.5)      return 2;
+    return 0;
+}
 
 - (void)processVideoAtURL:(NSURL *)inputUrl
                      text:(NSString *)text
@@ -242,7 +250,7 @@ RCT_EXPORT_MODULE();
 
             CMTimeRange timeRange = CMTimeRangeMake(kCMTimeZero, duration);
 
-            // renderSize = display size after applying the preferred transform
+            // renderSize = display size after applying the rotation
             CGSize ts = CGSizeApplyAffineTransform(naturalSize, pref);
             CGSize renderSize = CGSizeMake(fabs(ts.width), fabs(ts.height));
             if (renderSize.width < 1 || renderSize.height < 1) { resolve(originalUri); return; }
@@ -264,10 +272,10 @@ RCT_EXPORT_MODULE();
                              atTime:kCMTimeZero error:nil];
             }
 
-            CGFloat fs  = renderSize.width * 0.072;
-            CGFloat pad = renderSize.width * 0.045;
+            uint8_t vRot = [VideoTextOverlay vRotationForTransform:pref];
+            CGFloat fs   = renderSize.width * 0.072;
+            CGFloat pad  = renderSize.width * 0.045;
 
-            // Pass the preferred transform so the compositor can orient each frame
             VTOCompositorInstruction *inst =
                 [[VTOCompositorInstruction alloc] initWithText:text
                                                       fontSize:fs
@@ -275,7 +283,7 @@ RCT_EXPORT_MODULE();
                                                           padY:pad
                                                        trackID:cv.trackID
                                                      timeRange:timeRange
-                                                     transform:pref];
+                                                     vRotation:vRot];
 
             AVMutableVideoComposition *vc = [AVMutableVideoComposition videoComposition];
             vc.customVideoCompositorClass = [VTOCompositor class];
@@ -301,7 +309,8 @@ RCT_EXPORT_MODULE();
                 if (ses.status == AVAssetExportSessionStatusCompleted) {
                     resolve(out.absoluteString);
                 } else {
-                    NSLog(@"[VideoTextOverlay] export error: %@", ses.error.localizedDescription);
+                    NSLog(@"[VideoTextOverlay] export error: %@",
+                          ses.error.localizedDescription);
                     resolve(originalUri);
                 }
             }];
