@@ -15,7 +15,7 @@ import { Linking } from 'react-native';
 
 // Backend URL that Instagram redirects to, then this forwards to viralcut://instagram-callback
 export const INSTAGRAM_REDIRECT_URI =
-  'https://mrsvovoywukechawmrsv.backend.onspace.ai/functions/v1/instagram-publisher?action=callback';
+  'https://gohuutzixvtavhdtdyon.backend.onspace.ai/functions/v1/instagram-publisher?action=callback';
 
 export type IGPublishPhase =
   | 'idle'
