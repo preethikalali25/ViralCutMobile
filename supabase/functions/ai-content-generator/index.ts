@@ -66,7 +66,10 @@ Deno.serve(async (req) => {
     } = body;
 
     const videoTitle = sanitizeTitle(rawTitle ?? '');
-    const hasFrame = typeof videoFrameBase64 === 'string' && videoFrameBase64.length > 100;
+    // Reject frames larger than 200KB base64 (~150KB image) to avoid timeouts
+    const hasFrame = typeof videoFrameBase64 === 'string'
+      && videoFrameBase64.length > 100
+      && videoFrameBase64.length < 200_000;
     console.log(`[ai-content-generator] type=${type} hasFrame=${hasFrame} title="${videoTitle}"`);
 
     const visualContext = hasFrame
@@ -176,6 +179,7 @@ Return ONLY the title, 4–10 words.`;
 
     const aiResponse = await fetch(ANTHROPIC_API_URL, {
       method: 'POST',
+      signal: AbortSignal.timeout(25000),
       headers: {
         'Content-Type': 'application/json',
         'x-api-key': apiKey,
