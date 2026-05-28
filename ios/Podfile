@@ -52,13 +52,15 @@ target 'ViralCut' do
       :ccache_enabled => podfile_properties['apple.ccacheEnabled'] == 'true',
     )
 
-    # fmt 10+ uses consteval format strings which clang 16+ rejects when called
-    # with non-constant arguments. Disable consteval to fix the build.
+    # fmt 10+ marks format-string constructors consteval; Xcode 16 / clang 16
+    # rejects those calls with non-constant arguments. Apply the disable flag
+    # to every pod target so it lands wherever fmt headers are compiled.
     installer.pods_project.targets.each do |target|
-      if target.name == 'fmt'
-        target.build_configurations.each do |cfg|
+      target.build_configurations.each do |cfg|
+        flags = cfg.build_settings['OTHER_CPLUSPLUSFLAGS'] || '$(inherited)'
+        unless flags.include?('FMT_CONSTEVAL')
           cfg.build_settings['OTHER_CPLUSPLUSFLAGS'] =
-            '$(inherited) -DFMT_CONSTEVAL= -DFMT_USE_CONSTEVAL=0'
+            "#{flags} -DFMT_CONSTEVAL= -DFMT_USE_CONSTEVAL=0"
         end
       end
     end
