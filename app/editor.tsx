@@ -156,7 +156,6 @@ export default function EditorScreen() {
   const [showTikTokSheet, setShowTikTokSheet] = useState(false);
   const [showInstagramSheet, setShowInstagramSheet] = useState(false);
   const [tiktokPrivacy, setTiktokPrivacy] = useState('SELF_ONLY');
-  const [showInstagramSheet, setShowInstagramSheet] = useState(false);
   const [uploadingToStorage, setUploadingToStorage] = useState(false);
   const [uploadProgress, setUploadProgress] = useState(0);
   const [burningOverlay, setBurningOverlay] = useState(false);
