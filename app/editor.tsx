@@ -383,6 +383,24 @@ export default function EditorScreen() {
     ]);
   };
 
+  const prepareVideoForPublish = async (videoUri: string, hookText: string): Promise<{ videoUrl?: string; error?: string }> => {
+    try {
+      setUploadingToStorage(true);
+      setBurningOverlay(true);
+      const { outputUri: burnedUri } = await burnHookOverlay(videoUri, hookText);
+      setBurningOverlay(false);
+      const resolvedUri = await resolveVideoUri(burnedUri);
+      const { publicUrl, error } = await uploadVideoToStorage(resolvedUri, user!.id, video.id, (p) => setUploadProgress(p));
+      setUploadingToStorage(false);
+      if (error || !publicUrl) return { error: error ?? 'Upload failed' };
+      return { videoUrl: publicUrl };
+    } catch (e: any) {
+      setBurningOverlay(false);
+      setUploadingToStorage(false);
+      return { error: String(e?.message ?? e) };
+    }
+  };
+
   const handlePublish = () => {
     const snap = snapshotEditorState();
     const hasTikTok = platforms.includes('tiktok') && tiktok.status.connected;

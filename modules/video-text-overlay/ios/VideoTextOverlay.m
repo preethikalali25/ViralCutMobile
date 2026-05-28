@@ -145,11 +145,32 @@
         CGFloat px = inst.padX;
         CGFloat py = inst.padY;
         CGFloat tw = (CGFloat)dstW - px * 2.0;
-        CGFloat th = fs * 2.4;
-        // CG origin is bottom-left; boxY near top of frame
-        CGFloat boxY   = (CGFloat)dstH - py - th;
-        CGRect  boxRect = CGRectMake(px, boxY, tw, th);
         CGFloat radius  = 10.0;
+        CGFloat innerPad = 8.0;   // horizontal inset inside box
+        CGFloat vPadding = fs * 0.6; // vertical padding inside box (top + bottom)
+
+        NSMutableParagraphStyle *ps = [[NSMutableParagraphStyle alloc] init];
+        ps.alignment     = NSTextAlignmentCenter;
+        ps.lineBreakMode = NSLineBreakByWordWrapping;
+        NSDictionary *attrs = @{
+            NSFontAttributeName:            [UIFont boldSystemFontOfSize:fs],
+            NSForegroundColorAttributeName: [UIColor whiteColor],
+            NSParagraphStyleAttributeName:  ps
+        };
+
+        // Measure text to get the exact height needed for this hook text.
+        CGFloat textWidth = tw - innerPad * 2.0;
+        CGRect measured = [inst.text
+            boundingRectWithSize:CGSizeMake(textWidth, CGFLOAT_MAX)
+                         options:NSStringDrawingUsesLineFragmentOrigin | NSStringDrawingUsesFontLeading
+                      attributes:attrs
+                         context:nil];
+        CGFloat textH = ceil(measured.size.height);
+        CGFloat th    = textH + vPadding;   // box height sized to content
+
+        // CG origin is bottom-left; position box near top of frame.
+        CGFloat boxY    = (CGFloat)dstH - py - th;
+        CGRect  boxRect = CGRectMake(px, boxY, tw, th);
 
         // Semi-transparent rounded background
         CGContextSetRGBFillColor(ctx, 0, 0, 0, 0.55);
@@ -166,23 +187,17 @@
         CGContextClosePath(ctx);
         CGContextFillPath(ctx);
 
-        // Flip ctx to UIKit's top-left origin so NSString drawing works
+        // Flip ctx to UIKit's top-left origin so NSString drawing works.
+        // After the flip, the box occupies (px, py, tw, th) in UIKit coords.
         CGContextSaveGState(ctx);
         CGContextTranslateCTM(ctx, 0, (CGFloat)dstH);
         CGContextScaleCTM(ctx, 1.0, -1.0);
 
-        NSMutableParagraphStyle *ps = [[NSMutableParagraphStyle alloc] init];
-        ps.alignment     = NSTextAlignmentCenter;
-        ps.lineBreakMode = NSLineBreakByWordWrapping;
-        NSDictionary *attrs = @{
-            NSFontAttributeName:            [UIFont boldSystemFontOfSize:fs],
-            NSForegroundColorAttributeName: [UIColor whiteColor],
-            NSParagraphStyleAttributeName:  ps
-        };
-        CGRect textRect = CGRectMake(px + 8,
-                                     py + (th - fs * 1.3) / 2.0,
-                                     tw - 16,
-                                     fs * 1.6);
+        CGFloat vOff    = (vPadding / 2.0);   // center text vertically in box
+        CGRect  textRect = CGRectMake(px + innerPad,
+                                      py + vOff,
+                                      textWidth,
+                                      textH);
         UIGraphicsPushContext(ctx);
         [inst.text drawInRect:textRect withAttributes:attrs];
         UIGraphicsPopContext();
@@ -215,15 +230,12 @@ RCT_EXPORT_MODULE();
 + (BOOL)requiresMainQueueSetup { return NO; }
 
 // Derive vImage rotation constant from AVFoundation's preferredTransform.
-// AVFoundation / UIKit: origin top-left, y-down.
-// vImage:               origin top-left, y-down  (same convention).
-// So the transform.b sign maps directly to CCW/CW without coordinate flip.
-//   b > 0, c < 0  =>  90° CCW in UIKit  =>  vImage constant 1
-//   b < 0, c > 0  =>  90° CW  in UIKit  =>  vImage constant 3
-//   a < 0, d < 0  =>  180°              =>  vImage constant 2
-//   identity                            =>  vImage constant 0
+// vImageRotate90_ARGB8888 constants: 0=0° 1=90°CW 2=180° 3=90°CCW
+//   b > 0, c < 0  =>  90° CCW needed  =>  vImage constant 3
+//   b < 0, c > 0  =>  90° CW  needed  =>  vImage constant 1
+//   a < 0, d < 0  =>  180°             =>  vImage constant 2
 + (uint8_t)vRotationForTransform:(CGAffineTransform)t {
-    if (fabs(t.b) > 0.5) return (t.b > 0) ? 1 : 3;
+    if (fabs(t.b) > 0.5) return (t.b > 0) ? 3 : 1;
     if (t.a < -0.5)      return 2;
     return 0;
 }
@@ -263,6 +275,9 @@ RCT_EXPORT_MODULE();
             NSError *err = nil;
             [cv insertTimeRange:timeRange ofTrack:vTrack atTime:kCMTimeZero error:&err];
             if (err) { resolve(originalUri); return; }
+            // Pixels are already rotated by the vImage compositor, so clear the
+            // track transform — otherwise players apply the rotation a second time.
+            [cv setPreferredTransform:CGAffineTransformIdentity];
 
             if (audioTracks.count) {
                 AVMutableCompositionTrack *ca =
