@@ -6,26 +6,32 @@
 #import <CoreGraphics/CoreGraphics.h>
 
 // ---------------------------------------------------------------------------
-// Custom compositor — draws text directly onto CVPixelBuffer frames using
-// CoreGraphics. No CALayer / QuartzCore / IOSurface / XPC involved.
+// Custom compositor instruction — carries text/style data per segment.
+// Declare all protocol properties as readwrite so the compiler synthesises
+// ivars for us (protocol declares them readonly; our class redeclares them
+// readwrite, which is legal in ObjC).
 // ---------------------------------------------------------------------------
 
 @interface VTOCompositorInstruction : NSObject <AVVideoCompositionInstruction>
-@property (nonatomic, strong) NSString *text;
-@property (nonatomic, assign) CGFloat fontSize;
-@property (nonatomic, assign) CGFloat padX;
-@property (nonatomic, assign) CGFloat padY;
-@property (nonatomic, assign) CMPersistentTrackID trackID;
-- (instancetype)initWithText:(NSString *)text
-                    fontSize:(CGFloat)fs
-                        padX:(CGFloat)px
-                        padY:(CGFloat)py
-                     trackID:(CMPersistentTrackID)tid
-                   timeRange:(CMTimeRange)range;
+@property (nonatomic) CMTimeRange             timeRange;
+@property (nonatomic) BOOL                    enablePostProcessing;
+@property (nonatomic) BOOL                    containsTweening;
+@property (nonatomic, strong) NSString       *text;
+@property (nonatomic)         CGFloat         fontSize;
+@property (nonatomic)         CGFloat         padX;
+@property (nonatomic)         CGFloat         padY;
+@property (nonatomic)         CMPersistentTrackID trackID;
 @end
 
 @implementation VTOCompositorInstruction
-@synthesize timeRange, enablePostProcessing, containsTweening, requiredSourceSampleDataRenderers;
+
+- (NSArray<NSValue *> *)requiredSourceTrackIDs {
+    return @[@(_trackID)];
+}
+
+- (CMPersistentTrackID)passthroughTrackID {
+    return kCMPersistentTrackID_Invalid;
+}
 
 - (instancetype)initWithText:(NSString *)text
                     fontSize:(CGFloat)fs
@@ -34,23 +40,22 @@
                      trackID:(CMPersistentTrackID)tid
                    timeRange:(CMTimeRange)range {
     self = [super init];
-    _text     = text;
-    _fontSize = fs;
-    _padX     = px;
-    _padY     = py;
-    _trackID  = tid;
-    self.timeRange = range;
-    enablePostProcessing = NO;
-    containsTweening     = NO;
+    _text                 = text;
+    _fontSize             = fs;
+    _padX                 = px;
+    _padY                 = py;
+    _trackID              = tid;
+    _timeRange            = range;
+    _enablePostProcessing = NO;
+    _containsTweening     = NO;
     return self;
-}
-
-- (NSArray *)requiredSourceTrackIDs {
-    return @[@(_trackID)];
 }
 
 @end
 
+// ---------------------------------------------------------------------------
+// Custom compositor — draws text directly onto CVPixelBuffer using
+// CoreGraphics. Zero CALayer / QuartzCore / IOSurface / XPC usage.
 // ---------------------------------------------------------------------------
 
 @interface VTOCompositor : NSObject <AVVideoCompositing>
@@ -58,30 +63,23 @@
 
 @implementation VTOCompositor {
     dispatch_queue_t _queue;
-    CIContext        *_ciCtx;
 }
 
 - (instancetype)init {
     self = [super init];
     _queue = dispatch_queue_create("vto.compositor", DISPATCH_QUEUE_SERIAL);
-    // software renderer — never touches GPU/IOSurface
-    _ciCtx = [CIContext contextWithOptions:@{kCIContextUseSoftwareRenderer: @YES}];
     return self;
 }
 
 - (NSDictionary *)sourcePixelBufferAttributes {
-    return @{ (NSString *)kCVPixelBufferPixelFormatTypeKey:
-                  @[@(kCVPixelFormatType_32BGRA)] };
+    return @{ (NSString *)kCVPixelBufferPixelFormatTypeKey: @[@(kCVPixelFormatType_32BGRA)] };
 }
 
 - (NSDictionary *)requiredPixelBufferAttributesForRenderContext {
-    return @{ (NSString *)kCVPixelBufferPixelFormatTypeKey:
-                  @[@(kCVPixelFormatType_32BGRA)] };
+    return @{ (NSString *)kCVPixelBufferPixelFormatTypeKey: @[@(kCVPixelFormatType_32BGRA)] };
 }
 
 - (void)renderContextChanged:(AVVideoCompositionRenderContext *)newRenderContext {}
-- (void)anticipateRenderingUsingHint:(AVVideoCompositionRenderHint *)renderHint {}
-- (void)prerollForRenderingUsingHint:(AVVideoCompositionRenderHint *)renderHint {}
 
 - (void)startVideoCompositionRequest:(AVAsynchronousVideoCompositionRequest *)request {
     dispatch_async(_queue, ^{
@@ -90,74 +88,88 @@
 }
 
 - (void)_handleRequest:(AVAsynchronousVideoCompositionRequest *)request {
-    VTOCompositorInstruction *inst = (VTOCompositorInstruction *)request.videoCompositionInstruction;
+    VTOCompositorInstruction *inst =
+        (VTOCompositorInstruction *)request.videoCompositionInstruction;
+
     CVPixelBufferRef src = [request sourceFrameByTrackID:inst.trackID];
-    if (!src) { [request finishWithError:[NSError errorWithDomain:@"VTO" code:1 userInfo:nil]]; return; }
+    if (!src) {
+        [request finishWithError:[NSError errorWithDomain:@"VTO" code:1 userInfo:nil]];
+        return;
+    }
 
     CVPixelBufferRef dst = [request.renderContext newPixelBuffer];
-    if (!dst) { [request finishWithError:[NSError errorWithDomain:@"VTO" code:2 userInfo:nil]]; return; }
+    if (!dst) {
+        [request finishWithError:[NSError errorWithDomain:@"VTO" code:2 userInfo:nil]];
+        return;
+    }
 
     CVPixelBufferLockBaseAddress(src, kCVPixelBufferLock_ReadOnly);
     CVPixelBufferLockBaseAddress(dst, 0);
 
-    size_t w  = CVPixelBufferGetWidth(src);
-    size_t h  = CVPixelBufferGetHeight(src);
-    size_t bpr = CVPixelBufferGetBytesPerRow(src);
+    size_t w      = CVPixelBufferGetWidth(src);
+    size_t h      = CVPixelBufferGetHeight(src);
+    size_t srcBpr = CVPixelBufferGetBytesPerRow(src);
+    size_t dstBpr = CVPixelBufferGetBytesPerRow(dst);
     void  *srcBase = CVPixelBufferGetBaseAddress(src);
     void  *dstBase = CVPixelBufferGetBaseAddress(dst);
 
-    // Copy source frame into destination (BGRA → BGRA)
-    size_t dstBpr = CVPixelBufferGetBytesPerRow(dst);
-    if (bpr == dstBpr) {
-        memcpy(dstBase, srcBase, h * bpr);
+    // Copy source frame into output buffer
+    if (srcBpr == dstBpr) {
+        memcpy(dstBase, srcBase, h * srcBpr);
     } else {
         for (size_t row = 0; row < h; row++) {
             memcpy((uint8_t *)dstBase + row * dstBpr,
-                   (uint8_t *)srcBase + row * bpr,
-                   MIN(bpr, dstBpr));
+                   (uint8_t *)srcBase + row * srcBpr,
+                   MIN(srcBpr, dstBpr));
         }
     }
 
     CVPixelBufferUnlockBaseAddress(src, kCVPixelBufferLock_ReadOnly);
 
-    // Draw text overlay with CoreGraphics — no CALayer, no IOSurface
+    // Draw text with CoreGraphics — no CALayer, no IOSurface
     CGColorSpaceRef cs = CGColorSpaceCreateDeviceRGB();
-    CGContextRef cgCtx = CGBitmapContextCreate(dstBase, w, h, 8, dstBpr, cs,
-                                               kCGBitmapByteOrder32Little | kCGImageAlphaPremultipliedFirst);
+    // BGRA pixel format: ByteOrder32Little + PremultipliedFirst
+    CGBitmapInfo bitmapInfo = (CGBitmapInfo)(kCGBitmapByteOrder32Little |
+                                             kCGImageAlphaPremultipliedFirst);
+    CGContextRef cgCtx = CGBitmapContextCreate(dstBase, w, h, 8, dstBpr, cs, bitmapInfo);
     CGColorSpaceRelease(cs);
 
     if (cgCtx) {
         CGFloat fs  = inst.fontSize;
         CGFloat px  = inst.padX;
         CGFloat py  = inst.padY;
-        CGFloat tw  = (CGFloat)w - px * 2;
+        CGFloat tw  = (CGFloat)w - px * 2.0;
         CGFloat th  = fs * 2.4;
-        // text box near top: y from top = py; CoreGraphics origin is bottom-left
+        // CoreGraphics origin is bottom-left; place text box near top of frame
         CGFloat boxY = (CGFloat)h - py - th;
-
-        // Semi-transparent background
-        CGContextSetRGBFillColor(cgCtx, 0, 0, 0, 0.55);
-        CGFloat radius = 10.0;
         CGRect boxRect = CGRectMake(px, boxY, tw, th);
+
+        // Rounded-rect background
+        CGFloat radius = 10.0;
+        CGContextSetRGBFillColor(cgCtx, 0, 0, 0, 0.55);
         CGContextBeginPath(cgCtx);
-        CGContextMoveToPoint   (cgCtx, CGRectGetMinX(boxRect) + radius, CGRectGetMinY(boxRect));
-        CGContextAddArcToPoint (cgCtx, CGRectGetMaxX(boxRect), CGRectGetMinY(boxRect),
-                                CGRectGetMaxX(boxRect), CGRectGetMinY(boxRect) + radius, radius);
-        CGContextAddArcToPoint (cgCtx, CGRectGetMaxX(boxRect), CGRectGetMaxY(boxRect),
-                                CGRectGetMaxX(boxRect) - radius, CGRectGetMaxY(boxRect), radius);
-        CGContextAddArcToPoint (cgCtx, CGRectGetMinX(boxRect), CGRectGetMaxY(boxRect),
-                                CGRectGetMinX(boxRect), CGRectGetMaxY(boxRect) - radius, radius);
-        CGContextAddArcToPoint (cgCtx, CGRectGetMinX(boxRect), CGRectGetMinY(boxRect),
-                                CGRectGetMinX(boxRect) + radius, CGRectGetMinY(boxRect), radius);
+        CGContextMoveToPoint(cgCtx,
+            CGRectGetMinX(boxRect) + radius, CGRectGetMinY(boxRect));
+        CGContextAddArcToPoint(cgCtx,
+            CGRectGetMaxX(boxRect), CGRectGetMinY(boxRect),
+            CGRectGetMaxX(boxRect), CGRectGetMinY(boxRect) + radius, radius);
+        CGContextAddArcToPoint(cgCtx,
+            CGRectGetMaxX(boxRect), CGRectGetMaxY(boxRect),
+            CGRectGetMaxX(boxRect) - radius, CGRectGetMaxY(boxRect), radius);
+        CGContextAddArcToPoint(cgCtx,
+            CGRectGetMinX(boxRect), CGRectGetMaxY(boxRect),
+            CGRectGetMinX(boxRect), CGRectGetMaxY(boxRect) - radius, radius);
+        CGContextAddArcToPoint(cgCtx,
+            CGRectGetMinX(boxRect), CGRectGetMinY(boxRect),
+            CGRectGetMinX(boxRect) + radius, CGRectGetMinY(boxRect), radius);
         CGContextClosePath(cgCtx);
         CGContextFillPath(cgCtx);
 
-        // Flip context to draw UIKit string (UIKit uses top-left origin)
+        // UIKit string drawing needs the CG context flipped to top-left origin
         CGContextSaveGState(cgCtx);
         CGContextTranslateCTM(cgCtx, 0, (CGFloat)h);
         CGContextScaleCTM(cgCtx, 1.0, -1.0);
 
-        // Text attributes
         NSMutableParagraphStyle *ps = [[NSMutableParagraphStyle alloc] init];
         ps.alignment     = NSTextAlignmentCenter;
         ps.lineBreakMode = NSLineBreakByWordWrapping;
@@ -166,8 +178,11 @@
             NSForegroundColorAttributeName: [UIColor whiteColor],
             NSParagraphStyleAttributeName:  ps
         };
-        // In the flipped coordinate system, y=py puts it near the top
-        CGRect textRect = CGRectMake(px + 8, py + (th - fs * 1.3) / 2.0, tw - 16, fs * 1.6);
+        // In flipped coords, boxY from top = py
+        CGRect textRect = CGRectMake(px + 8,
+                                     py + (th - fs * 1.3) / 2.0,
+                                     tw - 16,
+                                     fs * 1.6);
         UIGraphicsPushContext(cgCtx);
         [inst.text drawInRect:textRect withAttributes:attrs];
         UIGraphicsPopContext();
@@ -238,7 +253,12 @@ RCT_EXPORT_MODULE();
                 [ca insertTimeRange:timeRange ofTrack:audioTracks.firstObject atTime:kCMTimeZero error:nil];
             }
 
-            // Video composition using custom compositor (no CALayer, no IOSurface)
+            // Apply the preferred transform so portrait video renders correctly
+            AVMutableVideoCompositionLayerInstruction *li =
+                [AVMutableVideoCompositionLayerInstruction
+                   videoCompositionLayerInstructionWithAssetTrack:cv];
+            [li setTransform:pref atTime:kCMTimeZero];
+
             CGFloat fs  = renderSize.width * 0.072;
             CGFloat pad = renderSize.width * 0.045;
 
@@ -249,12 +269,6 @@ RCT_EXPORT_MODULE();
                                                           padY:pad
                                                        trackID:cv.trackID
                                                      timeRange:timeRange];
-
-            AVMutableVideoCompositionLayerInstruction *li =
-                [AVMutableVideoCompositionLayerInstruction
-                   videoCompositionLayerInstructionWithAssetTrack:cv];
-            [li setTransform:pref atTime:kCMTimeZero];
-            // (layer instruction stored on inst for the compositor's reference)
 
             AVMutableVideoComposition *vc = [AVMutableVideoComposition videoComposition];
             vc.customVideoCompositorClass = [VTOCompositor class];
