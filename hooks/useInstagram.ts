@@ -14,7 +14,7 @@ import * as WebBrowser from 'expo-web-browser';
 
 // Backend URL that Instagram redirects to, then this forwards to viralcut://instagram-callback
 export const INSTAGRAM_REDIRECT_URI =
-  'https://mrsvovoywukechawmrsv.backend.onspace.ai/functions/v1/instagram-publisher?action=callback';
+  'https://mrsvovoywukechawmrsv.backend.onspace.ai/functions/v1/instagram-publisher';
 
 export type IGPublishPhase =
   | 'idle'
