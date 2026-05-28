@@ -11,7 +11,6 @@ import {
   publishInstagramContainer,
 } from '@/services/instagramService';
 import * as WebBrowser from 'expo-web-browser';
-import { Linking } from 'react-native';
 
 // Backend URL that Instagram redirects to, then this forwards to viralcut://instagram-callback
 export const INSTAGRAM_REDIRECT_URI =
@@ -59,13 +58,6 @@ export function useInstagram() {
       if (!user?.id) return resolve({ error: 'Not logged in' });
       setConnectingOAuth(true);
 
-      let subscription: ReturnType<typeof Linking.addEventListener> | null = null;
-
-      const cleanup = () => {
-        subscription?.remove();
-        WebBrowser.dismissBrowser();
-      };
-
       try {
         const result = await getInstagramAuthUrl(INSTAGRAM_REDIRECT_URI);
         if ('error' in result) {
@@ -73,61 +65,46 @@ export function useInstagram() {
           return resolve({ error: result.error });
         }
 
-        subscription = Linking.addEventListener('url', async ({ url }) => {
-          if (!url.startsWith('viralcut://instagram-callback')) return;
-          cleanup();
+        // openAuthSessionAsync detects the viralcut:// redirect and returns it
+        // instead of treating it as a browser dismissal
+        const browserResult = await WebBrowser.openAuthSessionAsync(
+          result.authUrl,
+          'viralcut://',
+        );
 
-          try {
-            const urlObj = new URL(url);
-            const code = urlObj.searchParams.get('code');
-            const errorParam = urlObj.searchParams.get('error');
-
-            if (errorParam) {
-              setConnectingOAuth(false);
-              return resolve({ error: `Instagram denied access: ${errorParam}` });
-            }
-            if (!code) {
-              setConnectingOAuth(false);
-              return resolve({ error: 'No authorization code received from Instagram' });
-            }
-
-            const exchangeResult = await exchangeInstagramCode(
-              code,
-              INSTAGRAM_REDIRECT_URI,
-              user!.id,
-            );
-
-            if ('error' in exchangeResult) {
-              setConnectingOAuth(false);
-              return resolve({ error: exchangeResult.error });
-            }
-
-            await loadStatus();
-            setConnectingOAuth(false);
-            resolve({});
-          } catch (e: any) {
-            setConnectingOAuth(false);
-            resolve({ error: String(e?.message ?? e) });
-          }
-        });
-
-        WebBrowser.openBrowserAsync(result.authUrl, {
-          showTitle: false,
-          enableBarCollapsing: true,
-        }).then((browserResult) => {
-          if (browserResult.type === 'cancel' || browserResult.type === 'dismiss') {
-            cleanup();
-            setConnectingOAuth(false);
-            resolve({ error: 'OAuth cancelled' });
-          }
-        }).catch(() => {
-          cleanup();
+        if (browserResult.type !== 'success') {
           setConnectingOAuth(false);
-          resolve({ error: 'Failed to open browser' });
-        });
+          return resolve({ error: 'OAuth cancelled' });
+        }
 
+        const urlObj = new URL(browserResult.url);
+        const code = urlObj.searchParams.get('code');
+        const errorParam = urlObj.searchParams.get('error');
+
+        if (errorParam) {
+          setConnectingOAuth(false);
+          return resolve({ error: `Instagram denied access: ${errorParam}` });
+        }
+        if (!code) {
+          setConnectingOAuth(false);
+          return resolve({ error: 'No authorization code received from Instagram' });
+        }
+
+        const exchangeResult = await exchangeInstagramCode(
+          code,
+          INSTAGRAM_REDIRECT_URI,
+          user!.id,
+        );
+
+        if ('error' in exchangeResult) {
+          setConnectingOAuth(false);
+          return resolve({ error: exchangeResult.error });
+        }
+
+        await loadStatus();
+        setConnectingOAuth(false);
+        resolve({});
       } catch (e: any) {
-        cleanup();
         setConnectingOAuth(false);
         resolve({ error: String(e?.message ?? e) });
       }
