@@ -52,6 +52,17 @@ target 'ViralCut' do
       :ccache_enabled => podfile_properties['apple.ccacheEnabled'] == 'true',
     )
 
+    # fmt 10+ uses consteval format strings which clang 16+ rejects when called
+    # with non-constant arguments. Disable consteval to fix the build.
+    installer.pods_project.targets.each do |target|
+      if target.name == 'fmt'
+        target.build_configurations.each do |cfg|
+          cfg.build_settings['OTHER_CPLUSPLUSFLAGS'] =
+            '$(inherited) -DFMT_CONSTEVAL= -DFMT_USE_CONSTEVAL=0'
+        end
+      end
+    end
+
     # This is necessary for Xcode 14, because it signs resource bundles by default
     # when building for devices.
     installer.target_installation_results.pod_target_installation_results
