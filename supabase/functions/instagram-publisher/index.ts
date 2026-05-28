@@ -22,7 +22,8 @@ Deno.serve(async (req) => {
   const url = new URL(req.url);
 
   // ─── OAuth Callback (GET — Instagram/Meta redirects here) ──────────────────
-  if (req.method === 'GET' && url.searchParams.get('action') === 'callback') {
+  // Instagram may strip ?action=callback, so also detect by presence of code/error params
+  if (req.method === 'GET' && (url.searchParams.get('action') === 'callback' || url.searchParams.has('code') || url.searchParams.has('error'))) {
     const code = url.searchParams.get('code') ?? '';
     const state = url.searchParams.get('state') ?? '';
     const error = url.searchParams.get('error') ?? '';
