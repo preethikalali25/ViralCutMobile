@@ -61,7 +61,10 @@ target 'ViralCut' do
       patched = content
         .gsub(/^(#\s*define\s+FMT_CONSTEVAL)\s+consteval\s*$/, '\1 constexpr')
         .gsub(/^(#\s*define\s+FMT_CONSTEVAL)\s+consteval(\s+\/\/)/, '\1 constexpr\2')
-      File.write(path, patched) if patched != content
+      if patched != content
+        File.chmod(0644, path)  # headers are installed read-only
+        File.write(path, patched)
+      end
     end
 
     # This is necessary for Xcode 14, because it signs resource bundles by default
