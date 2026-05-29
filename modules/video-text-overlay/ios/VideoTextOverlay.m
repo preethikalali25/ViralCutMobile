@@ -250,6 +250,8 @@ RCT_EXPORT_MODULE();
 - (void)processAsset:(AVAsset *)asset
                 text:(NSString *)text
   backgroundAudioUri:(NSString *)backgroundAudioUri
+      originalVolume:(float)originalVolume
+            bgVolume:(float)bgVolume
          originalUri:(NSString *)originalUri
              resolve:(RCTPromiseResolveBlock)resolve {
 
@@ -493,19 +495,25 @@ RCT_EXPORT_MODULE();
             ses2.outputFileType = AVFileTypeMPEG4;
             // videoComposition intentionally NOT set — audioMix works reliably without it
 
+            // Use volume ramps over the full duration — more reliable than setVolume:atTime:
+            // for ensuring the volume is applied to every sample buffer.
+            CMTimeRange fullRange = CMTimeRangeMake(kCMTimeZero, duration);
             if (ca2 || bgAudio2) {
                 NSMutableArray *params = [NSMutableArray array];
                 if (ca2) {
+                    float vol = bgAudio2 ? originalVolume : 1.0f;
                     AVMutableAudioMixInputParameters *p =
                         [AVMutableAudioMixInputParameters audioMixInputParametersWithTrack:ca2];
-                    [p setVolume:(bgAudio2 ? 0.4f : 1.0f) atTime:kCMTimeZero];
+                    [p setVolumeRampFromStartVolume:vol toEndVolume:vol timeRange:fullRange];
                     [params addObject:p];
+                    NSLog(@"[VideoTextOverlay] orig vol=%.2f", vol);
                 }
                 if (bgAudio2) {
                     AVMutableAudioMixInputParameters *p =
                         [AVMutableAudioMixInputParameters audioMixInputParametersWithTrack:bgAudio2];
-                    [p setVolume:0.7f atTime:kCMTimeZero];
+                    [p setVolumeRampFromStartVolume:bgVolume toEndVolume:bgVolume timeRange:fullRange];
                     [params addObject:p];
+                    NSLog(@"[VideoTextOverlay] bg vol=%.2f", bgVolume);
                 }
                 AVMutableAudioMix *audioMix = [AVMutableAudioMix audioMix];
                 audioMix.inputParameters = params;
@@ -534,24 +542,30 @@ RCT_EXPORT_MODULE();
 - (void)processVideoAtURL:(NSURL *)inputUrl
                      text:(NSString *)text
        backgroundAudioUri:(NSString *)backgroundAudioUri
+           originalVolume:(float)originalVolume
+                 bgVolume:(float)bgVolume
               originalUri:(NSString *)originalUri
                   resolve:(RCTPromiseResolveBlock)resolve {
     AVURLAsset *asset = [AVURLAsset URLAssetWithURL:inputUrl options:nil];
     if (!asset) { resolve(originalUri); return; }
-    [self processAsset:asset text:text backgroundAudioUri:backgroundAudioUri originalUri:originalUri resolve:resolve];
+    [self processAsset:asset text:text backgroundAudioUri:backgroundAudioUri
+        originalVolume:originalVolume bgVolume:bgVolume
+           originalUri:originalUri resolve:resolve];
 }
 
 RCT_EXPORT_METHOD(burnText:(NSString *)videoUri
                   text:(NSString *)text
                   backgroundAudioUri:(NSString *)backgroundAudioUri
+                  originalVolume:(nonnull NSNumber *)originalVolumeNum
+                  bgVolume:(nonnull NSNumber *)bgVolumeNum
                   resolver:(RCTPromiseResolveBlock)resolve
                   rejecter:(RCTPromiseRejectBlock)reject) {
 
     NSString *bg = backgroundAudioUri ?: @"";
-    // VERSION MARKER — update this whenever the native code changes so we can
-    // confirm the latest build is running from Xcode/device logs.
-    NSLog(@"[VideoTextOverlay] v4 burnText — videoUri=%@ bgLen=%lu",
-          videoUri, (unsigned long)bg.length);
+    float origVol = [originalVolumeNum floatValue];
+    float bgVol   = [bgVolumeNum floatValue];
+    NSLog(@"[VideoTextOverlay] v5 burnText — bgLen=%lu origVol=%.2f bgVol=%.2f",
+          (unsigned long)bg.length, origVol, bgVol);
 
     if (!videoUri || (!text.length && !bg.length)) {
         resolve(videoUri ?: @""); return;
@@ -571,14 +585,18 @@ RCT_EXPORT_METHOD(burnText:(NSString *)videoUri
            requestAVAssetForVideo:phAsset options:opts
                     resultHandler:^(AVAsset *av, AVAudioMix *mix, NSDictionary *info) {
             if (!av) { resolve(videoUri); return; }
-            [self processAsset:av text:text backgroundAudioUri:bg originalUri:videoUri resolve:resolve];
+            [self processAsset:av text:text backgroundAudioUri:bg
+                originalVolume:origVol bgVolume:bgVol
+                   originalUri:videoUri resolve:resolve];
         }];
     } else {
         NSURL *fileUrl = [videoUri hasPrefix:@"file://"]
             ? [NSURL URLWithString:videoUri]
             : [NSURL fileURLWithPath:videoUri];
         if (!fileUrl) { resolve(videoUri); return; }
-        [self processVideoAtURL:fileUrl text:text backgroundAudioUri:bg originalUri:videoUri resolve:resolve];
+        [self processVideoAtURL:fileUrl text:text backgroundAudioUri:bg
+             originalVolume:origVol bgVolume:bgVol
+                originalUri:videoUri resolve:resolve];
     }
 }
 

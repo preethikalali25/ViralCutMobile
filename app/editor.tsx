@@ -23,6 +23,7 @@ import { useInstagram } from '@/hooks/useInstagram';
 import { uploadVideoToStorage } from '@/services/tiktokService';
 import { burnHookOverlay } from '@/services/videoOverlayService';
 import * as FileSystem from 'expo-file-system';
+import Slider from '@react-native-community/slider';
 
 type Tab = 'hook' | 'caption' | 'audio' | 'platforms';
 
@@ -192,6 +193,10 @@ export default function EditorScreen() {
   const [burnAudioLabel, setBurnAudioLabel] = useState<string | null>(null);
   const [generatingThumbnail, setGeneratingThumbnail] = useState(false);
   const [thumbnailUri, setThumbnailUri] = useState<string | null>(video?.thumbnail ?? null);
+
+  // Audio mix volumes: 0.0–1.0 each. Shown as sliders in the Audio tab.
+  const [originalVolume, setOriginalVolume] = useState(0.6); // original voice
+  const [bgVolume, setBgVolume] = useState(0.8);             // background music
 
   // Eagerly pre-fetched local path for the selected song's iTunes 30-s preview.
   const [cachedAudioUri, setCachedAudioUri] = useState<string | null>(null);
@@ -579,7 +584,7 @@ export default function EditorScreen() {
       setBurnAudioLabel(label);
       console.log('[burn] backgroundAudioUri going to native:', backgroundAudioUri ?? 'NONE');
 
-      const { outputUri: burnedUri } = await burnHookOverlay(burnUri, hookText, backgroundAudioUri);
+      const { outputUri: burnedUri } = await burnHookOverlay(burnUri, hookText, backgroundAudioUri, originalVolume, bgVolume);
       setBurningOverlay(false);
       const resolvedUri = await resolveVideoUri(burnedUri);
       const { publicUrl, error } = await uploadVideoToStorage(resolvedUri, user!.id, video.id, (p) => setUploadProgress(p));
@@ -926,6 +931,43 @@ export default function EditorScreen() {
                     )}
                   </View>
                 ) : null}
+
+                {/* Audio mix volume controls */}
+                <View style={styles.mixSection}>
+                  <Text style={styles.mixTitle}>Audio Mix</Text>
+                  <View style={styles.mixRow}>
+                    <MaterialIcons name="record-voice-over" size={16} color={Colors.textSecondary} />
+                    <Text style={styles.mixLabel}>Original Voice</Text>
+                    <Text style={styles.mixValue}>{Math.round(originalVolume * 100)}%</Text>
+                  </View>
+                  <Slider
+                    style={styles.mixSlider}
+                    minimumValue={0}
+                    maximumValue={1}
+                    step={0.05}
+                    value={originalVolume}
+                    onValueChange={setOriginalVolume}
+                    minimumTrackTintColor={Colors.primary}
+                    maximumTrackTintColor={Colors.border}
+                    thumbTintColor={Colors.primary}
+                  />
+                  <View style={styles.mixRow}>
+                    <MaterialIcons name="music-note" size={16} color={Colors.primaryLight} />
+                    <Text style={styles.mixLabel}>Background Music</Text>
+                    <Text style={styles.mixValue}>{Math.round(bgVolume * 100)}%</Text>
+                  </View>
+                  <Slider
+                    style={styles.mixSlider}
+                    minimumValue={0}
+                    maximumValue={1}
+                    step={0.05}
+                    value={bgVolume}
+                    onValueChange={setBgVolume}
+                    minimumTrackTintColor={Colors.primaryLight}
+                    maximumTrackTintColor={Colors.border}
+                    thumbTintColor={Colors.primaryLight}
+                  />
+                </View>
 
                 <View style={styles.audioHeader}>
                   <Text style={styles.sectionLabel}>Trending Audio</Text>
@@ -1453,6 +1495,12 @@ const styles = StyleSheet.create({
   orPickText: { fontSize: FontSize.xs, color: Colors.textMuted, fontWeight: FontWeight.medium, includeFontPadding: false },
   audioStatusRow: { flexDirection: 'row', alignItems: 'center', gap: 5, paddingVertical: 6, paddingHorizontal: 10, backgroundColor: Colors.surfaceElevated, borderRadius: Radius.md, borderWidth: 1, borderColor: Colors.surfaceBorder },
   audioStatusText: { fontSize: FontSize.xs, color: Colors.textSecondary, includeFontPadding: false },
+  mixSection: { backgroundColor: Colors.surfaceElevated, borderRadius: Radius.md, borderWidth: 1, borderColor: Colors.surfaceBorder, padding: Spacing.sm, gap: 4 },
+  mixTitle: { fontSize: FontSize.xs, fontWeight: FontWeight.bold, color: Colors.textMuted, textTransform: 'uppercase', letterSpacing: 0.5, marginBottom: 2 },
+  mixRow: { flexDirection: 'row', alignItems: 'center', gap: 6 },
+  mixLabel: { flex: 1, fontSize: FontSize.sm, color: Colors.textSecondary },
+  mixValue: { fontSize: FontSize.sm, fontWeight: FontWeight.bold, color: Colors.textPrimary, minWidth: 36, textAlign: 'right' },
+  mixSlider: { width: '100%', height: 32 },
   hookTypes: { flexDirection: 'row', gap: Spacing.sm },
   hookTypeCard: {
     flex: 1, backgroundColor: Colors.surfaceElevated, borderRadius: Radius.md,
