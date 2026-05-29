@@ -195,6 +195,9 @@ export default function EditorScreen() {
 
   // Eagerly pre-fetched local path for the selected song's iTunes 30-s preview.
   const [cachedAudioUri, setCachedAudioUri] = useState<string | null>(null);
+  // Ref mirrors the state so async functions (which close over stale state)
+  // always read the latest downloaded URI without needing a re-render.
+  const cachedAudioUriRef = useRef<string | null>(null);
   const [audioStatus, setAudioStatus] = useState<'idle' | 'loading' | 'ready' | 'failed'>('idle');
   // Use title+artist as the dedup key — AI always returns id='ai_best' so id alone isn't unique.
   const cachedAudioKey = useRef<string>('');
@@ -220,6 +223,7 @@ export default function EditorScreen() {
         const dest = `${FileSystem.cacheDirectory}bgaudio_${Date.now()}.m4a`;
         const dl = await FileSystem.downloadAsync(previewUrl, dest);
         if (dl.status === 200) {
+          cachedAudioUriRef.current = dl.uri;
           setCachedAudioUri(dl.uri);
           setAudioStatus('ready');
           console.log('[prefetchAudio] ready:', dl.uri);
@@ -527,28 +531,45 @@ export default function EditorScreen() {
         artist: MOCK_TRENDING_AUDIO[0].artist,
       };
 
-      // Use already-cached file if available, otherwise fetch fresh right now.
-      let backgroundAudioUri: string | undefined = cachedAudioUri ?? undefined;
+      // 1. Await any in-flight prefetch so we don't race with it.
+      //    audioFetchPromise.current is always set to the latest prefetch, resolved or pending.
+      setBurnAudioLabel(`Finding music…`);
+      const prefetchedUri = await audioFetchPromise.current;
 
+      // 2. Prefer in-flight result → ref (latest state, avoids stale closure) → state.
+      let backgroundAudioUri: string | undefined =
+        prefetchedUri ?? cachedAudioUriRef.current ?? cachedAudioUri ?? undefined;
+
+      // 3. If still nothing, do a fresh search. Try the AI/selected song first,
+      //    then fall back through MOCK_TRENDING_AUDIO to guarantee we always have music.
       if (!backgroundAudioUri) {
-        setBurnAudioLabel(`Searching: ${audioSong.title}…`);
-        try {
-          const previewUrl = await fetchItunesPreviewUrl(audioSong.title, audioSong.artist);
-          if (previewUrl) {
-            setBurnAudioLabel(`Downloading preview…`);
+        const fallbackSongs = [
+          { title: audioSong.title, artist: audioSong.artist },
+          ...MOCK_TRENDING_AUDIO.map(s => ({ title: s.title, artist: s.artist })),
+        ];
+
+        for (const song of fallbackSongs) {
+          setBurnAudioLabel(`Searching: ${song.title}…`);
+          try {
+            const previewUrl = await fetchItunesPreviewUrl(song.title, song.artist);
+            if (!previewUrl) {
+              console.warn('[burn] no iTunes preview for:', song.title, song.artist);
+              continue;
+            }
+            setBurnAudioLabel(`Downloading: ${song.title}…`);
             const dest = `${FileSystem.cacheDirectory}bgburn_${Date.now()}.m4a`;
             const dl = await FileSystem.downloadAsync(previewUrl, dest);
             if (dl.status === 200) {
               backgroundAudioUri = dl.uri;
+              cachedAudioUriRef.current = dl.uri;
               setCachedAudioUri(dl.uri);
-            } else {
-              console.warn('[burn] preview download status:', dl.status);
+              console.log('[burn] fallback audio ready:', song.title, dl.uri);
+              break;
             }
-          } else {
-            console.warn('[burn] no iTunes preview found for:', audioSong.title, audioSong.artist);
+            console.warn('[burn] download status', dl.status, 'for', song.title);
+          } catch (audioErr) {
+            console.warn('[burn] fetch error for', song.title, audioErr);
           }
-        } catch (audioErr) {
-          console.warn('[burn] audio fetch error:', audioErr);
         }
       }
 
@@ -556,7 +577,7 @@ export default function EditorScreen() {
         ? `${audioSong.title} – ${audioSong.artist}`
         : 'no music (preview unavailable)';
       setBurnAudioLabel(label);
-      console.log('[burn] backgroundAudioUri:', backgroundAudioUri ?? 'NONE');
+      console.log('[burn] backgroundAudioUri going to native:', backgroundAudioUri ?? 'NONE');
 
       const { outputUri: burnedUri } = await burnHookOverlay(burnUri, hookText, backgroundAudioUri);
       setBurningOverlay(false);

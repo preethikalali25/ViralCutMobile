@@ -447,6 +447,11 @@ RCT_EXPORT_MODULE();
                               [NSString stringWithFormat:@"hook_%ld.mp4", ts1 + 1]];
             [NSFileManager.defaultManager removeItemAtURL:out error:nil];
 
+            NSLog(@"[VideoTextOverlay] step2: ca2=%@ bgAudio2=%@ bgURI=%@",
+                  ca2 ? @"YES" : @"NO",
+                  bgAudio2 ? @"YES" : @"NO",
+                  backgroundAudioUri.length ? backgroundAudioUri : @"(empty)");
+
             AVAssetExportSession *ses2 =
                 [[AVAssetExportSession alloc] initWithAsset:comp2
                                                  presetName:AVAssetExportPresetHighestQuality];
@@ -477,10 +482,10 @@ RCT_EXPORT_MODULE();
             [ses2 exportAsynchronouslyWithCompletionHandler:^{
                 if (ses2.status == AVAssetExportSessionStatusCompleted) {
                     [NSFileManager.defaultManager removeItemAtURL:temp1 error:nil];
+                    NSLog(@"[VideoTextOverlay] step2 DONE → %@", out.absoluteString);
                     resolve(out.absoluteString);
                 } else {
-                    NSLog(@"[VideoTextOverlay] step2 export error: %@",
-                          ses2.error.localizedDescription);
+                    NSLog(@"[VideoTextOverlay] step2 FAILED: %@", ses2.error.localizedDescription);
                     // Fall back to step1 result (text+video, no audio mix)
                     resolve(temp1.absoluteString);
                 }
@@ -510,6 +515,8 @@ RCT_EXPORT_METHOD(burnText:(NSString *)videoUri
                   rejecter:(RCTPromiseRejectBlock)reject) {
 
     NSString *bg = backgroundAudioUri ?: @"";
+    NSLog(@"[VideoTextOverlay] burnText called — videoUri=%@ bgAudio=%@ (len=%lu)",
+          videoUri, bg.length ? bg : @"(empty)", (unsigned long)bg.length);
 
     if (!videoUri || (!text.length && !bg.length)) {
         resolve(videoUri ?: @""); return;
