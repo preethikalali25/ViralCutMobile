@@ -514,21 +514,49 @@ export default function EditorScreen() {
     try {
       setUploadingToStorage(true);
       setBurningOverlay(true);
+      setBurnAudioLabel('searching…');
 
       const burnUri = video.videoAssetId
         ? `ph://${video.videoAssetId}`
         : videoUri;
 
-      // Wait for any in-progress prefetch then pick the best available URI.
-      // Priority: latest prefetch result > previously-cached fallback (APT default).
-      const latestUri = await audioFetchPromise.current;
-      const backgroundAudioUri = (latestUri ?? cachedAudioUri) ?? undefined;
+      // Determine which song to use: AI pick > user selection > first MOCK track.
       const snap2 = snapshotEditorState();
-      const songLabel = snap2.audio
-        ? `${snap2.audio.title} – ${snap2.audio.artist}`
-        : 'default track';
-      setBurnAudioLabel(backgroundAudioUri ? songLabel : null);
-      console.log('[burn] bgAudio:', backgroundAudioUri ?? 'NONE', '| song:', songLabel);
+      const audioSong = snap2.audio ?? {
+        title: MOCK_TRENDING_AUDIO[0].title,
+        artist: MOCK_TRENDING_AUDIO[0].artist,
+      };
+
+      // Use already-cached file if available, otherwise fetch fresh right now.
+      let backgroundAudioUri: string | undefined = cachedAudioUri ?? undefined;
+
+      if (!backgroundAudioUri) {
+        setBurnAudioLabel(`Searching: ${audioSong.title}…`);
+        try {
+          const previewUrl = await fetchItunesPreviewUrl(audioSong.title, audioSong.artist);
+          if (previewUrl) {
+            setBurnAudioLabel(`Downloading preview…`);
+            const dest = `${FileSystem.cacheDirectory}bgburn_${Date.now()}.m4a`;
+            const dl = await FileSystem.downloadAsync(previewUrl, dest);
+            if (dl.status === 200) {
+              backgroundAudioUri = dl.uri;
+              setCachedAudioUri(dl.uri);
+            } else {
+              console.warn('[burn] preview download status:', dl.status);
+            }
+          } else {
+            console.warn('[burn] no iTunes preview found for:', audioSong.title, audioSong.artist);
+          }
+        } catch (audioErr) {
+          console.warn('[burn] audio fetch error:', audioErr);
+        }
+      }
+
+      const label = backgroundAudioUri
+        ? `${audioSong.title} – ${audioSong.artist}`
+        : 'no music (preview unavailable)';
+      setBurnAudioLabel(label);
+      console.log('[burn] backgroundAudioUri:', backgroundAudioUri ?? 'NONE');
 
       const { outputUri: burnedUri } = await burnHookOverlay(burnUri, hookText, backgroundAudioUri);
       setBurningOverlay(false);
@@ -1013,9 +1041,15 @@ export default function EditorScreen() {
             {uploadingToStorage ? (
               <View style={styles.sheetPhase}>
                 <ActivityIndicator size="large" color="#e1306c" />
-                <Text style={styles.sheetPhaseTitle}>Uploading video...</Text>
-                <Text style={styles.sheetPhaseSub}>Preparing your video for Instagram.</Text>
-                {uploadProgress > 0 ? (
+                <Text style={styles.sheetPhaseTitle}>
+                  {burningOverlay ? 'Burning hook overlay...' : 'Uploading video...'}
+                </Text>
+                <Text style={styles.sheetPhaseSub}>
+                  {burningOverlay
+                    ? (burnAudioLabel ? `🎵 ${burnAudioLabel}` : 'Adding hook text...')
+                    : 'Preparing your video for Instagram.'}
+                </Text>
+                {!burningOverlay && uploadProgress > 0 ? (
                   <View style={styles.progressBarBg}>
                     <View style={[styles.progressBarFill, { width: `${uploadProgress}%` as any, backgroundColor: '#e1306c' }]} />
                   </View>
