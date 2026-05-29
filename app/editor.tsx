@@ -97,14 +97,33 @@ function cleanTitle(raw: string): string {
 }
 
 async function fetchItunesPreviewUrl(title: string, artist: string): Promise<string | null> {
-  try {
-    const q = encodeURIComponent(`${title} ${artist}`);
-    const res = await fetch(`https://itunes.apple.com/search?term=${q}&media=music&limit=1&country=US`);
-    const data = await res.json();
-    return (data.results?.[0]?.previewUrl as string) ?? null;
-  } catch {
-    return null;
-  }
+  const trySearch = async (q: string): Promise<string | null> => {
+    try {
+      const encoded = encodeURIComponent(q);
+      const ctrl = new AbortController();
+      const timer = setTimeout(() => ctrl.abort(), 8000);
+      const res = await fetch(
+        `https://itunes.apple.com/search?term=${encoded}&media=music&limit=5&country=US`,
+        { signal: ctrl.signal },
+      );
+      clearTimeout(timer);
+      if (!res.ok) return null;
+      const data = await res.json();
+      return (data.results?.[0]?.previewUrl as string) ?? null;
+    } catch {
+      return null;
+    }
+  };
+
+  // Take first artist when multiple are listed (e.g. "ROSE & Bruno Mars" → "ROSE")
+  const firstArtist = artist.split(/[&,]/)[0].trim();
+  const cleanTitle  = title.replace(/[.!?]+$/, '').trim();
+
+  return (
+    (await trySearch(`${cleanTitle} ${firstArtist}`)) ??
+    (await trySearch(cleanTitle)) ??
+    (await trySearch(`${title} ${artist}`))
+  );
 }
 
 async function callAIGenerator(type: string, payload: Record<string, unknown>) {
@@ -173,6 +192,26 @@ export default function EditorScreen() {
   const [generatingThumbnail, setGeneratingThumbnail] = useState(false);
   const [thumbnailUri, setThumbnailUri] = useState<string | null>(video?.thumbnail ?? null);
 
+  // Eagerly pre-fetched local path for the selected song's iTunes 30-s preview.
+  const [cachedAudioUri, setCachedAudioUri] = useState<string | null>(null);
+  const cachedAudioSongId = useRef<string>('');
+
+  const prefetchAudioForSong = useCallback(async (id: string, title: string, artist: string) => {
+    if (id === cachedAudioSongId.current) return;
+    cachedAudioSongId.current = id;
+    setCachedAudioUri(null);
+    try {
+      const previewUrl = await fetchItunesPreviewUrl(title, artist);
+      if (!previewUrl) { console.warn('[prefetchAudio] no iTunes preview for:', title, artist); return; }
+      const dest = `${FileSystem.cacheDirectory}bgaudio_${Date.now()}.m4a`;
+      const dl = await FileSystem.downloadAsync(previewUrl, dest);
+      if (dl.status === 200) { setCachedAudioUri(dl.uri); console.log('[prefetchAudio] cached:', dl.uri); }
+      else console.warn('[prefetchAudio] download status:', dl.status);
+    } catch (e) {
+      console.warn('[prefetchAudio] failed:', e);
+    }
+  }, []);
+
   // ── Edge Function Test Panel ──
   const [showTestModal, setShowTestModal] = useState(false);
   type TestKey = 'ai-content-generator' | 'wayinvideo-analyzer' | 'tiktok-publisher';
@@ -235,6 +274,9 @@ export default function EditorScreen() {
     setSelectedAudioId(video.audio?.id ?? '');
     setPlatforms(video.platforms ?? ['tiktok']);
     setThumbnailUri(video.thumbnail ?? null);
+    if (video.audio?.id && video.audio?.title && video.audio?.artist) {
+      prefetchAudioForSong(video.audio.id, video.audio.title, video.audio.artist);
+    }
   }, [video?.id]);
 
   // Auto-generate hook, caption, and audio on first open
@@ -281,6 +323,7 @@ export default function EditorScreen() {
         if (data?.result?.id) {
           setAiPickedSong(data.result);
           setSelectedAudioId(data.result.id);
+          prefetchAudioForSong(data.result.id, data.result.title, data.result.artist);
         }
       }
     };
@@ -344,8 +387,12 @@ export default function EditorScreen() {
     setGeneratingAudio(false);
     if (error) { showAlert('AI Error', error); return; }
     const song = data?.result;
-    if (song?.id) { setAiPickedSong(song); setSelectedAudioId(song.id); }
-  }, [video.title, platforms, showAlert]);
+    if (song?.id) {
+      setAiPickedSong(song);
+      setSelectedAudioId(song.id);
+      prefetchAudioForSong(song.id, song.title, song.artist);
+    }
+  }, [video.title, platforms, showAlert, prefetchAudioForSong]);
 
   const handleGenerateTitle = useCallback(async () => {
     setGeneratingTitle(true);
@@ -397,7 +444,6 @@ export default function EditorScreen() {
   const prepareVideoForPublish = async (
     videoUri: string,
     hookText: string,
-    audioInfo?: { title: string; artist: string } | null,
   ): Promise<{ videoUrl?: string; error?: string }> => {
     try {
       setUploadingToStorage(true);
@@ -407,20 +453,12 @@ export default function EditorScreen() {
         ? `ph://${video.videoAssetId}`
         : videoUri;
 
-      // Fetch iTunes 30-second preview and download to cache for background music mixing.
-      let backgroundAudioUri: string | undefined;
-      if (audioInfo?.title && audioInfo?.artist) {
-        const previewUrl = await fetchItunesPreviewUrl(audioInfo.title, audioInfo.artist);
-        if (previewUrl) {
-          try {
-            const FileSystem = await import('expo-file-system');
-            const dest = `${FileSystem.cacheDirectory}bg_${Date.now()}.m4a`;
-            const dl = await FileSystem.downloadAsync(previewUrl, dest);
-            if (dl.status === 200) backgroundAudioUri = dl.uri;
-          } catch (e) {
-            console.warn('[prepareVideoForPublish] audio download failed:', e);
-          }
-        }
+      // Use the eagerly pre-fetched local audio file (set when song was selected).
+      const backgroundAudioUri = cachedAudioUri ?? undefined;
+      if (backgroundAudioUri) {
+        console.log('[prepareVideoForPublish] mixing background audio:', backgroundAudioUri);
+      } else {
+        console.log('[prepareVideoForPublish] no cached audio — burning without background music');
       }
 
       const { outputUri: burnedUri } = await burnHookOverlay(burnUri, hookText, backgroundAudioUri);
@@ -475,7 +513,7 @@ export default function EditorScreen() {
     const snap = snapshotEditorState();
     if (!video?.videoUri) { showAlert('No Video File', 'Select a video before publishing to TikTok.'); return; }
 
-    const { videoUrl, error: prepError } = await prepareVideoForPublish(video.videoUri, snap.hook?.text ?? '', snap.audio);
+    const { videoUrl, error: prepError } = await prepareVideoForPublish(video.videoUri, snap.hook?.text ?? '');
     if (prepError || !videoUrl) { showAlert('Upload Failed', prepError ?? 'Could not upload video.'); return; }
 
     updateVideo(video.id, { ...snap, title: videoTitle });
@@ -489,7 +527,7 @@ export default function EditorScreen() {
     const snap = snapshotEditorState();
     if (!video?.videoUri) { showAlert('No Video File', 'Select a video before publishing to Instagram.'); return; }
 
-    const { videoUrl, error: prepError } = await prepareVideoForPublish(video.videoUri, snap.hook?.text ?? '', snap.audio);
+    const { videoUrl, error: prepError } = await prepareVideoForPublish(video.videoUri, snap.hook?.text ?? '');
     if (prepError || !videoUrl) { showAlert('Upload Failed', prepError ?? 'Could not upload video.'); return; }
 
     const captionText = [snap.caption, snap.hashtags.join(' ')].filter(Boolean).join('\n\n');
@@ -769,7 +807,11 @@ export default function EditorScreen() {
                     <Pressable
                       key={audio.id}
                       style={[styles.audioRow, isSelected && styles.audioRowActive]}
-                      onPress={() => { setSelectedAudioId(audio.id); setAiPickedSong(null); }}
+                      onPress={() => {
+                        setSelectedAudioId(audio.id);
+                        setAiPickedSong(null);
+                        prefetchAudioForSong(audio.id, audio.title, audio.artist);
+                      }}
                     >
                       <View style={[styles.audioIcon, isSelected && { backgroundColor: Colors.primary }]}>
                         <MaterialIcons name="music-note" size={18} color={isSelected ? '#fff' : Colors.textSecondary} />
@@ -1016,7 +1058,11 @@ export default function EditorScreen() {
               <View style={styles.sheetPhase}>
                 <ActivityIndicator size="large" color={Colors.primaryLight} />
                 <Text style={styles.sheetPhaseTitle}>Burning hook overlay...</Text>
-                <Text style={styles.sheetPhaseSub}>Adding your hook text to the video.</Text>
+                <Text style={styles.sheetPhaseSub}>
+                  {cachedAudioUri
+                    ? `Mixing in background music...`
+                    : 'Adding your hook text to the video.'}
+                </Text>
               </View>
             ) : null}
 
