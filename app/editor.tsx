@@ -195,21 +195,33 @@ export default function EditorScreen() {
   // Eagerly pre-fetched local path for the selected song's iTunes 30-s preview.
   const [cachedAudioUri, setCachedAudioUri] = useState<string | null>(null);
   const cachedAudioSongId = useRef<string>('');
+  // Holds the in-progress (or already-resolved) prefetch Promise so publish can
+  // await it if the user taps publish before the download finishes.
+  const audioFetchPromise = useRef<Promise<string | null>>(Promise.resolve(null));
 
-  const prefetchAudioForSong = useCallback(async (id: string, title: string, artist: string) => {
+  const prefetchAudioForSong = useCallback((id: string, title: string, artist: string) => {
     if (id === cachedAudioSongId.current) return;
     cachedAudioSongId.current = id;
     setCachedAudioUri(null);
-    try {
-      const previewUrl = await fetchItunesPreviewUrl(title, artist);
-      if (!previewUrl) { console.warn('[prefetchAudio] no iTunes preview for:', title, artist); return; }
-      const dest = `${FileSystem.cacheDirectory}bgaudio_${Date.now()}.m4a`;
-      const dl = await FileSystem.downloadAsync(previewUrl, dest);
-      if (dl.status === 200) { setCachedAudioUri(dl.uri); console.log('[prefetchAudio] cached:', dl.uri); }
-      else console.warn('[prefetchAudio] download status:', dl.status);
-    } catch (e) {
-      console.warn('[prefetchAudio] failed:', e);
-    }
+    const p: Promise<string | null> = (async () => {
+      try {
+        const previewUrl = await fetchItunesPreviewUrl(title, artist);
+        if (!previewUrl) { console.warn('[prefetchAudio] no iTunes preview for:', title, artist); return null; }
+        const dest = `${FileSystem.cacheDirectory}bgaudio_${Date.now()}.m4a`;
+        const dl = await FileSystem.downloadAsync(previewUrl, dest);
+        if (dl.status === 200) {
+          setCachedAudioUri(dl.uri);
+          console.log('[prefetchAudio] cached:', dl.uri);
+          return dl.uri;
+        }
+        console.warn('[prefetchAudio] download status:', dl.status);
+        return null;
+      } catch (e) {
+        console.warn('[prefetchAudio] failed:', e);
+        return null;
+      }
+    })();
+    audioFetchPromise.current = p;
   }, []);
 
   // ── Edge Function Test Panel ──
@@ -453,8 +465,9 @@ export default function EditorScreen() {
         ? `ph://${video.videoAssetId}`
         : videoUri;
 
-      // Use the eagerly pre-fetched local audio file (set when song was selected).
-      const backgroundAudioUri = cachedAudioUri ?? undefined;
+      // Await the in-progress (or already resolved) prefetch Promise so we get
+      // the audio even if the user tapped publish before the download finished.
+      const backgroundAudioUri = (cachedAudioUri ?? (await audioFetchPromise.current)) ?? undefined;
       if (backgroundAudioUri) {
         console.log('[prepareVideoForPublish] mixing background audio:', backgroundAudioUri);
       } else {
