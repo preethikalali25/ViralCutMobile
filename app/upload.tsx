@@ -157,6 +157,7 @@ export default function UploadScreen() {
       createdAt: new Date().toISOString(),
       ...(action === 'publish' ? { publishedAt: new Date().toISOString() } : {}),
       ...(pickedVideo?.uri ? { videoUri: pickedVideo.uri } : {}),
+      ...(pickedVideo?.assetId ? { videoAssetId: pickedVideo.assetId } : {}),
     };
 
     addVideo(newVideo);

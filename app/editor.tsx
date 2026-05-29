@@ -387,7 +387,13 @@ export default function EditorScreen() {
     try {
       setUploadingToStorage(true);
       setBurningOverlay(true);
-      const { outputUri: burnedUri } = await burnHookOverlay(videoUri, hookText);
+      // If we have the iOS Photos assetId, pass the ph:// URI to the burn module.
+      // PHImageManager export (ph://) always includes audio; the picker's temp
+      // file:// copy can silently drop audio for certain video formats.
+      const burnUri = video.videoAssetId
+        ? `ph://${video.videoAssetId}`
+        : videoUri;
+      const { outputUri: burnedUri } = await burnHookOverlay(burnUri, hookText);
       setBurningOverlay(false);
       const resolvedUri = await resolveVideoUri(burnedUri);
       const { publicUrl, error } = await uploadVideoToStorage(resolvedUri, user!.id, video.id, (p) => setUploadProgress(p));
