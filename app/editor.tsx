@@ -100,16 +100,16 @@ async function fetchItunesPreviewUrl(title: string, artist: string): Promise<str
   const trySearch = async (q: string): Promise<string | null> => {
     try {
       const encoded = encodeURIComponent(q);
-      const ctrl = new AbortController();
-      const timer = setTimeout(() => ctrl.abort(), 8000);
-      const res = await fetch(
+      // Promise.race timeout — more compatible with RN's fetch than AbortController.signal
+      const timeoutP = new Promise<null>(resolve => setTimeout(() => resolve(null), 10000));
+      const fetchP = fetch(
         `https://itunes.apple.com/search?term=${encoded}&media=music&limit=5&country=US`,
-        { signal: ctrl.signal },
-      );
-      clearTimeout(timer);
-      if (!res.ok) return null;
-      const data = await res.json();
-      return (data.results?.[0]?.previewUrl as string) ?? null;
+      ).then(async r => {
+        if (!r.ok) return null;
+        const d = await r.json();
+        return (d.results?.[0]?.previewUrl as string) ?? null;
+      }).catch(() => null);
+      return await Promise.race([fetchP, timeoutP]);
     } catch {
       return null;
     }
@@ -194,30 +194,41 @@ export default function EditorScreen() {
 
   // Eagerly pre-fetched local path for the selected song's iTunes 30-s preview.
   const [cachedAudioUri, setCachedAudioUri] = useState<string | null>(null);
-  const cachedAudioSongId = useRef<string>('');
+  const [audioStatus, setAudioStatus] = useState<'idle' | 'loading' | 'ready' | 'failed'>('idle');
+  // Use title+artist as the dedup key — AI always returns id='ai_best' so id alone isn't unique.
+  const cachedAudioKey = useRef<string>('');
   // Holds the in-progress (or already-resolved) prefetch Promise so publish can
   // await it if the user taps publish before the download finishes.
   const audioFetchPromise = useRef<Promise<string | null>>(Promise.resolve(null));
 
   const prefetchAudioForSong = useCallback((id: string, title: string, artist: string) => {
-    if (id === cachedAudioSongId.current) return;
-    cachedAudioSongId.current = id;
+    const key = `${title}::${artist}`;
+    if (key === cachedAudioKey.current) return;
+    cachedAudioKey.current = key;
     setCachedAudioUri(null);
+    setAudioStatus('loading');
     const p: Promise<string | null> = (async () => {
       try {
         const previewUrl = await fetchItunesPreviewUrl(title, artist);
-        if (!previewUrl) { console.warn('[prefetchAudio] no iTunes preview for:', title, artist); return null; }
+        if (!previewUrl) {
+          console.warn('[prefetchAudio] no iTunes preview for:', title, artist);
+          setAudioStatus('failed');
+          return null;
+        }
         const dest = `${FileSystem.cacheDirectory}bgaudio_${Date.now()}.m4a`;
         const dl = await FileSystem.downloadAsync(previewUrl, dest);
         if (dl.status === 200) {
           setCachedAudioUri(dl.uri);
-          console.log('[prefetchAudio] cached:', dl.uri);
+          setAudioStatus('ready');
+          console.log('[prefetchAudio] ready:', dl.uri);
           return dl.uri;
         }
         console.warn('[prefetchAudio] download status:', dl.status);
+        setAudioStatus('failed');
         return null;
       } catch (e) {
         console.warn('[prefetchAudio] failed:', e);
+        setAudioStatus('failed');
         return null;
       }
     })();
@@ -286,8 +297,12 @@ export default function EditorScreen() {
     setSelectedAudioId(video.audio?.id ?? '');
     setPlatforms(video.platforms ?? ['tiktok']);
     setThumbnailUri(video.thumbnail ?? null);
-    if (video.audio?.id && video.audio?.title && video.audio?.artist) {
-      prefetchAudioForSong(video.audio.id, video.audio.title, video.audio.artist);
+    if (video.audio?.title && video.audio?.artist) {
+      prefetchAudioForSong(video.audio.id ?? 'saved', video.audio.title, video.audio.artist);
+    } else {
+      // No saved audio yet — pre-warm with the first MOCK song so there's always
+      // something ready while the AI generator runs.
+      prefetchAudioForSong(MOCK_TRENDING_AUDIO[0].id, MOCK_TRENDING_AUDIO[0].title, MOCK_TRENDING_AUDIO[0].artist);
     }
   }, [video?.id]);
 
@@ -806,6 +821,19 @@ export default function EditorScreen() {
                       <MaterialIcons name="check-circle" size={20} color={Colors.primary} />
                     </View>
                     {aiPickedSong.reason ? <Text style={styles.aiReasonText}>{aiPickedSong.reason}</Text> : null}
+                  </View>
+                ) : null}
+
+                {/* Music mixing status pill */}
+                {audioStatus !== 'idle' ? (
+                  <View style={styles.audioStatusRow}>
+                    {audioStatus === 'loading' ? (
+                      <><ActivityIndicator size="small" color={Colors.primaryLight} style={{ marginRight: 6 }} /><Text style={styles.audioStatusText}>Fetching preview…</Text></>
+                    ) : audioStatus === 'ready' ? (
+                      <><MaterialIcons name="music-note" size={14} color={Colors.emerald} /><Text style={[styles.audioStatusText, { color: Colors.emerald }]}>Music ready to mix</Text></>
+                    ) : (
+                      <><MaterialIcons name="music-off" size={14} color={Colors.amber} /><Text style={[styles.audioStatusText, { color: Colors.amber }]}>Preview unavailable — no music will be mixed</Text></>
+                    )}
                   </View>
                 ) : null}
 
@@ -1328,6 +1356,8 @@ const styles = StyleSheet.create({
   },
   aiReasonText: { fontSize: FontSize.xs, color: Colors.textSecondary, lineHeight: 16, fontStyle: 'italic', marginTop: 2, includeFontPadding: false },
   orPickText: { fontSize: FontSize.xs, color: Colors.textMuted, fontWeight: FontWeight.medium, includeFontPadding: false },
+  audioStatusRow: { flexDirection: 'row', alignItems: 'center', gap: 5, paddingVertical: 6, paddingHorizontal: 10, backgroundColor: Colors.surfaceElevated, borderRadius: Radius.md, borderWidth: 1, borderColor: Colors.surfaceBorder },
+  audioStatusText: { fontSize: FontSize.xs, color: Colors.textSecondary, includeFontPadding: false },
   hookTypes: { flexDirection: 'row', gap: Spacing.sm },
   hookTypeCard: {
     flex: 1, backgroundColor: Colors.surfaceElevated, borderRadius: Radius.md,

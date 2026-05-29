@@ -307,28 +307,49 @@ RCT_EXPORT_MODULE();
                     : [NSURL fileURLWithPath:backgroundAudioUri];
                 if (bgUrl) {
                     AVURLAsset *bgAsset = [AVURLAsset URLAssetWithURL:bgUrl options:nil];
+
+                    // The deprecated sync tracksWithMediaType: may return 0 tracks if the
+                    // asset hasn't finished loading.  Block until AVFoundation confirms.
+                    dispatch_semaphore_t bgSema = dispatch_semaphore_create(0);
+                    [bgAsset loadValuesAsynchronouslyForKeys:@[@"tracks"] completionHandler:^{
+                        dispatch_semaphore_signal(bgSema);
+                    }];
+                    // Wait up to 6 s for a local m4a — should be near-instant.
+                    dispatch_semaphore_wait(bgSema,
+                        dispatch_time(DISPATCH_TIME_NOW, (int64_t)(6 * NSEC_PER_SEC)));
+
+                    NSError *bgLoadErr = nil;
+                    AVKeyValueStatus bgStatus = [bgAsset statusOfValueForKey:@"tracks"
+                                                                       error:&bgLoadErr];
+                    if (bgStatus != AVKeyValueStatusLoaded) {
+                        NSLog(@"[VideoTextOverlay] bg asset not loaded: status=%ld err=%@",
+                              (long)bgStatus, bgLoadErr.localizedDescription);
+                    } else {
 #pragma clang diagnostic push
 #pragma clang diagnostic ignored "-Wdeprecated-declarations"
-                    NSArray *bgTracks = [bgAsset tracksWithMediaType:AVMediaTypeAudio];
+                        NSArray *bgTracks = [bgAsset tracksWithMediaType:AVMediaTypeAudio];
 #pragma clang diagnostic pop
-                    if (bgTracks.count) {
-                        bgAudio = [comp addMutableTrackWithMediaType:AVMediaTypeAudio
-                                                    preferredTrackID:kCMPersistentTrackID_Invalid];
-                        AVAssetTrack *bgTrack = bgTracks.firstObject;
-                        CMTime bgDur = bgTrack.timeRange.duration;
-                        CMTime insertAt = kCMTimeZero;
-                        // Loop the preview clip to cover the full video duration.
-                        while (CMTimeCompare(insertAt, duration) < 0) {
-                            CMTime remaining = CMTimeSubtract(duration, insertAt);
-                            CMTime seg = CMTimeMinimum(bgDur, remaining);
-                            NSError *bgErr = nil;
-                            [bgAudio insertTimeRange:CMTimeRangeMake(kCMTimeZero, seg)
-                                            ofTrack:bgTrack atTime:insertAt error:&bgErr];
-                            if (bgErr) { NSLog(@"[VideoTextOverlay] bg insert error: %@", bgErr); break; }
-                            insertAt = CMTimeAdd(insertAt, seg);
+                        if (bgTracks.count) {
+                            bgAudio = [comp addMutableTrackWithMediaType:AVMediaTypeAudio
+                                                        preferredTrackID:kCMPersistentTrackID_Invalid];
+                            AVAssetTrack *bgTrack = bgTracks.firstObject;
+                            CMTime bgDur = bgTrack.timeRange.duration;
+                            CMTime insertAt = kCMTimeZero;
+                            // Loop the preview clip to cover the full video duration.
+                            while (CMTimeCompare(insertAt, duration) < 0) {
+                                CMTime remaining = CMTimeSubtract(duration, insertAt);
+                                CMTime seg = CMTimeMinimum(bgDur, remaining);
+                                NSError *bgErr = nil;
+                                [bgAudio insertTimeRange:CMTimeRangeMake(kCMTimeZero, seg)
+                                                ofTrack:bgTrack atTime:insertAt error:&bgErr];
+                                if (bgErr) { NSLog(@"[VideoTextOverlay] bg insert error: %@", bgErr); break; }
+                                insertAt = CMTimeAdd(insertAt, seg);
+                            }
+                            NSLog(@"[VideoTextOverlay] bg audio inserted, loops=%d",
+                                  (int)(CMTimeGetSeconds(duration) / CMTimeGetSeconds(bgDur) + 1));
+                        } else {
+                            NSLog(@"[VideoTextOverlay] bg asset has 0 audio tracks");
                         }
-                    } else {
-                        NSLog(@"[VideoTextOverlay] no audio tracks in background asset");
                     }
                 }
             }
