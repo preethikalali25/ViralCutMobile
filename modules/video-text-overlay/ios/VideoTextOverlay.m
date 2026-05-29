@@ -242,6 +242,11 @@ RCT_EXPORT_MODULE();
 
 // Core processing — accepts any AVAsset (AVURLAsset, AVComposition, etc.)
 // Using the asset directly preserves Photos sandbox access rights for audio.
+//
+// Two-step export to avoid AVAssetExportSession silently dropping audioMix
+// when a customVideoCompositorClass is also set on the same session:
+//   Step 1 — video-only composition + custom compositor → rotated + text temp file
+//   Step 2 — step1 video + original audio + bg audio, NO videoComposition → final file
 - (void)processAsset:(AVAsset *)asset
                 text:(NSString *)text
   backgroundAudioUri:(NSString *)backgroundAudioUri
@@ -264,95 +269,26 @@ RCT_EXPORT_MODULE();
 
             CMTimeRange timeRange = CMTimeRangeMake(kCMTimeZero, duration);
 
-            // renderSize = display size after applying the rotation
             CGSize ts = CGSizeApplyAffineTransform(naturalSize, pref);
             CGSize renderSize = CGSizeMake(fabs(ts.width), fabs(ts.height));
             if (renderSize.width < 1 || renderSize.height < 1) { resolve(originalUri); return; }
 
-            AVMutableComposition *comp = [AVMutableComposition composition];
+            // ---------------------------------------------------------------
+            // STEP 1 — video-only + custom compositor (rotation + text)
+            // Audio intentionally excluded so the custom compositor has no
+            // conflict with audioMix during export.
+            // ---------------------------------------------------------------
+            AVMutableComposition *comp1 = [AVMutableComposition composition];
             AVMutableCompositionTrack *cv =
-                [comp addMutableTrackWithMediaType:AVMediaTypeVideo
-                                  preferredTrackID:kCMPersistentTrackID_Invalid];
+                [comp1 addMutableTrackWithMediaType:AVMediaTypeVideo
+                                   preferredTrackID:kCMPersistentTrackID_Invalid];
             if (!cv) { resolve(originalUri); return; }
             NSError *err = nil;
             [cv insertTimeRange:timeRange ofTrack:vTrack atTime:kCMTimeZero error:&err];
             if (err) { resolve(originalUri); return; }
-            // Pixels are already rotated by the vImage compositor, so clear the
-            // track transform — otherwise players apply the rotation a second time.
+            // Pixels are already rotated by vImage; clear track transform so
+            // players don't apply the rotation a second time.
             [cv setPreferredTransform:CGAffineTransformIdentity];
-
-            // Hoist ca so we can reference it when building the audioMix below.
-            AVMutableCompositionTrack *ca = nil;
-            if (audioTracks.count) {
-                ca = [comp addMutableTrackWithMediaType:AVMediaTypeAudio
-                                       preferredTrackID:kCMPersistentTrackID_Invalid];
-                AVAssetTrack *aTrack = audioTracks.firstObject;
-                CMTime audioDur = CMTimeMinimum(aTrack.timeRange.duration, duration);
-                NSError *aErr = nil;
-                [ca insertTimeRange:CMTimeRangeMake(kCMTimeZero, audioDur)
-                            ofTrack:aTrack atTime:kCMTimeZero error:&aErr];
-                if (aErr) {
-                    NSLog(@"[VideoTextOverlay] audio insert error: %@", aErr.localizedDescription);
-                    ca = nil;
-                }
-            } else {
-                NSLog(@"[VideoTextOverlay] no audio tracks in source asset");
-            }
-
-            // Background music track — loop to fill the video duration.
-            AVMutableCompositionTrack *bgAudio = nil;
-            if (backgroundAudioUri.length > 0) {
-                NSURL *bgUrl = [backgroundAudioUri hasPrefix:@"file://"]
-                    ? [NSURL URLWithString:backgroundAudioUri]
-                    : [NSURL fileURLWithPath:backgroundAudioUri];
-                if (bgUrl) {
-                    AVURLAsset *bgAsset = [AVURLAsset URLAssetWithURL:bgUrl options:nil];
-
-                    // The deprecated sync tracksWithMediaType: may return 0 tracks if the
-                    // asset hasn't finished loading.  Block until AVFoundation confirms.
-                    dispatch_semaphore_t bgSema = dispatch_semaphore_create(0);
-                    [bgAsset loadValuesAsynchronouslyForKeys:@[@"tracks"] completionHandler:^{
-                        dispatch_semaphore_signal(bgSema);
-                    }];
-                    // Wait up to 6 s for a local m4a — should be near-instant.
-                    dispatch_semaphore_wait(bgSema,
-                        dispatch_time(DISPATCH_TIME_NOW, (int64_t)(6 * NSEC_PER_SEC)));
-
-                    NSError *bgLoadErr = nil;
-                    AVKeyValueStatus bgStatus = [bgAsset statusOfValueForKey:@"tracks"
-                                                                       error:&bgLoadErr];
-                    if (bgStatus != AVKeyValueStatusLoaded) {
-                        NSLog(@"[VideoTextOverlay] bg asset not loaded: status=%ld err=%@",
-                              (long)bgStatus, bgLoadErr.localizedDescription);
-                    } else {
-#pragma clang diagnostic push
-#pragma clang diagnostic ignored "-Wdeprecated-declarations"
-                        NSArray *bgTracks = [bgAsset tracksWithMediaType:AVMediaTypeAudio];
-#pragma clang diagnostic pop
-                        if (bgTracks.count) {
-                            bgAudio = [comp addMutableTrackWithMediaType:AVMediaTypeAudio
-                                                        preferredTrackID:kCMPersistentTrackID_Invalid];
-                            AVAssetTrack *bgTrack = bgTracks.firstObject;
-                            CMTime bgDur = bgTrack.timeRange.duration;
-                            CMTime insertAt = kCMTimeZero;
-                            // Loop the preview clip to cover the full video duration.
-                            while (CMTimeCompare(insertAt, duration) < 0) {
-                                CMTime remaining = CMTimeSubtract(duration, insertAt);
-                                CMTime seg = CMTimeMinimum(bgDur, remaining);
-                                NSError *bgErr = nil;
-                                [bgAudio insertTimeRange:CMTimeRangeMake(kCMTimeZero, seg)
-                                                ofTrack:bgTrack atTime:insertAt error:&bgErr];
-                                if (bgErr) { NSLog(@"[VideoTextOverlay] bg insert error: %@", bgErr); break; }
-                                insertAt = CMTimeAdd(insertAt, seg);
-                            }
-                            NSLog(@"[VideoTextOverlay] bg audio inserted, loops=%d",
-                                  (int)(CMTimeGetSeconds(duration) / CMTimeGetSeconds(bgDur) + 1));
-                        } else {
-                            NSLog(@"[VideoTextOverlay] bg asset has 0 audio tracks");
-                        }
-                    }
-                }
-            }
 
             uint8_t vRot = [VideoTextOverlay vRotationForTransform:pref];
             CGFloat fs   = renderSize.width * 0.072;
@@ -373,50 +309,180 @@ RCT_EXPORT_MODULE();
             vc.renderSize    = renderSize;
             vc.instructions  = @[inst];
 
-            NSString *fname = [NSString stringWithFormat:@"hook_%ld.mp4",
-                               (long)[[NSDate date] timeIntervalSince1970]];
+            long ts1 = (long)[[NSDate date] timeIntervalSince1970];
+            NSURL *temp1 = [NSFileManager.defaultManager.temporaryDirectory
+                            URLByAppendingPathComponent:
+                                [NSString stringWithFormat:@"hook_step1_%ld.mp4", ts1]];
+            [NSFileManager.defaultManager removeItemAtURL:temp1 error:nil];
+
+            AVAssetExportSession *ses1 =
+                [[AVAssetExportSession alloc] initWithAsset:comp1
+                                                 presetName:AVAssetExportPresetHighestQuality];
+            if (!ses1) { resolve(originalUri); return; }
+            ses1.outputURL        = temp1;
+            ses1.outputFileType   = AVFileTypeMPEG4;
+            ses1.videoComposition = vc; // custom compositor, no audioMix
+
+            dispatch_semaphore_t step1Sema = dispatch_semaphore_create(0);
+            __block BOOL step1OK = NO;
+            [ses1 exportAsynchronouslyWithCompletionHandler:^{
+                step1OK = (ses1.status == AVAssetExportSessionStatusCompleted);
+                if (!step1OK) {
+                    NSLog(@"[VideoTextOverlay] step1 export error: %@",
+                          ses1.error.localizedDescription);
+                }
+                dispatch_semaphore_signal(step1Sema);
+            }];
+            dispatch_semaphore_wait(step1Sema,
+                dispatch_time(DISPATCH_TIME_NOW, (int64_t)(120 * NSEC_PER_SEC)));
+
+            if (!step1OK) { resolve(originalUri); return; }
+
+            // ---------------------------------------------------------------
+            // STEP 2 — audio mixing, NO custom compositor
+            // videoComposition is NOT set so audioMix is guaranteed to apply.
+            // Video source = step1 output (already rotated + text burned).
+            // ---------------------------------------------------------------
+            AVURLAsset *step1Asset = [AVURLAsset URLAssetWithURL:temp1 options:nil];
+            dispatch_semaphore_t s1Sema = dispatch_semaphore_create(0);
+            [step1Asset loadValuesAsynchronouslyForKeys:@[@"tracks"] completionHandler:^{
+                dispatch_semaphore_signal(s1Sema);
+            }];
+            dispatch_semaphore_wait(s1Sema,
+                dispatch_time(DISPATCH_TIME_NOW, (int64_t)(10 * NSEC_PER_SEC)));
+
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Wdeprecated-declarations"
+            NSArray *step1VideoTracks = [step1Asset tracksWithMediaType:AVMediaTypeVideo];
+#pragma clang diagnostic pop
+            if (!step1VideoTracks.count) {
+                // Step 1 output has no video — return it as-is (video+text, no audio)
+                resolve(temp1.absoluteString);
+                return;
+            }
+
+            AVMutableComposition *comp2 = [AVMutableComposition composition];
+            AVMutableCompositionTrack *cv2 =
+                [comp2 addMutableTrackWithMediaType:AVMediaTypeVideo
+                                   preferredTrackID:kCMPersistentTrackID_Invalid];
+            NSError *v2Err = nil;
+            [cv2 insertTimeRange:timeRange ofTrack:step1VideoTracks.firstObject
+                          atTime:kCMTimeZero error:&v2Err];
+            if (v2Err) { resolve(temp1.absoluteString); return; }
+
+            // Original audio from the source asset (not from step1, which has none).
+            AVMutableCompositionTrack *ca2 = nil;
+            if (audioTracks.count) {
+                AVAssetTrack *aTrack = audioTracks.firstObject;
+                ca2 = [comp2 addMutableTrackWithMediaType:AVMediaTypeAudio
+                                          preferredTrackID:kCMPersistentTrackID_Invalid];
+                CMTime audioDur = CMTimeMinimum(aTrack.timeRange.duration, duration);
+                NSError *aErr = nil;
+                [ca2 insertTimeRange:CMTimeRangeMake(kCMTimeZero, audioDur)
+                             ofTrack:aTrack atTime:kCMTimeZero error:&aErr];
+                if (aErr) {
+                    NSLog(@"[VideoTextOverlay] step2 orig audio insert error: %@",
+                          aErr.localizedDescription);
+                    ca2 = nil;
+                }
+            } else {
+                NSLog(@"[VideoTextOverlay] no audio tracks in source asset");
+            }
+
+            // Background music — loop to fill video duration.
+            AVMutableCompositionTrack *bgAudio2 = nil;
+            if (backgroundAudioUri.length > 0) {
+                NSURL *bgUrl = [backgroundAudioUri hasPrefix:@"file://"]
+                    ? [NSURL URLWithString:backgroundAudioUri]
+                    : [NSURL fileURLWithPath:backgroundAudioUri];
+                if (bgUrl) {
+                    AVURLAsset *bgAsset = [AVURLAsset URLAssetWithURL:bgUrl options:nil];
+                    dispatch_semaphore_t bgSema = dispatch_semaphore_create(0);
+                    [bgAsset loadValuesAsynchronouslyForKeys:@[@"tracks"] completionHandler:^{
+                        dispatch_semaphore_signal(bgSema);
+                    }];
+                    dispatch_semaphore_wait(bgSema,
+                        dispatch_time(DISPATCH_TIME_NOW, (int64_t)(6 * NSEC_PER_SEC)));
+
+                    NSError *bgLoadErr = nil;
+                    AVKeyValueStatus bgStatus = [bgAsset statusOfValueForKey:@"tracks"
+                                                                       error:&bgLoadErr];
+                    if (bgStatus == AVKeyValueStatusLoaded) {
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Wdeprecated-declarations"
+                        NSArray *bgTracks = [bgAsset tracksWithMediaType:AVMediaTypeAudio];
+#pragma clang diagnostic pop
+                        if (bgTracks.count) {
+                            bgAudio2 = [comp2 addMutableTrackWithMediaType:AVMediaTypeAudio
+                                                           preferredTrackID:kCMPersistentTrackID_Invalid];
+                            AVAssetTrack *bgTrack = bgTracks.firstObject;
+                            CMTime bgDur = bgTrack.timeRange.duration;
+                            CMTime insertAt = kCMTimeZero;
+                            while (CMTimeCompare(insertAt, duration) < 0) {
+                                CMTime remaining = CMTimeSubtract(duration, insertAt);
+                                CMTime seg = CMTimeMinimum(bgDur, remaining);
+                                NSError *bgErr = nil;
+                                [bgAudio2 insertTimeRange:CMTimeRangeMake(kCMTimeZero, seg)
+                                                  ofTrack:bgTrack atTime:insertAt error:&bgErr];
+                                if (bgErr) {
+                                    NSLog(@"[VideoTextOverlay] bg insert error: %@", bgErr);
+                                    break;
+                                }
+                                insertAt = CMTimeAdd(insertAt, seg);
+                            }
+                            NSLog(@"[VideoTextOverlay] bg audio ready for step2, loops=%d",
+                                  (int)(CMTimeGetSeconds(duration) / CMTimeGetSeconds(bgDur) + 1));
+                        } else {
+                            NSLog(@"[VideoTextOverlay] bg asset has 0 audio tracks");
+                        }
+                    } else {
+                        NSLog(@"[VideoTextOverlay] bg asset not loaded: status=%ld err=%@",
+                              (long)bgStatus, bgLoadErr.localizedDescription);
+                    }
+                }
+            }
+
             NSURL *out = [NSFileManager.defaultManager.temporaryDirectory
-                          URLByAppendingPathComponent:fname];
+                          URLByAppendingPathComponent:
+                              [NSString stringWithFormat:@"hook_%ld.mp4", ts1 + 1]];
             [NSFileManager.defaultManager removeItemAtURL:out error:nil];
 
-            AVAssetExportSession *ses =
-                [[AVAssetExportSession alloc] initWithAsset:comp
+            AVAssetExportSession *ses2 =
+                [[AVAssetExportSession alloc] initWithAsset:comp2
                                                  presetName:AVAssetExportPresetHighestQuality];
-            if (!ses) { resolve(originalUri); return; }
-            ses.outputURL        = out;
-            ses.outputFileType   = AVFileTypeMPEG4;
-            ses.videoComposition = vc;
+            if (!ses2) { resolve(temp1.absoluteString); return; }
+            ses2.outputURL      = out;
+            ses2.outputFileType = AVFileTypeMPEG4;
+            // videoComposition intentionally NOT set — audioMix works reliably without it
 
-            // When a custom videoCompositorClass is set, AVAssetExportSession drops
-            // audio unless audioMix is explicitly provided. Build a mix with:
-            //   • original audio at full volume (or ducked to 40% when bg music plays)
-            //   • background music at 70%
-            if (ca || bgAudio) {
+            if (ca2 || bgAudio2) {
                 NSMutableArray *params = [NSMutableArray array];
-                if (ca) {
+                if (ca2) {
                     AVMutableAudioMixInputParameters *p =
-                        [AVMutableAudioMixInputParameters audioMixInputParametersWithTrack:ca];
-                    [p setVolume:(bgAudio ? 0.4f : 1.0f) atTime:kCMTimeZero];
+                        [AVMutableAudioMixInputParameters audioMixInputParametersWithTrack:ca2];
+                    [p setVolume:(bgAudio2 ? 0.4f : 1.0f) atTime:kCMTimeZero];
                     [params addObject:p];
                 }
-                if (bgAudio) {
+                if (bgAudio2) {
                     AVMutableAudioMixInputParameters *p =
-                        [AVMutableAudioMixInputParameters audioMixInputParametersWithTrack:bgAudio];
+                        [AVMutableAudioMixInputParameters audioMixInputParametersWithTrack:bgAudio2];
                     [p setVolume:0.7f atTime:kCMTimeZero];
                     [params addObject:p];
                 }
                 AVMutableAudioMix *audioMix = [AVMutableAudioMix audioMix];
                 audioMix.inputParameters = params;
-                ses.audioMix = audioMix;
+                ses2.audioMix = audioMix;
             }
 
-            [ses exportAsynchronouslyWithCompletionHandler:^{
-                if (ses.status == AVAssetExportSessionStatusCompleted) {
+            [ses2 exportAsynchronouslyWithCompletionHandler:^{
+                if (ses2.status == AVAssetExportSessionStatusCompleted) {
+                    [NSFileManager.defaultManager removeItemAtURL:temp1 error:nil];
                     resolve(out.absoluteString);
                 } else {
-                    NSLog(@"[VideoTextOverlay] export error: %@",
-                          ses.error.localizedDescription);
-                    resolve(originalUri);
+                    NSLog(@"[VideoTextOverlay] step2 export error: %@",
+                          ses2.error.localizedDescription);
+                    // Fall back to step1 result (text+video, no audio mix)
+                    resolve(temp1.absoluteString);
                 }
             }];
 
