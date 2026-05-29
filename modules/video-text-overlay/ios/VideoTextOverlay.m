@@ -392,32 +392,64 @@ RCT_EXPORT_MODULE();
             // Background music — loop to fill video duration.
             AVMutableCompositionTrack *bgAudio2 = nil;
             if (backgroundAudioUri.length > 0) {
+                // Primary URL from file:// string; if URLWithString: returns nil
+                // (e.g. unencoded '@' from Expo path), decode and retry with fileURLWithPath:.
                 NSURL *bgUrl = [backgroundAudioUri hasPrefix:@"file://"]
                     ? [NSURL URLWithString:backgroundAudioUri]
                     : [NSURL fileURLWithPath:backgroundAudioUri];
-                if (bgUrl) {
-                    AVURLAsset *bgAsset = [AVURLAsset URLAssetWithURL:bgUrl options:nil];
-                    dispatch_semaphore_t bgSema = dispatch_semaphore_create(0);
-                    [bgAsset loadValuesAsynchronouslyForKeys:@[@"tracks"] completionHandler:^{
-                        dispatch_semaphore_signal(bgSema);
-                    }];
-                    dispatch_semaphore_wait(bgSema,
-                        dispatch_time(DISPATCH_TIME_NOW, (int64_t)(6 * NSEC_PER_SEC)));
 
-                    NSError *bgLoadErr = nil;
-                    AVKeyValueStatus bgStatus = [bgAsset statusOfValueForKey:@"tracks"
-                                                                       error:&bgLoadErr];
-                    if (bgStatus == AVKeyValueStatusLoaded) {
+                if (!bgUrl && [backgroundAudioUri hasPrefix:@"file://"]) {
+                    NSString *decoded = [[backgroundAudioUri substringFromIndex:7]
+                                        stringByRemovingPercentEncoding];
+                    if (decoded) bgUrl = [NSURL fileURLWithPath:decoded];
+                    NSLog(@"[VideoTextOverlay] ⚠ bgUrl nil from URLWithString, fallback path=%@", decoded);
+                }
+
+                NSLog(@"[VideoTextOverlay] bgUrl=%@", bgUrl ?: @"NIL");
+
+                if (bgUrl) {
+                    NSString *bgPath = bgUrl.path;
+                    NSLog(@"[VideoTextOverlay] bgPath=%@", bgPath);
+
+                    NSError *attrErr = nil;
+                    NSDictionary *attrs = [[NSFileManager defaultManager]
+                                          attributesOfItemAtPath:bgPath error:&attrErr];
+                    long long fileSize = [[attrs objectForKey:NSFileSize] longLongValue];
+                    BOOL fileExists = [[NSFileManager defaultManager] fileExistsAtPath:bgPath];
+                    NSLog(@"[VideoTextOverlay] bg file: exists=%@ size=%lld attrErr=%@",
+                          fileExists ? @"YES" : @"NO", fileSize, attrErr.localizedDescription);
+
+                    if (!fileExists || fileSize < 1000) {
+                        NSLog(@"[VideoTextOverlay] ⚠ bg file missing or too small — skipping");
+                    } else {
+                        AVURLAsset *bgAsset = [AVURLAsset URLAssetWithURL:bgUrl options:nil];
+                        dispatch_semaphore_t bgSema = dispatch_semaphore_create(0);
+                        [bgAsset loadValuesAsynchronouslyForKeys:@[@"tracks"] completionHandler:^{
+                            dispatch_semaphore_signal(bgSema);
+                        }];
+                        intptr_t bgWait = dispatch_semaphore_wait(bgSema,
+                            dispatch_time(DISPATCH_TIME_NOW, (int64_t)(8 * NSEC_PER_SEC)));
+                        NSLog(@"[VideoTextOverlay] bg load: %s", bgWait == 0 ? "signaled" : "TIMED OUT");
+
+                        NSError *bgLoadErr = nil;
+                        AVKeyValueStatus bgStatus = [bgAsset statusOfValueForKey:@"tracks"
+                                                                           error:&bgLoadErr];
+                        NSLog(@"[VideoTextOverlay] bg status=%ld err=%@",
+                              (long)bgStatus, bgLoadErr.localizedDescription);
+
 #pragma clang diagnostic push
 #pragma clang diagnostic ignored "-Wdeprecated-declarations"
                         NSArray *bgTracks = [bgAsset tracksWithMediaType:AVMediaTypeAudio];
 #pragma clang diagnostic pop
-                        if (bgTracks.count) {
+                        NSLog(@"[VideoTextOverlay] bg audio tracks=%lu", (unsigned long)bgTracks.count);
+
+                        if (bgTracks.count > 0) {
                             bgAudio2 = [comp2 addMutableTrackWithMediaType:AVMediaTypeAudio
                                                            preferredTrackID:kCMPersistentTrackID_Invalid];
                             AVAssetTrack *bgTrack = bgTracks.firstObject;
                             CMTime bgDur = bgTrack.timeRange.duration;
                             CMTime insertAt = kCMTimeZero;
+                            int loopCount = 0;
                             while (CMTimeCompare(insertAt, duration) < 0) {
                                 CMTime remaining = CMTimeSubtract(duration, insertAt);
                                 CMTime seg = CMTimeMinimum(bgDur, remaining);
@@ -425,20 +457,21 @@ RCT_EXPORT_MODULE();
                                 [bgAudio2 insertTimeRange:CMTimeRangeMake(kCMTimeZero, seg)
                                                   ofTrack:bgTrack atTime:insertAt error:&bgErr];
                                 if (bgErr) {
-                                    NSLog(@"[VideoTextOverlay] bg insert error: %@", bgErr);
+                                    NSLog(@"[VideoTextOverlay] bg insert error loop=%d: %@",
+                                          loopCount, bgErr.localizedDescription);
                                     break;
                                 }
                                 insertAt = CMTimeAdd(insertAt, seg);
+                                loopCount++;
                             }
-                            NSLog(@"[VideoTextOverlay] bg audio ready for step2, loops=%d",
-                                  (int)(CMTimeGetSeconds(duration) / CMTimeGetSeconds(bgDur) + 1));
+                            NSLog(@"[VideoTextOverlay] bg inserted: %d loops, dur=%.1fs",
+                                  loopCount, CMTimeGetSeconds(duration));
                         } else {
-                            NSLog(@"[VideoTextOverlay] bg asset has 0 audio tracks");
+                            NSLog(@"[VideoTextOverlay] ⚠ bg 0 audio tracks (corrupt/unsupported?)");
                         }
-                    } else {
-                        NSLog(@"[VideoTextOverlay] bg asset not loaded: status=%ld err=%@",
-                              (long)bgStatus, bgLoadErr.localizedDescription);
                     }
+                } else {
+                    NSLog(@"[VideoTextOverlay] ⚠ bgUrl is nil for URI=%@", backgroundAudioUri);
                 }
             }
 
@@ -515,8 +548,10 @@ RCT_EXPORT_METHOD(burnText:(NSString *)videoUri
                   rejecter:(RCTPromiseRejectBlock)reject) {
 
     NSString *bg = backgroundAudioUri ?: @"";
-    NSLog(@"[VideoTextOverlay] burnText called — videoUri=%@ bgAudio=%@ (len=%lu)",
-          videoUri, bg.length ? bg : @"(empty)", (unsigned long)bg.length);
+    // VERSION MARKER — update this whenever the native code changes so we can
+    // confirm the latest build is running from Xcode/device logs.
+    NSLog(@"[VideoTextOverlay] v4 burnText — videoUri=%@ bgLen=%lu",
+          videoUri, (unsigned long)bg.length);
 
     if (!videoUri || (!text.length && !bg.length)) {
         resolve(videoUri ?: @""); return;
