@@ -189,6 +189,7 @@ export default function EditorScreen() {
   const [uploadingToStorage, setUploadingToStorage] = useState(false);
   const [uploadProgress, setUploadProgress] = useState(0);
   const [burningOverlay, setBurningOverlay] = useState(false);
+  const [burnAudioLabel, setBurnAudioLabel] = useState<string | null>(null);
   const [generatingThumbnail, setGeneratingThumbnail] = useState(false);
   const [thumbnailUri, setThumbnailUri] = useState<string | null>(video?.thumbnail ?? null);
 
@@ -205,14 +206,15 @@ export default function EditorScreen() {
     const key = `${title}::${artist}`;
     if (key === cachedAudioKey.current) return;
     cachedAudioKey.current = key;
-    setCachedAudioUri(null);
+    // Do NOT wipe cachedAudioUri here — keep the previous download as fallback
+    // while the new one loads so we always have something to mix.
     setAudioStatus('loading');
     const p: Promise<string | null> = (async () => {
       try {
         const previewUrl = await fetchItunesPreviewUrl(title, artist);
         if (!previewUrl) {
           console.warn('[prefetchAudio] no iTunes preview for:', title, artist);
-          setAudioStatus('failed');
+          setAudioStatus(prev => prev === 'loading' ? 'failed' : prev);
           return null;
         }
         const dest = `${FileSystem.cacheDirectory}bgaudio_${Date.now()}.m4a`;
@@ -224,11 +226,11 @@ export default function EditorScreen() {
           return dl.uri;
         }
         console.warn('[prefetchAudio] download status:', dl.status);
-        setAudioStatus('failed');
+        setAudioStatus(prev => prev === 'loading' ? 'failed' : prev);
         return null;
       } catch (e) {
         console.warn('[prefetchAudio] failed:', e);
-        setAudioStatus('failed');
+        setAudioStatus(prev => prev === 'loading' ? 'failed' : prev);
         return null;
       }
     })();
@@ -237,21 +239,58 @@ export default function EditorScreen() {
 
   // ── Edge Function Test Panel ──
   const [showTestModal, setShowTestModal] = useState(false);
-  type TestKey = 'ai-content-generator' | 'wayinvideo-analyzer' | 'tiktok-publisher';
+  type TestKey = 'ai-content-generator' | 'wayinvideo-analyzer' | 'tiktok-publisher' | 'audio-pipeline';
   const [testLoading, setTestLoading] = useState<Record<TestKey, boolean>>({
     'ai-content-generator': false,
     'wayinvideo-analyzer': false,
     'tiktok-publisher': false,
+    'audio-pipeline': false,
   });
   const [testResults, setTestResults] = useState<Record<TestKey, string | null>>({
     'ai-content-generator': null,
     'wayinvideo-analyzer': null,
     'tiktok-publisher': null,
+    'audio-pipeline': null,
   });
 
   const runFunctionTest = async (fn: TestKey) => {
     setTestLoading(prev => ({ ...prev, [fn]: true }));
     setTestResults(prev => ({ ...prev, [fn]: null }));
+
+    if (fn === 'audio-pipeline') {
+      // End-to-end audio pipeline test: iTunes search → download → show result
+      try {
+        const song = MOCK_TRENDING_AUDIO[0]; // APT. by ROSE & Bruno Mars — known real song
+        const steps: string[] = [];
+        steps.push(`Searching iTunes: "${song.title}" by ${song.artist}`);
+        const previewUrl = await fetchItunesPreviewUrl(song.title, song.artist);
+        if (!previewUrl) {
+          setTestResults(prev => ({ ...prev, [fn]: steps.concat('❌ No preview URL returned').join('\n') }));
+          setTestLoading(prev => ({ ...prev, [fn]: false }));
+          return;
+        }
+        steps.push(`✓ Preview URL: ${previewUrl.slice(0, 60)}...`);
+        const dest = `${FileSystem.cacheDirectory}test_audio_${Date.now()}.m4a`;
+        steps.push('Downloading preview...');
+        const dl = await FileSystem.downloadAsync(previewUrl, dest);
+        steps.push(`Download status: ${dl.status}`);
+        if (dl.status === 200) {
+          const info = await FileSystem.getInfoAsync(dl.uri, { size: true });
+          steps.push(`✓ File size: ${(info as any).size ?? '?'} bytes`);
+          steps.push(`✓ URI: ${dl.uri.split('/').slice(-2).join('/')}`);
+          steps.push('');
+          steps.push('cachedAudioUri: ' + (cachedAudioUri ? cachedAudioUri.split('/').pop() : 'null'));
+        } else {
+          steps.push('❌ Download failed');
+        }
+        setTestResults(prev => ({ ...prev, [fn]: steps.join('\n') }));
+      } catch (e) {
+        setTestResults(prev => ({ ...prev, [fn]: `EXCEPTION: ${String(e)}` }));
+      }
+      setTestLoading(prev => ({ ...prev, [fn]: false }));
+      return;
+    }
+
     const client = getSupabaseClient();
     try {
       let body: Record<string, unknown> = {};
@@ -480,14 +519,16 @@ export default function EditorScreen() {
         ? `ph://${video.videoAssetId}`
         : videoUri;
 
-      // Await the in-progress (or already resolved) prefetch Promise so we get
-      // the audio even if the user tapped publish before the download finished.
-      const backgroundAudioUri = (cachedAudioUri ?? (await audioFetchPromise.current)) ?? undefined;
-      if (backgroundAudioUri) {
-        console.log('[prepareVideoForPublish] mixing background audio:', backgroundAudioUri);
-      } else {
-        console.log('[prepareVideoForPublish] no cached audio — burning without background music');
-      }
+      // Wait for any in-progress prefetch then pick the best available URI.
+      // Priority: latest prefetch result > previously-cached fallback (APT default).
+      const latestUri = await audioFetchPromise.current;
+      const backgroundAudioUri = (latestUri ?? cachedAudioUri) ?? undefined;
+      const snap2 = snapshotEditorState();
+      const songLabel = snap2.audio
+        ? `${snap2.audio.title} – ${snap2.audio.artist}`
+        : 'default track';
+      setBurnAudioLabel(backgroundAudioUri ? songLabel : null);
+      console.log('[burn] bgAudio:', backgroundAudioUri ?? 'NONE', '| song:', songLabel);
 
       const { outputUri: burnedUri } = await burnHookOverlay(burnUri, hookText, backgroundAudioUri);
       setBurningOverlay(false);
@@ -1100,9 +1141,7 @@ export default function EditorScreen() {
                 <ActivityIndicator size="large" color={Colors.primaryLight} />
                 <Text style={styles.sheetPhaseTitle}>Burning hook overlay...</Text>
                 <Text style={styles.sheetPhaseSub}>
-                  {cachedAudioUri
-                    ? `Mixing in background music...`
-                    : 'Adding your hook text to the video.'}
+                  {burnAudioLabel ? `Mixing: ${burnAudioLabel}` : 'Adding hook text (no music)'}
                 </Text>
               </View>
             ) : null}
@@ -1193,6 +1232,7 @@ export default function EditorScreen() {
             </View>
             <ScrollView showsVerticalScrollIndicator={false} style={{ flex: 1 }}>
               {([
+                { key: 'audio-pipeline' as TestKey, label: 'Audio Pipeline', desc: 'iTunes search → download → show file size', icon: 'music-circle', color: Colors.amber },
                 { key: 'ai-content-generator' as TestKey, label: 'AI Content Generator', desc: 'Sends a test hook request (type=hook)', icon: 'auto-fix', color: Colors.primaryLight },
                 { key: 'wayinvideo-analyzer' as TestKey, label: 'WayinVideo Analyzer', desc: 'Sends a ping/action=ping request', icon: 'movie-filter', color: Colors.emerald },
                 { key: 'tiktok-publisher' as TestKey, label: 'TikTok Publisher', desc: 'Sends a status check request', icon: 'music-note', color: '#ee1d52' },
