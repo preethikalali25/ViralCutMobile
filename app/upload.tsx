@@ -156,7 +156,12 @@ export default function UploadScreen() {
       platforms,
       createdAt: new Date().toISOString(),
       ...(action === 'publish' ? { publishedAt: new Date().toISOString() } : {}),
-      ...(pickedVideo?.uri ? { videoUri: pickedVideo.uri } : {}),
+      // Prefer the ph:// URI (via assetId) over the picker's temp file copy.
+      // PHPickerViewController temp files can drop audio for HEVC videos; the
+      // ph:// URI goes through PHImageManager which always includes all tracks.
+      ...(pickedVideo?.assetId
+        ? { videoUri: `ph://${pickedVideo.assetId}` }
+        : pickedVideo?.uri ? { videoUri: pickedVideo.uri } : {}),
     };
 
     addVideo(newVideo);
