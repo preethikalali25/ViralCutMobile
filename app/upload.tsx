@@ -119,13 +119,9 @@ export default function UploadScreen() {
 
       if (asset.uri) {
         setExtractingThumb(true);
-        // Resolve ph:// → file:// immediately so the URI stored in state is always usable
-        resolveVideoUri(asset.uri).then(resolvedUri => {
-          const stableUri = resolvedUri !== asset.uri ? resolvedUri : asset.uri;
-          // Update the picked video with the resolved URI so editor never sees ph://
-          setPickedVideo({ ...asset, uri: stableUri });
-          return extractBestThumbnail(stableUri, asset.duration ?? 0);
-        }).then(thumbUri => {
+        // Keep the original ph:// URI — the native burn module handles it via
+        // PHImageManager (audio-safe). extractBestThumbnail resolves ph:// internally.
+        extractBestThumbnail(asset.uri, asset.duration ?? 0).then(thumbUri => {
           if (thumbUri) setPickedThumbnail(thumbUri);
           setExtractingThumb(false);
         }).catch(err => {
