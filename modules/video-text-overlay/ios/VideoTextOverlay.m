@@ -240,16 +240,17 @@ RCT_EXPORT_MODULE();
     return 0;
 }
 
-- (void)processVideoAtURL:(NSURL *)inputUrl
-                     text:(NSString *)text
-              originalUri:(NSString *)originalUri
-                  resolve:(RCTPromiseResolveBlock)resolve {
+// Core processing — accepts any AVAsset (AVURLAsset, AVComposition, etc.)
+// Using the asset directly preserves Photos sandbox access rights for audio.
+- (void)processAsset:(AVAsset *)asset
+                text:(NSString *)text
+         originalUri:(NSString *)originalUri
+             resolve:(RCTPromiseResolveBlock)resolve {
 
     dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
         @try {
 #pragma clang diagnostic push
 #pragma clang diagnostic ignored "-Wdeprecated-declarations"
-            AVURLAsset *asset    = [AVURLAsset URLAssetWithURL:inputUrl options:nil];
             NSArray *videoTracks = [asset tracksWithMediaType:AVMediaTypeVideo];
             if (!videoTracks.count) { resolve(originalUri); return; }
 
@@ -283,8 +284,18 @@ RCT_EXPORT_MODULE();
                 AVMutableCompositionTrack *ca =
                     [comp addMutableTrackWithMediaType:AVMediaTypeAudio
                                       preferredTrackID:kCMPersistentTrackID_Invalid];
-                [ca insertTimeRange:timeRange ofTrack:audioTracks.firstObject
-                             atTime:kCMTimeZero error:nil];
+                AVAssetTrack *aTrack = audioTracks.firstObject;
+                // Clamp to audio track's own duration — using the video timeRange can
+                // cause a silent insert failure if track durations differ by even a frame.
+                CMTime audioDur = CMTimeMinimum(aTrack.timeRange.duration, duration);
+                NSError *aErr = nil;
+                [ca insertTimeRange:CMTimeRangeMake(kCMTimeZero, audioDur)
+                            ofTrack:aTrack atTime:kCMTimeZero error:&aErr];
+                if (aErr) {
+                    NSLog(@"[VideoTextOverlay] audio insert error: %@", aErr.localizedDescription);
+                }
+            } else {
+                NSLog(@"[VideoTextOverlay] no audio tracks in source asset");
             }
 
             uint8_t vRot = [VideoTextOverlay vRotationForTransform:pref];
@@ -337,6 +348,15 @@ RCT_EXPORT_MODULE();
     });
 }
 
+- (void)processVideoAtURL:(NSURL *)inputUrl
+                     text:(NSString *)text
+              originalUri:(NSString *)originalUri
+                  resolve:(RCTPromiseResolveBlock)resolve {
+    AVURLAsset *asset = [AVURLAsset URLAssetWithURL:inputUrl options:nil];
+    if (!asset) { resolve(originalUri); return; }
+    [self processAsset:asset text:text originalUri:originalUri resolve:resolve];
+}
+
 RCT_EXPORT_METHOD(burnText:(NSString *)videoUri
                   text:(NSString *)text
                   resolver:(RCTPromiseResolveBlock)resolve
@@ -360,9 +380,11 @@ RCT_EXPORT_METHOD(burnText:(NSString *)videoUri
         [[PHImageManager defaultManager]
            requestAVAssetForVideo:phAsset options:opts
                     resultHandler:^(AVAsset *av, AVAudioMix *mix, NSDictionary *info) {
-            AVURLAsset *ua = (AVURLAsset *)av;
-            if (!ua) { resolve(videoUri); return; }
-            [self processVideoAtURL:ua.URL text:text originalUri:videoUri resolve:resolve];
+            // Use av directly — do NOT re-create from URL. Photos can return an
+            // AVComposition (slow-mo, edits) where URL extraction is undefined, and
+            // creating a new AVURLAsset from the URL loses sandbox access for audio.
+            if (!av) { resolve(videoUri); return; }
+            [self processAsset:av text:text originalUri:videoUri resolve:resolve];
         }];
     } else {
         NSURL *fileUrl = [videoUri hasPrefix:@"file://"]
