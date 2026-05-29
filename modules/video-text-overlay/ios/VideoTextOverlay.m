@@ -280,19 +280,19 @@ RCT_EXPORT_MODULE();
             // track transform — otherwise players apply the rotation a second time.
             [cv setPreferredTransform:CGAffineTransformIdentity];
 
+            // Hoist ca so we can reference it when building the audioMix below.
+            AVMutableCompositionTrack *ca = nil;
             if (audioTracks.count) {
-                AVMutableCompositionTrack *ca =
-                    [comp addMutableTrackWithMediaType:AVMediaTypeAudio
-                                      preferredTrackID:kCMPersistentTrackID_Invalid];
+                ca = [comp addMutableTrackWithMediaType:AVMediaTypeAudio
+                                       preferredTrackID:kCMPersistentTrackID_Invalid];
                 AVAssetTrack *aTrack = audioTracks.firstObject;
-                // Clamp to audio track's own duration — using the video timeRange can
-                // cause a silent insert failure if track durations differ by even a frame.
                 CMTime audioDur = CMTimeMinimum(aTrack.timeRange.duration, duration);
                 NSError *aErr = nil;
                 [ca insertTimeRange:CMTimeRangeMake(kCMTimeZero, audioDur)
                             ofTrack:aTrack atTime:kCMTimeZero error:&aErr];
                 if (aErr) {
                     NSLog(@"[VideoTextOverlay] audio insert error: %@", aErr.localizedDescription);
+                    ca = nil; // don't try to build an audioMix for a failed track
                 }
             } else {
                 NSLog(@"[VideoTextOverlay] no audio tracks in source asset");
@@ -330,6 +330,18 @@ RCT_EXPORT_MODULE();
             ses.outputURL        = out;
             ses.outputFileType   = AVFileTypeMPEG4;
             ses.videoComposition = vc;
+
+            // When a custom videoCompositorClass is set, AVAssetExportSession will
+            // drop audio unless audioMix is explicitly provided. Set a pass-through
+            // mix at full volume to force audio inclusion.
+            if (ca) {
+                AVMutableAudioMixInputParameters *params =
+                    [AVMutableAudioMixInputParameters audioMixInputParametersWithTrack:ca];
+                [params setVolume:1.0 atTime:kCMTimeZero];
+                AVMutableAudioMix *audioMix = [AVMutableAudioMix audioMix];
+                audioMix.inputParameters = @[params];
+                ses.audioMix = audioMix;
+            }
 
             [ses exportAsynchronouslyWithCompletionHandler:^{
                 if (ses.status == AVAssetExportSessionStatusCompleted) {
