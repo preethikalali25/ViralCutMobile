@@ -96,6 +96,17 @@ function cleanTitle(raw: string): string {
     .trim() || 'my video';
 }
 
+async function fetchItunesPreviewUrl(title: string, artist: string): Promise<string | null> {
+  try {
+    const q = encodeURIComponent(`${title} ${artist}`);
+    const res = await fetch(`https://itunes.apple.com/search?term=${q}&media=music&limit=1&country=US`);
+    const data = await res.json();
+    return (data.results?.[0]?.previewUrl as string) ?? null;
+  } catch {
+    return null;
+  }
+}
+
 async function callAIGenerator(type: string, payload: Record<string, unknown>) {
   const client = getSupabaseClient();
 
@@ -383,17 +394,36 @@ export default function EditorScreen() {
     ]);
   };
 
-  const prepareVideoForPublish = async (videoUri: string, hookText: string): Promise<{ videoUrl?: string; error?: string }> => {
+  const prepareVideoForPublish = async (
+    videoUri: string,
+    hookText: string,
+    audioInfo?: { title: string; artist: string } | null,
+  ): Promise<{ videoUrl?: string; error?: string }> => {
     try {
       setUploadingToStorage(true);
       setBurningOverlay(true);
-      // If we have the iOS Photos assetId, pass the ph:// URI to the burn module.
-      // PHImageManager export (ph://) always includes audio; the picker's temp
-      // file:// copy can silently drop audio for certain video formats.
+
       const burnUri = video.videoAssetId
         ? `ph://${video.videoAssetId}`
         : videoUri;
-      const { outputUri: burnedUri } = await burnHookOverlay(burnUri, hookText);
+
+      // Fetch iTunes 30-second preview and download to cache for background music mixing.
+      let backgroundAudioUri: string | undefined;
+      if (audioInfo?.title && audioInfo?.artist) {
+        const previewUrl = await fetchItunesPreviewUrl(audioInfo.title, audioInfo.artist);
+        if (previewUrl) {
+          try {
+            const FileSystem = await import('expo-file-system');
+            const dest = `${FileSystem.cacheDirectory}bg_${Date.now()}.m4a`;
+            const dl = await FileSystem.downloadAsync(previewUrl, dest);
+            if (dl.status === 200) backgroundAudioUri = dl.uri;
+          } catch (e) {
+            console.warn('[prepareVideoForPublish] audio download failed:', e);
+          }
+        }
+      }
+
+      const { outputUri: burnedUri } = await burnHookOverlay(burnUri, hookText, backgroundAudioUri);
       setBurningOverlay(false);
       const resolvedUri = await resolveVideoUri(burnedUri);
       const { publicUrl, error } = await uploadVideoToStorage(resolvedUri, user!.id, video.id, (p) => setUploadProgress(p));
@@ -445,7 +475,7 @@ export default function EditorScreen() {
     const snap = snapshotEditorState();
     if (!video?.videoUri) { showAlert('No Video File', 'Select a video before publishing to TikTok.'); return; }
 
-    const { videoUrl, error: prepError } = await prepareVideoForPublish(video.videoUri, snap.hook?.text ?? '');
+    const { videoUrl, error: prepError } = await prepareVideoForPublish(video.videoUri, snap.hook?.text ?? '', snap.audio);
     if (prepError || !videoUrl) { showAlert('Upload Failed', prepError ?? 'Could not upload video.'); return; }
 
     updateVideo(video.id, { ...snap, title: videoTitle });
@@ -459,7 +489,7 @@ export default function EditorScreen() {
     const snap = snapshotEditorState();
     if (!video?.videoUri) { showAlert('No Video File', 'Select a video before publishing to Instagram.'); return; }
 
-    const { videoUrl, error: prepError } = await prepareVideoForPublish(video.videoUri, snap.hook?.text ?? '');
+    const { videoUrl, error: prepError } = await prepareVideoForPublish(video.videoUri, snap.hook?.text ?? '', snap.audio);
     if (prepError || !videoUrl) { showAlert('Upload Failed', prepError ?? 'Could not upload video.'); return; }
 
     const captionText = [snap.caption, snap.hashtags.join(' ')].filter(Boolean).join('\n\n');

@@ -244,6 +244,7 @@ RCT_EXPORT_MODULE();
 // Using the asset directly preserves Photos sandbox access rights for audio.
 - (void)processAsset:(AVAsset *)asset
                 text:(NSString *)text
+  backgroundAudioUri:(NSString *)backgroundAudioUri
          originalUri:(NSString *)originalUri
              resolve:(RCTPromiseResolveBlock)resolve {
 
@@ -292,10 +293,44 @@ RCT_EXPORT_MODULE();
                             ofTrack:aTrack atTime:kCMTimeZero error:&aErr];
                 if (aErr) {
                     NSLog(@"[VideoTextOverlay] audio insert error: %@", aErr.localizedDescription);
-                    ca = nil; // don't try to build an audioMix for a failed track
+                    ca = nil;
                 }
             } else {
                 NSLog(@"[VideoTextOverlay] no audio tracks in source asset");
+            }
+
+            // Background music track — loop to fill the video duration.
+            AVMutableCompositionTrack *bgAudio = nil;
+            if (backgroundAudioUri.length > 0) {
+                NSURL *bgUrl = [backgroundAudioUri hasPrefix:@"file://"]
+                    ? [NSURL URLWithString:backgroundAudioUri]
+                    : [NSURL fileURLWithPath:backgroundAudioUri];
+                if (bgUrl) {
+                    AVURLAsset *bgAsset = [AVURLAsset URLAssetWithURL:bgUrl options:nil];
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Wdeprecated-declarations"
+                    NSArray *bgTracks = [bgAsset tracksWithMediaType:AVMediaTypeAudio];
+#pragma clang diagnostic pop
+                    if (bgTracks.count) {
+                        bgAudio = [comp addMutableTrackWithMediaType:AVMediaTypeAudio
+                                                    preferredTrackID:kCMPersistentTrackID_Invalid];
+                        AVAssetTrack *bgTrack = bgTracks.firstObject;
+                        CMTime bgDur = bgTrack.timeRange.duration;
+                        CMTime insertAt = kCMTimeZero;
+                        // Loop the preview clip to cover the full video duration.
+                        while (CMTimeCompare(insertAt, duration) < 0) {
+                            CMTime remaining = CMTimeSubtract(duration, insertAt);
+                            CMTime seg = CMTimeMinimum(bgDur, remaining);
+                            NSError *bgErr = nil;
+                            [bgAudio insertTimeRange:CMTimeRangeMake(kCMTimeZero, seg)
+                                            ofTrack:bgTrack atTime:insertAt error:&bgErr];
+                            if (bgErr) { NSLog(@"[VideoTextOverlay] bg insert error: %@", bgErr); break; }
+                            insertAt = CMTimeAdd(insertAt, seg);
+                        }
+                    } else {
+                        NSLog(@"[VideoTextOverlay] no audio tracks in background asset");
+                    }
+                }
             }
 
             uint8_t vRot = [VideoTextOverlay vRotationForTransform:pref];
@@ -331,15 +366,26 @@ RCT_EXPORT_MODULE();
             ses.outputFileType   = AVFileTypeMPEG4;
             ses.videoComposition = vc;
 
-            // When a custom videoCompositorClass is set, AVAssetExportSession will
-            // drop audio unless audioMix is explicitly provided. Set a pass-through
-            // mix at full volume to force audio inclusion.
-            if (ca) {
-                AVMutableAudioMixInputParameters *params =
-                    [AVMutableAudioMixInputParameters audioMixInputParametersWithTrack:ca];
-                [params setVolume:1.0 atTime:kCMTimeZero];
+            // When a custom videoCompositorClass is set, AVAssetExportSession drops
+            // audio unless audioMix is explicitly provided. Build a mix with:
+            //   • original audio at full volume (or ducked to 40% when bg music plays)
+            //   • background music at 70%
+            if (ca || bgAudio) {
+                NSMutableArray *params = [NSMutableArray array];
+                if (ca) {
+                    AVMutableAudioMixInputParameters *p =
+                        [AVMutableAudioMixInputParameters audioMixInputParametersWithTrack:ca];
+                    [p setVolume:(bgAudio ? 0.4f : 1.0f) atTime:kCMTimeZero];
+                    [params addObject:p];
+                }
+                if (bgAudio) {
+                    AVMutableAudioMixInputParameters *p =
+                        [AVMutableAudioMixInputParameters audioMixInputParametersWithTrack:bgAudio];
+                    [p setVolume:0.7f atTime:kCMTimeZero];
+                    [params addObject:p];
+                }
                 AVMutableAudioMix *audioMix = [AVMutableAudioMix audioMix];
-                audioMix.inputParameters = @[params];
+                audioMix.inputParameters = params;
                 ses.audioMix = audioMix;
             }
 
@@ -362,20 +408,23 @@ RCT_EXPORT_MODULE();
 
 - (void)processVideoAtURL:(NSURL *)inputUrl
                      text:(NSString *)text
+       backgroundAudioUri:(NSString *)backgroundAudioUri
               originalUri:(NSString *)originalUri
                   resolve:(RCTPromiseResolveBlock)resolve {
     AVURLAsset *asset = [AVURLAsset URLAssetWithURL:inputUrl options:nil];
     if (!asset) { resolve(originalUri); return; }
-    [self processAsset:asset text:text originalUri:originalUri resolve:resolve];
+    [self processAsset:asset text:text backgroundAudioUri:backgroundAudioUri originalUri:originalUri resolve:resolve];
 }
 
 RCT_EXPORT_METHOD(burnText:(NSString *)videoUri
                   text:(NSString *)text
+                  backgroundAudioUri:(NSString *)backgroundAudioUri
                   resolver:(RCTPromiseResolveBlock)resolve
                   rejecter:(RCTPromiseRejectBlock)reject) {
 
-    if (!videoUri || !text ||
-        [[text stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceCharacterSet]] length] == 0) {
+    NSString *bg = backgroundAudioUri ?: @"";
+
+    if (!videoUri || (!text.length && !bg.length)) {
         resolve(videoUri ?: @""); return;
     }
 
@@ -392,18 +441,15 @@ RCT_EXPORT_METHOD(burnText:(NSString *)videoUri
         [[PHImageManager defaultManager]
            requestAVAssetForVideo:phAsset options:opts
                     resultHandler:^(AVAsset *av, AVAudioMix *mix, NSDictionary *info) {
-            // Use av directly — do NOT re-create from URL. Photos can return an
-            // AVComposition (slow-mo, edits) where URL extraction is undefined, and
-            // creating a new AVURLAsset from the URL loses sandbox access for audio.
             if (!av) { resolve(videoUri); return; }
-            [self processAsset:av text:text originalUri:videoUri resolve:resolve];
+            [self processAsset:av text:text backgroundAudioUri:bg originalUri:videoUri resolve:resolve];
         }];
     } else {
         NSURL *fileUrl = [videoUri hasPrefix:@"file://"]
             ? [NSURL URLWithString:videoUri]
             : [NSURL fileURLWithPath:videoUri];
         if (!fileUrl) { resolve(videoUri); return; }
-        [self processVideoAtURL:fileUrl text:text originalUri:videoUri resolve:resolve];
+        [self processVideoAtURL:fileUrl text:text backgroundAudioUri:bg originalUri:videoUri resolve:resolve];
     }
 }
 
