@@ -2,6 +2,16 @@ import { NativeModules } from 'react-native';
 
 const { VideoTextOverlay } = NativeModules;
 
+export async function photosToVideo(
+  photoUris: string[],
+  durationPerPhoto: number = 3.0,
+): Promise<string> {
+  if (!VideoTextOverlay?.photosToVideo) {
+    throw new Error('[photosToVideo] Native module not available');
+  }
+  return await VideoTextOverlay.photosToVideo(photoUris, durationPerPhoto);
+}
+
 export async function burnHookOverlay(
   videoUri: string,
   hookText: string,
