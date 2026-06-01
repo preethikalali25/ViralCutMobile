@@ -348,6 +348,10 @@ export default function EditorScreen() {
     setSelectedAudioId(video.audio?.id ?? '');
     setPlatforms(video.platforms ?? ['tiktok']);
     setThumbnailUri(video.thumbnail ?? null);
+    // Restore aiPickedSong if the saved audio isn't one of the static mock songs
+    if (video.audio?.id && !MOCK_TRENDING_AUDIO.find(a => a.id === video.audio!.id)) {
+      setAiPickedSong({ ...video.audio, platform: [], mood: '', id: video.audio.id } as AISuggestedAudio);
+    }
     if (video.audio?.title && video.audio?.artist) {
       prefetchAudioForSong(video.audio.id ?? 'saved', video.audio.title, video.audio.artist);
     } else {
@@ -516,7 +520,8 @@ export default function EditorScreen() {
   const snapshotEditorState = () => {
     const audioSource = aiPickedSong && selectedAudioId === aiPickedSong.id
       ? aiPickedSong
-      : MOCK_TRENDING_AUDIO.find(a => a.id === selectedAudioId);
+      : (MOCK_TRENDING_AUDIO.find(a => a.id === selectedAudioId)
+        ?? aiSuggestedSongs.find(a => a.id === selectedAudioId));
     return {
       hook: { type: hookType, text: hookText },
       caption,
