@@ -140,6 +140,26 @@ Consider the visual mood, energy, subject, and setting shown in the frame when c
 Target platforms: ${platformList}.
 Choose a well-known, currently popular song that fits the video's likely mood and maximises viral potential.`;
 
+    } else if (type === 'audio_suggestions') {
+      const platformList = (platforms as string[]).join(', ');
+
+      systemPrompt = `You are a music trend analyst for short-form video platforms (TikTok, Instagram Reels, YouTube Shorts).
+Suggest 5 diverse, currently trending songs for the given video. Vary the moods, genres, and tempos to give creators real options.
+${visualContext}
+${SAFETY_RULES}
+Return a JSON array of exactly 5 objects:
+[{ "id": "sug_1", "title": "Song Title", "artist": "Artist Name", "uses": "e.g. 2.4M uses", "trending": true }, ...]
+IDs must be "sug_1" through "sug_5". Mix high-energy, chill, emotional, and trending songs. Pick real, well-known songs.
+Return ONLY a valid JSON array — no markdown, no code blocks, no extra text.`;
+
+      userPrompt = hasFrame
+        ? `Suggest 5 diverse trending songs for this short-form video.
+Video title: "${videoTitle}". Target platforms: ${platformList}.
+Analyse the visual mood, energy, subject, and setting — suggest 5 songs with varied styles that all fit.`
+        : `Suggest 5 diverse trending songs for a short-form video titled: "${videoTitle}".
+Target platforms: ${platformList}.
+Pick songs that match the video's likely mood. Vary moods, tempos, and genres across the 5 suggestions.`;
+
     } else if (type === 'title') {
       systemPrompt = `You are a social media content strategist who writes hyper-specific, descriptive video titles for TikTok, Instagram Reels, and YouTube Shorts.
 Your titles name the ACTUAL subject: the person (e.g. "My Daughter", "Baby", "Toddler", "My Dog"), the exact action they are doing (e.g. "Hopping", "Dancing", "Trying Sushi for the First Time"), and any notable detail.
@@ -166,7 +186,7 @@ Return ONLY the title, 4–10 words.`;
 
     } else {
       return new Response(
-        JSON.stringify({ error: 'Invalid type. Use: hook, caption, audio, or title' }),
+        JSON.stringify({ error: 'Invalid type. Use: hook, caption, audio, audio_suggestions, or title' }),
         { status: 400, headers: { ...corsHeaders, 'Content-Type': 'application/json' } },
       );
     }

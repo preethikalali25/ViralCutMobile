@@ -180,6 +180,9 @@ export default function EditorScreen() {
   const [generatingAudio, setGeneratingAudio] = useState(false);
   const [aiPickedSong, setAiPickedSong] = useState<AISuggestedAudio | null>(null);
   const [autoGenDone, setAutoGenDone] = useState(false);
+  const [aiSuggestedSongs, setAiSuggestedSongs] = useState<typeof MOCK_TRENDING_AUDIO>(MOCK_TRENDING_AUDIO);
+  const [fetchingSuggestions, setFetchingSuggestions] = useState(false);
+  const audioSuggestionsLoadedRef = useRef(false);
 
   const [showPlayer, setShowPlayer] = useState(false);
   const [videoTitle, setVideoTitle] = useState('');
@@ -401,6 +404,20 @@ export default function EditorScreen() {
           prefetchAudioForSong(data.result.id, data.result.title, data.result.artist);
         }
       }
+
+      // Fetch personalised song suggestions for this video
+      if (!audioSuggestionsLoadedRef.current) {
+        audioSuggestionsLoadedRef.current = true;
+        setFetchingSuggestions(true);
+        const { data } = await callAIGenerator('audio_suggestions', {
+          videoTitle: cleanTitle(video.title), platforms: video.platforms ?? ['tiktok'], ...framePayload,
+        });
+        setFetchingSuggestions(false);
+        const songs = data?.result;
+        if (Array.isArray(songs) && songs.length > 0) {
+          setAiSuggestedSongs(songs);
+        }
+      }
     };
 
     runAll();
@@ -468,6 +485,19 @@ export default function EditorScreen() {
       prefetchAudioForSong(song.id, song.title, song.artist);
     }
   }, [video.title, platforms, showAlert, prefetchAudioForSong]);
+
+  const fetchAudioSuggestions = useCallback(async () => {
+    setFetchingSuggestions(true);
+    const framePayload = await ensureFrame();
+    const { data } = await callAIGenerator('audio_suggestions', {
+      videoTitle: cleanTitle(video.title), platforms, ...framePayload,
+    });
+    setFetchingSuggestions(false);
+    const songs = data?.result;
+    if (Array.isArray(songs) && songs.length > 0) {
+      setAiSuggestedSongs(songs);
+    }
+  }, [video.title, platforms]);
 
   const handleGenerateTitle = useCallback(async () => {
     setGeneratingTitle(true);
@@ -971,11 +1001,17 @@ export default function EditorScreen() {
                 </View>
 
                 <View style={styles.audioHeader}>
-                  <Text style={styles.sectionLabel}>Trending Audio</Text>
-                  {aiPickedSong ? <Text style={styles.orPickText}>or pick manually below</Text> : null}
+                  <Text style={styles.sectionLabel}>
+                    {fetchingSuggestions ? 'Picking songs for your video…' : 'Suggested for Your Video'}
+                  </Text>
+                  <Pressable onPress={fetchAudioSuggestions} disabled={fetchingSuggestions}>
+                    {fetchingSuggestions
+                      ? <ActivityIndicator size="small" color={Colors.primary} />
+                      : <MaterialIcons name="refresh" size={18} color={Colors.textSecondary} />}
+                  </Pressable>
                 </View>
 
-                {MOCK_TRENDING_AUDIO.map(audio => {
+                {aiSuggestedSongs.map(audio => {
                   const isSelected = selectedAudioId === audio.id && !aiPickedSong;
                   return (
                     <Pressable
