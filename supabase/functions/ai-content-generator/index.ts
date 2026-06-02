@@ -118,41 +118,55 @@ Return ONLY valid JSON — no markdown, no code blocks, no questions, no extra t
     } else if (type === 'audio') {
       const platformList = (platforms as string[]).join(', ');
 
-      systemPrompt = `You are a music trend analyst for short-form video platforms (TikTok, Instagram Reels, YouTube Shorts).
-Pick the single BEST currently trending song to maximise virality for the given video.
+      systemPrompt = `You are a viral music curator for TikTok, Instagram Reels, and YouTube Shorts.
+Identify the content category of the video, then pick the single BEST song that creators in that exact niche are going viral with right now.
 ${visualContext}
 ${SAFETY_RULES}
-Return a single JSON object with these fields:
-{ "id": "ai_best", "title": "Song Title", "artist": "Artist Name", "uses": "e.g. 2.4M uses", "trending": true, "platform": ["tiktok","reels","youtube"], "mood": "one word mood", "reason": "one sentence explaining why this song fits the video" }
-Return ONLY valid JSON — no markdown, no code blocks, no extra text.`;
+Return a single JSON object:
+{ "id": "ai_best", "title": "Song Title", "artist": "Artist Name", "uses": "e.g. 2.4M uses", "trending": true, "platform": ["tiktok","reels","youtube"], "mood": "one word mood", "reason": "one sentence explaining why this specific song is viral for this type of content" }
+Return ONLY valid JSON — no markdown, no code blocks, no questions, no extra text.`;
 
       userPrompt = hasFrame
-        ? `Pick the single BEST trending song for this short-form video.
-Video title: "${videoTitle}". Target platforms: ${platformList}.
-Consider the visual mood, energy, subject, and setting shown in the frame when choosing.`
-        : `Pick the single BEST trending song for a short-form video titled: "${videoTitle}".
-Target platforms: ${platformList}.
-Choose a well-known, currently popular song that fits the video's likely mood and maximises viral potential.`;
+        ? `Analyse this video frame. Identify the content category (baby/kids, funny/pets, fitness, food, travel, dance, fashion, etc.) and pick the single BEST song that is viral for that category right now.
+Video title: "${videoTitle}". Target platforms: ${platformList}. Return JSON only.`
+        : `Video title: "${videoTitle}". Target platforms: ${platformList}.
+Identify the content category from the title and pick the single BEST song viral for that category. Return JSON only.`;
 
     } else if (type === 'audio_suggestions') {
       const platformList = (platforms as string[]).join(', ');
 
-      systemPrompt = `You are a music trend analyst for short-form video platforms (TikTok, Instagram Reels, YouTube Shorts).
-Suggest 5 diverse, currently trending songs for the given video. Vary the moods, genres, and tempos to give creators real options.
+      systemPrompt = `You are a viral music curator for TikTok, Instagram Reels, and YouTube Shorts.
+Your job: identify the exact content category of the video, then suggest 5 songs that creators in THAT SPECIFIC NICHE are actually using and going viral with right now.
+
+Content categories and the songs that work for them:
+- Baby/kids/family → emotional, cute, heartwarming songs (e.g. "Golden Hour", "Bigger Than The Whole Sky", "You Are The Best Thing")
+- Funny/comedy/pets → upbeat, quirky, meme songs (e.g. "INDUSTRY BABY", "Escapism", "Pink Pony Club")
+- Fitness/workout/sports → high-energy, hype tracks (e.g. "Superhero", "Gasoline", "Kill Bill")
+- Food/cooking/ASMR → satisfying, chill, aesthetic vibes (e.g. "As It Was", "Cruel Summer", "Flowers")
+- Travel/nature/outdoors → cinematic, uplifting, wonder (e.g. "Golden Hour", "Levitating", "Watermelon Sugar")
+- Dance/performance → trending dance audio, beat drops (e.g. "Creepin", "Flowers", "APT.")
+- Fashion/beauty/lifestyle → trendy, cool, aesthetic (e.g. "Espresso", "Die With A Smile", "Vampire")
+- Motivation/inspiration → powerful, emotional, anthemic (e.g. "I Will Survive", "Hall of Fame", "Eye of the Tiger")
+- Romance/relationship → romantic, emotional (e.g. "Perfect", "Thinking Out Loud", "A Thousand Years")
+
 ${visualContext}
 ${SAFETY_RULES}
-Return a JSON array of exactly 5 objects:
-[{ "id": "sug_1", "title": "Song Title", "artist": "Artist Name", "uses": "e.g. 2.4M uses", "trending": true }, ...]
-IDs must be "sug_1" through "sug_5". Mix high-energy, chill, emotional, and trending songs. Pick real, well-known songs.
-Return ONLY a valid JSON array — no markdown, no code blocks, no extra text.`;
+Return a JSON array of exactly 5 objects — each a real, well-known song:
+[{ "id": "sug_1", "title": "Song Title", "artist": "Artist Name", "uses": "e.g. 4.2M uses", "trending": true/false }, ...]
+IDs must be "sug_1" through "sug_5". All 5 must fit the SAME content category. Pick songs with real viral use numbers.
+Return ONLY a valid JSON array — no markdown, no code blocks, no questions, no extra text.`;
 
       userPrompt = hasFrame
-        ? `Suggest 5 diverse trending songs for this short-form video.
-Video title: "${videoTitle}". Target platforms: ${platformList}.
-Analyse the visual mood, energy, subject, and setting — suggest 5 songs with varied styles that all fit.`
-        : `Suggest 5 diverse trending songs for a short-form video titled: "${videoTitle}".
-Target platforms: ${platformList}.
-Pick songs that match the video's likely mood. Vary moods, tempos, and genres across the 5 suggestions.`;
+        ? `Analyse this video frame carefully.
+1. Identify the content category (baby/kids, funny/pets, fitness, food, travel, dance, fashion, motivation, romance, etc.)
+2. Identify the mood and energy level
+3. Suggest 5 songs that are SPECIFICALLY viral for that category on ${platformList}
+
+Video title for extra context: "${videoTitle}".
+Return only the JSON array.`
+        : `Video title: "${videoTitle}". Target platforms: ${platformList}.
+Infer the content category from the title and suggest 5 songs that are specifically viral for that category.
+Return only the JSON array.`;
 
     } else if (type === 'title') {
       systemPrompt = `You are a social media content strategist who writes hyper-specific, descriptive video titles for TikTok, Instagram Reels, and YouTube Shorts.
