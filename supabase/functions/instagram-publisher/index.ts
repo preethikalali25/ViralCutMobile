@@ -202,8 +202,8 @@ Deno.serve(async (req) => {
 
     // ── 5. Publish Reel ──────────────────────────────────────────────────────
     if (action === 'publish') {
-      const { userId, videoUrl, caption = '', coverUrl } = body as {
-        userId: string; videoUrl: string; caption?: string; coverUrl?: string;
+      const { userId, videoUrl, caption = '', coverUrl, audioName } = body as {
+        userId: string; videoUrl: string; caption?: string; coverUrl?: string; audioName?: string;
       };
 
       if (!videoUrl) {
@@ -245,6 +245,7 @@ Deno.serve(async (req) => {
         access_token,
       };
       if (coverUrl) containerParams.cover_url = coverUrl;
+      if (audioName) containerParams.audio_name = audioName.slice(0, 100);
 
       const containerRes = await fetch(`${IG_GRAPH_URL}/${instagram_user_id}/media`, {
         method: 'POST',
