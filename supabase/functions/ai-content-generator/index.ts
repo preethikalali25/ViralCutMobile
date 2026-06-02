@@ -13,11 +13,12 @@ function sanitizeTitle(raw: string): string {
 }
 
 const SAFETY_RULES = `
-IMPORTANT RULES:
-- Never produce offensive, hateful, sexually suggestive, violent, discriminatory, or harmful content.
+CRITICAL RULES — follow these without exception:
+- NEVER ask the user for clarification or more information. ALWAYS generate output immediately.
+- NEVER say "I need more details", "could you provide", or any variation of requesting more context.
+- If the title is generic or vague, invent a plausible, positive scenario and write for that. Make it work.
+- Never produce offensive, hateful, sexually suggestive, violent, or discriminatory content.
 - Write content suitable for all ages and appropriate for mainstream social media platforms.
-- Be positive, inclusive, and encouraging.
-- If the video title or frame content is unclear or generic, focus on a broadly appealing lifestyle, creativity, or inspiration angle.
 `;
 
 function buildUserContent(
@@ -88,19 +89,16 @@ Deno.serve(async (req) => {
       const hookStyle = hookStyleMap[hookType] ?? 'a compelling hook';
 
       systemPrompt = `You are an expert viral short-form video hook writer for TikTok, Instagram Reels, and YouTube Shorts.
-Your hooks are punchy, positive, and under 80 characters.
+Your hooks are punchy, specific, and under 80 characters.
 ${visualContext}
 ${SAFETY_RULES}
-Return ONLY the hook text — no quotes, no labels, no explanation.`;
+Output ONLY the hook text — no quotes, no labels, no explanation, no questions.`;
 
       userPrompt = hasFrame
-        ? `Look at this video frame and identify the specific subject (person, child, pet, etc.) and action.
-Write ${hookStyle} that references the ACTUAL content — e.g. if you see a toddler jumping, write a hook about that specifically.
-Video title for context: "${videoTitle}". Hook style: ${hookType}.
-Under 80 characters. No offensive content. No generic phrases like "You won't believe this" unless truly warranted.`
+        ? `Write ${hookStyle} for this video. Base it on what you actually see in the frame.
+Video title for extra context: "${videoTitle}". Hook style: ${hookType}. Under 80 characters.`
         : `Write ${hookStyle} for a short-form video titled: "${videoTitle}".
-Hook style: ${hookType}. Keep it under 80 characters.
-Be specific to the title's subject — avoid generic filler phrases. Make it curious, bold, and scroll-stopping.`;
+Hook style: ${hookType}. Under 80 characters. If the title is vague, pick a relatable everyday moment and write for that. Output only the hook.`;
 
     } else if (type === 'caption') {
       const platformList = (platforms as string[]).join(', ');
@@ -111,15 +109,11 @@ ${SAFETY_RULES}
 Return a JSON object with exactly two fields:
 - "caption": 1–3 engaging, conversational sentences optimised for the target platforms.
 - "hashtags": a space-separated string of 5–8 trending, relevant hashtags (include #fyp, #viral, or platform-specific tags).
-Return ONLY valid JSON — no markdown, no code blocks, no extra text.`;
+Return ONLY valid JSON — no markdown, no code blocks, no questions, no extra text.`;
 
       userPrompt = hasFrame
-        ? `Write an optimised caption and hashtags based on what you see in this video frame.
-Video title: "${videoTitle}". Target platforms: ${platformList}.
-Analyse the visual scene — mood, subject, action — and write authentic, engaging copy that drives comments and shares.`
-        : `Write an optimised caption and hashtags for a video titled: "${videoTitle}".
-Target platforms: ${platformList}.
-Make it authentic, relatable, and engagement-driven. Match the tone to each platform style.`;
+        ? `Write a caption and hashtags based on what you see in this video frame. Video title: "${videoTitle}". Target platforms: ${platformList}.`
+        : `Write a caption and hashtags for a short-form video titled: "${videoTitle}". Target platforms: ${platformList}. If the title is generic, write for a relatable everyday moment. Return JSON only.`;
 
     } else if (type === 'audio') {
       const platformList = (platforms as string[]).join(', ');
