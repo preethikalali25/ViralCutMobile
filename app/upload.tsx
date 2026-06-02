@@ -37,45 +37,27 @@ export default function UploadScreen() {
     );
   };
 
-  const handleAddPhotos = async () => {
+  const handleAddMedia = async () => {
     if (!(await requestPermission())) {
       showAlert('Permission Required', 'Please allow access to your media library.');
       return;
     }
     const result = await ImagePicker.launchImageLibraryAsync({
-      mediaTypes: ['images'],
+      mediaTypes: ['images', 'videos'],
       allowsMultipleSelection: true,
-      selectionLimit: 10,
+      selectionLimit: 15,
       quality: 1,
     });
     if (!result.canceled) {
-      const newItems = result.assets.map(a => ({
-        uri: a.uri,
-        type: 'photo' as const,
-        previewUri: a.uri,
-      }));
-      setMediaItems(prev => [...prev, ...newItems].slice(0, 15));
-    }
-  };
-
-  const handleAddVideo = async () => {
-    if (!(await requestPermission())) {
-      showAlert('Permission Required', 'Please allow access to your media library.');
-      return;
-    }
-    const result = await ImagePicker.launchImageLibraryAsync({
-      mediaTypes: ['videos'],
-      allowsMultipleSelection: true,
-      selectionLimit: 5,
-      quality: 1,
-    });
-    if (!result.canceled) {
-      const newItems = result.assets.map(a => ({
-        uri: a.uri,
-        type: 'video' as const,
-        previewUri: a.uri,
-        durationSec: a.duration ? Math.round(a.duration / 1000) : undefined,
-      }));
+      const newItems = result.assets.map(a => {
+        const isVideo = a.type === 'video';
+        return {
+          uri: a.uri,
+          type: isVideo ? ('video' as const) : ('photo' as const),
+          previewUri: a.uri,
+          ...(isVideo ? { durationSec: a.duration ? Math.round(a.duration / 1000) : undefined } : {}),
+        };
+      });
       setMediaItems(prev => [...prev, ...newItems].slice(0, 15));
     }
   };
@@ -202,23 +184,14 @@ export default function UploadScreen() {
             </View>
           )}
 
-          {/* Add buttons */}
-          <View style={styles.addRow}>
-            <Pressable
-              style={({ pressed }) => [styles.addBtn, pressed && { opacity: 0.8 }]}
-              onPress={handleAddPhotos}
-            >
-              <MaterialIcons name="add-photo-alternate" size={18} color="#fff" />
-              <Text style={styles.addBtnText}>Add Photos</Text>
-            </Pressable>
-            <Pressable
-              style={({ pressed }) => [styles.addBtn, styles.addBtnSecondary, pressed && { opacity: 0.8 }]}
-              onPress={handleAddVideo}
-            >
-              <MaterialIcons name="video-library" size={18} color={Colors.primaryLight} />
-              <Text style={[styles.addBtnText, { color: Colors.primaryLight }]}>Add Video</Text>
-            </Pressable>
-          </View>
+          {/* Add button */}
+          <Pressable
+            style={({ pressed }) => [styles.addBtn, pressed && { opacity: 0.8 }]}
+            onPress={handleAddMedia}
+          >
+            <MaterialCommunityIcons name="image-multiple-outline" size={18} color="#fff" />
+            <Text style={styles.addBtnText}>Browse Media</Text>
+          </Pressable>
         </View>
 
         {/* Tips */}
@@ -349,15 +322,10 @@ const styles = StyleSheet.create({
   durationLabel: {
     fontSize: FontSize.sm, color: Colors.textSecondary, includeFontPadding: false,
   },
-  addRow: { flexDirection: 'row', gap: Spacing.sm },
   addBtn: {
-    flex: 1, flexDirection: 'row', alignItems: 'center', justifyContent: 'center',
+    flexDirection: 'row', alignItems: 'center', justifyContent: 'center',
     gap: 6, backgroundColor: Colors.primary,
-    paddingVertical: 10, borderRadius: Radius.full,
-  },
-  addBtnSecondary: {
-    backgroundColor: Colors.surfaceElevated,
-    borderWidth: 1.5, borderColor: Colors.primary,
+    paddingVertical: 10, paddingHorizontal: 28, borderRadius: Radius.full,
   },
   addBtnText: {
     fontSize: FontSize.sm, fontWeight: FontWeight.bold,
