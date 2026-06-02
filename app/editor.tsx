@@ -183,6 +183,10 @@ export default function EditorScreen() {
   const [aiSuggestedSongs, setAiSuggestedSongs] = useState<typeof MOCK_TRENDING_AUDIO>(MOCK_TRENDING_AUDIO);
   const [fetchingSuggestions, setFetchingSuggestions] = useState(false);
   const audioSuggestionsLoadedRef = useRef(false);
+  const [songSearchQuery, setSongSearchQuery] = useState('');
+  const [songSearchResults, setSongSearchResults] = useState<{ id: string; title: string; artist: string; previewUrl: string }[]>([]);
+  const [songSearchLoading, setSongSearchLoading] = useState(false);
+  const songSearchTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const [showPlayer, setShowPlayer] = useState(false);
   const [videoTitle, setVideoTitle] = useState('');
@@ -213,7 +217,7 @@ export default function EditorScreen() {
   // await it if the user taps publish before the download finishes.
   const audioFetchPromise = useRef<Promise<string | null>>(Promise.resolve(null));
 
-  const prefetchAudioForSong = useCallback((id: string, title: string, artist: string) => {
+  const prefetchAudioForSong = useCallback((id: string, title: string, artist: string, directPreviewUrl?: string) => {
     const key = `${title}::${artist}`;
     if (key === cachedAudioKey.current) return;
     cachedAudioKey.current = key;
@@ -222,7 +226,7 @@ export default function EditorScreen() {
     setAudioStatus('loading');
     const p: Promise<string | null> = (async () => {
       try {
-        const previewUrl = await fetchItunesPreviewUrl(title, artist);
+        const previewUrl = directPreviewUrl || await fetchItunesPreviewUrl(title, artist);
         if (!previewUrl) {
           console.warn('[prefetchAudio] no iTunes preview for:', title, artist);
           setAudioStatus(prev => prev === 'loading' ? 'failed' : prev);
@@ -503,6 +507,32 @@ export default function EditorScreen() {
     }
   }, [video.title, platforms]);
 
+  const handleSongSearch = useCallback((query: string) => {
+    setSongSearchQuery(query);
+    if (songSearchTimer.current) clearTimeout(songSearchTimer.current);
+    if (!query.trim()) { setSongSearchResults([]); return; }
+    songSearchTimer.current = setTimeout(async () => {
+      setSongSearchLoading(true);
+      try {
+        const encoded = encodeURIComponent(query.trim());
+        const res = await fetch(
+          `https://itunes.apple.com/search?term=${encoded}&media=music&limit=8&country=US`,
+        );
+        const data = await res.json();
+        const results = (data.results ?? []).map((r: any) => ({
+          id: `search_${r.trackId}`,
+          title: r.trackName ?? '',
+          artist: r.artistName ?? '',
+          previewUrl: r.previewUrl ?? '',
+        })).filter((r: any) => r.title && r.previewUrl);
+        setSongSearchResults(results);
+      } catch {
+        setSongSearchResults([]);
+      }
+      setSongSearchLoading(false);
+    }, 400);
+  }, []);
+
   const handleGenerateTitle = useCallback(async () => {
     setGeneratingTitle(true);
     const framePayload = await ensureFrame();
@@ -521,7 +551,8 @@ export default function EditorScreen() {
     const audioSource = aiPickedSong && selectedAudioId === aiPickedSong.id
       ? aiPickedSong
       : (MOCK_TRENDING_AUDIO.find(a => a.id === selectedAudioId)
-        ?? aiSuggestedSongs.find(a => a.id === selectedAudioId));
+        ?? aiSuggestedSongs.find(a => a.id === selectedAudioId)
+        ?? songSearchResults.find(a => a.id === selectedAudioId));
     return {
       hook: { type: hookType, text: hookText },
       caption,
@@ -1005,49 +1036,104 @@ export default function EditorScreen() {
                   />
                 </View>
 
-                <View style={styles.audioHeader}>
-                  <Text style={styles.sectionLabel}>
-                    {fetchingSuggestions ? 'Picking songs for your video…' : 'Suggested for Your Video'}
-                  </Text>
-                  <Pressable onPress={fetchAudioSuggestions} disabled={fetchingSuggestions}>
-                    {fetchingSuggestions
-                      ? <ActivityIndicator size="small" color={Colors.primary} />
-                      : <MaterialIcons name="refresh" size={18} color={Colors.textSecondary} />}
-                  </Pressable>
+                {/* Song Search Bar */}
+                <View style={styles.songSearchBar}>
+                  <MaterialIcons name="search" size={18} color={Colors.textMuted} />
+                  <TextInput
+                    style={styles.songSearchInput}
+                    placeholder="Search any song…"
+                    placeholderTextColor={Colors.textMuted}
+                    value={songSearchQuery}
+                    onChangeText={handleSongSearch}
+                    returnKeyType="search"
+                  />
+                  {songSearchQuery.length > 0 && (
+                    <Pressable onPress={() => { setSongSearchQuery(''); setSongSearchResults([]); }}>
+                      <MaterialIcons name="close" size={16} color={Colors.textMuted} />
+                    </Pressable>
+                  )}
                 </View>
 
-                {aiSuggestedSongs.map(audio => {
-                  const isSelected = selectedAudioId === audio.id && !aiPickedSong;
-                  return (
-                    <Pressable
-                      key={audio.id}
-                      style={[styles.audioRow, isSelected && styles.audioRowActive]}
-                      onPress={() => {
-                        setSelectedAudioId(audio.id);
-                        setAiPickedSong(null);
-                        prefetchAudioForSong(audio.id, audio.title, audio.artist);
-                      }}
-                    >
-                      <View style={[styles.audioIcon, isSelected && { backgroundColor: Colors.primary }]}>
-                        <MaterialIcons name="music-note" size={18} color={isSelected ? '#fff' : Colors.textSecondary} />
-                      </View>
-                      <View style={{ flex: 1 }}>
-                        <Text style={styles.audioTitle}>{audio.title}</Text>
-                        <Text style={styles.audioArtist}>{audio.artist}</Text>
-                      </View>
-                      <View style={styles.audioMeta}>
-                        {audio.trending ? (
-                          <View style={styles.trendingBadge}>
-                            <MaterialIcons name="trending-up" size={10} color={Colors.primary} />
-                            <Text style={styles.trendingText}>Hot</Text>
+                {/* Search Results */}
+                {songSearchQuery.length > 0 ? (
+                  songSearchLoading ? (
+                    <View style={styles.searchLoadingRow}>
+                      <ActivityIndicator size="small" color={Colors.primary} />
+                      <Text style={styles.searchLoadingText}>Searching…</Text>
+                    </View>
+                  ) : songSearchResults.length === 0 ? (
+                    <Text style={styles.searchEmptyText}>No songs found</Text>
+                  ) : (
+                    songSearchResults.map(audio => {
+                      const isSelected = selectedAudioId === audio.id;
+                      return (
+                        <Pressable
+                          key={audio.id}
+                          style={[styles.audioRow, isSelected && styles.audioRowActive]}
+                          onPress={() => {
+                            setSelectedAudioId(audio.id);
+                            setAiPickedSong(null);
+                            prefetchAudioForSong(audio.id, audio.title, audio.artist, audio.previewUrl);
+                          }}
+                        >
+                          <View style={[styles.audioIcon, isSelected && { backgroundColor: Colors.primary }]}>
+                            <MaterialIcons name="music-note" size={18} color={isSelected ? '#fff' : Colors.textSecondary} />
                           </View>
-                        ) : null}
-                        <Text style={styles.audioUses}>{audio.uses}</Text>
-                      </View>
-                      {isSelected ? <MaterialIcons name="check-circle" size={20} color={Colors.primary} /> : null}
-                    </Pressable>
-                  );
-                })}
+                          <View style={{ flex: 1 }}>
+                            <Text style={styles.audioTitle}>{audio.title}</Text>
+                            <Text style={styles.audioArtist}>{audio.artist}</Text>
+                          </View>
+                          {isSelected ? <MaterialIcons name="check-circle" size={20} color={Colors.primary} /> : null}
+                        </Pressable>
+                      );
+                    })
+                  )
+                ) : (
+                  <>
+                    <View style={styles.audioHeader}>
+                      <Text style={styles.sectionLabel}>
+                        {fetchingSuggestions ? 'Picking songs for your video…' : 'Suggested for Your Video'}
+                      </Text>
+                      <Pressable onPress={fetchAudioSuggestions} disabled={fetchingSuggestions}>
+                        {fetchingSuggestions
+                          ? <ActivityIndicator size="small" color={Colors.primary} />
+                          : <MaterialIcons name="refresh" size={18} color={Colors.textSecondary} />}
+                      </Pressable>
+                    </View>
+                    {aiSuggestedSongs.map(audio => {
+                      const isSelected = selectedAudioId === audio.id && !aiPickedSong;
+                      return (
+                        <Pressable
+                          key={audio.id}
+                          style={[styles.audioRow, isSelected && styles.audioRowActive]}
+                          onPress={() => {
+                            setSelectedAudioId(audio.id);
+                            setAiPickedSong(null);
+                            prefetchAudioForSong(audio.id, audio.title, audio.artist);
+                          }}
+                        >
+                          <View style={[styles.audioIcon, isSelected && { backgroundColor: Colors.primary }]}>
+                            <MaterialIcons name="music-note" size={18} color={isSelected ? '#fff' : Colors.textSecondary} />
+                          </View>
+                          <View style={{ flex: 1 }}>
+                            <Text style={styles.audioTitle}>{audio.title}</Text>
+                            <Text style={styles.audioArtist}>{audio.artist}</Text>
+                          </View>
+                          <View style={styles.audioMeta}>
+                            {audio.trending ? (
+                              <View style={styles.trendingBadge}>
+                                <MaterialIcons name="trending-up" size={10} color={Colors.primary} />
+                                <Text style={styles.trendingText}>Hot</Text>
+                              </View>
+                            ) : null}
+                            <Text style={styles.audioUses}>{audio.uses}</Text>
+                          </View>
+                          {isSelected ? <MaterialIcons name="check-circle" size={20} color={Colors.primary} /> : null}
+                        </Pressable>
+                      );
+                    })}
+                  </>
+                )}
               </View>
             ) : null}
 
@@ -1565,6 +1651,42 @@ const styles = StyleSheet.create({
   },
   tagChipText: { fontSize: FontSize.sm, color: Colors.primaryLight, fontWeight: FontWeight.semibold, includeFontPadding: false },
   audioHeader: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },
+  songSearchBar: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: Colors.surfaceBorder,
+    borderRadius: Radius.full,
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    gap: 8,
+    marginBottom: Spacing.sm,
+  },
+  songSearchInput: {
+    flex: 1,
+    fontSize: FontSize.sm,
+    color: Colors.textPrimary,
+    includeFontPadding: false,
+    paddingVertical: 0,
+  },
+  searchLoadingRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    paddingVertical: Spacing.sm,
+    paddingHorizontal: 4,
+  },
+  searchLoadingText: {
+    fontSize: FontSize.sm,
+    color: Colors.textSecondary,
+    includeFontPadding: false,
+  },
+  searchEmptyText: {
+    fontSize: FontSize.sm,
+    color: Colors.textMuted,
+    textAlign: 'center',
+    paddingVertical: Spacing.md,
+    includeFontPadding: false,
+  },
   audioRow: {
     flexDirection: 'row', alignItems: 'center', gap: Spacing.sm,
     backgroundColor: Colors.surfaceElevated, borderRadius: Radius.md,
