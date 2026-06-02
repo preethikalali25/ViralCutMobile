@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
 import {
-  View, Text, ScrollView, StyleSheet, Pressable, ActivityIndicator,
+  View, Text, ScrollView, StyleSheet, Pressable, ActivityIndicator, FlatList,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Image } from 'expo-image';
@@ -13,62 +13,50 @@ import { useVideos } from '@/hooks/useVideos';
 import { useAlert } from '@/template';
 import { Platform as PlatformType, Video } from '@/types';
 import PlatformBadge from '@/components/ui/PlatformBadge';
+import { photosToVideo } from '@/services/videoOverlayService';
 
 const ALL_PLATFORMS: PlatformType[] = ['tiktok', 'reels', 'youtube'];
+
+type Mode = 'video' | 'photos';
 
 /** Copy a ph:// asset to the local cache so expo-video-thumbnails can read it. */
 async function resolveVideoUri(uri: string): Promise<string> {
   if (!uri.startsWith('ph://')) return uri;
 
-  // 1st attempt: FileSystem.copyAsync — works on iOS when photo library access is granted
   try {
     const FS = await import('expo-file-system');
     const dest = FS.cacheDirectory + `vid_${Date.now()}.mp4`;
     await FS.copyAsync({ from: uri, to: dest });
-    console.log('[resolveVideoUri] copyAsync succeeded:', dest);
     return dest;
   } catch (e) {
     console.warn('[resolveVideoUri] copyAsync failed, trying MediaLibrary:', e);
   }
 
-  // 2nd attempt: expo-media-library — bare UUID only (strip path suffixes like /L0/001)
   try {
     const MediaLibrary = await import('expo-media-library');
     const assetId = uri.replace('ph://', '').split('/')[0];
     const asset = await MediaLibrary.getAssetInfoAsync(assetId);
-    if (asset?.localUri) {
-      console.log('[resolveVideoUri] MediaLibrary localUri:', asset.localUri);
-      return asset.localUri;
-    }
+    if (asset?.localUri) return asset.localUri;
   } catch (e) {
     console.warn('[resolveVideoUri] MediaLibrary fallback failed:', e);
   }
 
-  // Give up — return original and let callers handle failure gracefully
   return uri;
 }
 
 /** Try extracting a thumbnail at multiple seek positions to avoid black/dark frames. */
 async function extractBestThumbnail(videoUri: string, durationMs: number): Promise<string | null> {
   try {
-    // Resolve ph:// URIs to local file URIs that VideoThumbnails can read
     const resolvedUri = await resolveVideoUri(videoUri);
-
     const dur = durationMs > 0 ? durationMs : 5000;
     const candidates = [
-      Math.floor(dur * 0.2),
-      Math.floor(dur * 0.1),
-      2000,
-      1000,
-      500,
-      0,
+      Math.floor(dur * 0.2), Math.floor(dur * 0.1), 2000, 1000, 500, 0,
     ].filter((t, i, arr) => arr.indexOf(t) === i);
 
     for (const seekMs of candidates) {
       try {
         const { uri } = await VideoThumbnails.getThumbnailAsync(resolvedUri, {
-          time: seekMs,
-          quality: 0.85,
+          time: seekMs, quality: 0.85,
         });
         if (uri) return uri;
       } catch { /* try next */ }
@@ -89,11 +77,19 @@ export default function UploadScreen() {
   const router = useRouter();
   const { addVideo } = useVideos();
   const { showAlert } = useAlert();
+
+  const [mode, setMode] = useState<Mode>('video');
   const [platforms, setPlatforms] = useState<PlatformType[]>(['tiktok']);
   const [isUploading, setIsUploading] = useState(false);
+  const [convertingPhotos, setConvertingPhotos] = useState(false);
+
+  // Video mode state
   const [pickedVideo, setPickedVideo] = useState<ImagePicker.ImagePickerAsset | null>(null);
   const [pickedThumbnail, setPickedThumbnail] = useState<string | null>(null);
   const [extractingThumb, setExtractingThumb] = useState(false);
+
+  // Photos mode state
+  const [pickedPhotos, setPickedPhotos] = useState<ImagePicker.ImagePickerAsset[]>([]);
 
   const togglePlatform = (p: PlatformType) => {
     setPlatforms(prev =>
@@ -101,10 +97,17 @@ export default function UploadScreen() {
     );
   };
 
+  const switchMode = (m: Mode) => {
+    setMode(m);
+    setPickedVideo(null);
+    setPickedThumbnail(null);
+    setPickedPhotos([]);
+  };
+
   const handlePickVideo = async () => {
     const { status } = await ImagePicker.requestMediaLibraryPermissionsAsync();
     if (status !== 'granted') {
-      showAlert('Permission Required', 'Please allow access to your media library to pick a video.');
+      showAlert('Permission Required', 'Please allow access to your media library.');
       return;
     }
     const result = await ImagePicker.launchImageLibraryAsync({
@@ -119,48 +122,99 @@ export default function UploadScreen() {
 
       if (asset.uri) {
         setExtractingThumb(true);
-        // Keep the original ph:// URI — the native burn module handles it via
-        // PHImageManager (audio-safe). extractBestThumbnail resolves ph:// internally.
         extractBestThumbnail(asset.uri, asset.duration ?? 0).then(thumbUri => {
           if (thumbUri) setPickedThumbnail(thumbUri);
           setExtractingThumb(false);
-        }).catch(err => {
-          console.warn('[upload] thumbnail extraction error:', err);
-          setExtractingThumb(false);
-        });
+        }).catch(() => setExtractingThumb(false));
       }
     }
   };
 
+  const handlePickPhotos = async () => {
+    const { status } = await ImagePicker.requestMediaLibraryPermissionsAsync();
+    if (status !== 'granted') {
+      showAlert('Permission Required', 'Please allow access to your media library.');
+      return;
+    }
+    const result = await ImagePicker.launchImageLibraryAsync({
+      mediaTypes: ['images'],
+      allowsMultipleSelection: true,
+      selectionLimit: 10,
+      quality: 1,
+    });
+    if (!result.canceled && result.assets.length > 0) {
+      setPickedPhotos(result.assets);
+    }
+  };
+
   const handleUpload = async (action: 'edit' | 'publish') => {
-    if (!pickedVideo) {
+    if (mode === 'video' && !pickedVideo) {
       showAlert('No Video', 'Please select a video first.');
+      return;
+    }
+    if (mode === 'photos' && pickedPhotos.length === 0) {
+      showAlert('No Photos', 'Please select at least one photo.');
       return;
     }
 
     setIsUploading(true);
     const id = `v${Date.now()}`;
-    const duration = getVideoDuration(pickedVideo);
 
-    let thumb = pickedThumbnail ?? '';
-    if (!pickedThumbnail && pickedVideo?.uri) {
-      thumb = (await extractBestThumbnail(pickedVideo.uri, pickedVideo.duration ?? 0)) ?? '';
+    try {
+      if (mode === 'photos') {
+        // Convert photos to a video reel
+        setConvertingPhotos(true);
+        const photoUris = pickedPhotos.map(p => p.uri);
+        const videoUri = await photosToVideo(photoUris, 3.0);
+        setConvertingPhotos(false);
+
+        const duration = pickedPhotos.length * 3;
+        const thumbnail = pickedPhotos[0].uri; // first photo as thumbnail
+
+        const newVideo: Video = {
+          id,
+          title: '',
+          thumbnail,
+          duration,
+          status: action === 'publish' ? 'published' : 'ready',
+          platforms,
+          createdAt: new Date().toISOString(),
+          videoUri,
+          ...(action === 'publish' ? { publishedAt: new Date().toISOString() } : {}),
+        };
+
+        addVideo(newVideo);
+      } else {
+        // Video mode
+        const duration = getVideoDuration(pickedVideo!);
+        let thumb = pickedThumbnail ?? '';
+        if (!thumb && pickedVideo?.uri) {
+          thumb = (await extractBestThumbnail(pickedVideo.uri, pickedVideo.duration ?? 0)) ?? '';
+        }
+
+        const newVideo: Video = {
+          id,
+          title: '',
+          thumbnail: thumb,
+          duration,
+          status: action === 'publish' ? 'published' : 'ready',
+          platforms,
+          createdAt: new Date().toISOString(),
+          ...(action === 'publish' ? { publishedAt: new Date().toISOString() } : {}),
+          ...(pickedVideo?.uri ? { videoUri: pickedVideo.uri } : {}),
+          ...(pickedVideo?.assetId ? { videoAssetId: pickedVideo.assetId } : {}),
+        };
+
+        addVideo(newVideo);
+      }
+    } catch (e: any) {
+      console.warn('[upload] handleUpload error:', e);
+      showAlert('Error', e?.message ?? 'Something went wrong. Please try again.');
+      setIsUploading(false);
+      setConvertingPhotos(false);
+      return;
     }
 
-    const newVideo: Video = {
-      id,
-      title: '',
-      thumbnail: thumb,
-      duration,
-      status: action === 'publish' ? 'published' : 'ready',
-      platforms,
-      createdAt: new Date().toISOString(),
-      ...(action === 'publish' ? { publishedAt: new Date().toISOString() } : {}),
-      ...(pickedVideo?.uri ? { videoUri: pickedVideo.uri } : {}),
-      ...(pickedVideo?.assetId ? { videoAssetId: pickedVideo.assetId } : {}),
-    };
-
-    addVideo(newVideo);
     setIsUploading(false);
 
     if (action === 'edit') {
@@ -170,6 +224,8 @@ export default function UploadScreen() {
     }
   };
 
+  const hasContent = mode === 'video' ? !!pickedVideo : pickedPhotos.length > 0;
+
   return (
     <SafeAreaView style={styles.safe} edges={['top']}>
       {/* Header */}
@@ -177,63 +233,146 @@ export default function UploadScreen() {
         <Pressable style={styles.backBtn} onPress={() => router.back()}>
           <MaterialIcons name="arrow-back" size={20} color={Colors.textSecondary} />
         </Pressable>
-        <Text style={styles.headerTitle}>Upload Video</Text>
+        <Text style={styles.headerTitle}>New Reel</Text>
         <View style={{ width: 36 }} />
       </View>
 
       <ScrollView showsVerticalScrollIndicator={false}>
+        {/* Mode Toggle */}
+        <View style={styles.modeRow}>
+          <Pressable
+            style={[styles.modeBtn, mode === 'video' && styles.modeBtnActive]}
+            onPress={() => switchMode('video')}
+          >
+            <MaterialIcons
+              name="videocam"
+              size={16}
+              color={mode === 'video' ? Colors.primaryLight : Colors.textMuted}
+            />
+            <Text style={[styles.modeBtnText, mode === 'video' && styles.modeBtnTextActive]}>
+              Video
+            </Text>
+          </Pressable>
+          <Pressable
+            style={[styles.modeBtn, mode === 'photos' && styles.modeBtnActive]}
+            onPress={() => switchMode('photos')}
+          >
+            <MaterialIcons
+              name="photo-library"
+              size={16}
+              color={mode === 'photos' ? Colors.primaryLight : Colors.textMuted}
+            />
+            <Text style={[styles.modeBtnText, mode === 'photos' && styles.modeBtnTextActive]}>
+              Photos
+            </Text>
+          </Pressable>
+        </View>
+
         {/* Drop Zone */}
         <View style={styles.dropZone}>
-          {pickedVideo ? (
-            <View style={styles.previewWrapper}>
-              {pickedThumbnail ? (
-                <Image
-                  source={{ uri: pickedThumbnail }}
-                  style={styles.previewThumb}
-                  contentFit="cover"
-                  transition={200}
-                />
-              ) : (
-                <View style={[styles.previewThumb, styles.previewPlaceholder]}>
-                  {extractingThumb ? (
-                    <ActivityIndicator color={Colors.primaryLight} />
+          {mode === 'video' ? (
+            <>
+              {pickedVideo ? (
+                <View style={styles.previewWrapper}>
+                  {pickedThumbnail ? (
+                    <Image
+                      source={{ uri: pickedThumbnail }}
+                      style={styles.previewThumb}
+                      contentFit="cover"
+                      transition={200}
+                    />
                   ) : (
-                    <MaterialCommunityIcons name="video" size={36} color={Colors.primaryLight} />
+                    <View style={[styles.previewThumb, styles.previewPlaceholder]}>
+                      {extractingThumb ? (
+                        <ActivityIndicator color={Colors.primaryLight} />
+                      ) : (
+                        <MaterialCommunityIcons name="video" size={36} color={Colors.primaryLight} />
+                      )}
+                    </View>
                   )}
+                  <View style={styles.previewOverlay}>
+                    <MaterialIcons name="play-circle-filled" size={36} color="rgba(255,255,255,0.85)" />
+                  </View>
+                  <Pressable style={styles.previewChange} onPress={handlePickVideo}>
+                    <MaterialIcons name="swap-horiz" size={14} color={Colors.primaryLight} />
+                    <Text style={styles.previewChangeText}>Change</Text>
+                  </Pressable>
+                </View>
+              ) : (
+                <View style={styles.dropIcon}>
+                  <MaterialCommunityIcons name="cloud-upload-outline" size={44} color={Colors.primary} />
                 </View>
               )}
-              <View style={styles.previewOverlay}>
-                <MaterialIcons name="play-circle-filled" size={36} color="rgba(255,255,255,0.85)" />
-              </View>
-              <Pressable style={styles.previewChange} onPress={handlePickVideo}>
-                <MaterialIcons name="swap-horiz" size={14} color={Colors.primaryLight} />
-                <Text style={styles.previewChangeText}>Change</Text>
-              </Pressable>
-            </View>
-          ) : (
-            <View style={styles.dropIcon}>
-              <MaterialCommunityIcons name="cloud-upload-outline" size={44} color={Colors.primary} />
-            </View>
-          )}
-          <Text style={styles.dropTitle}>{pickedVideo ? 'Video Selected' : 'Select a Video'}</Text>
-          <Text style={styles.dropSub}>{pickedVideo ? 'Tap below to change' : 'MP4, MOV — up to 4GB'}</Text>
-          {!pickedVideo ? (
-            <View style={styles.dropFormats}>
-              {['TikTok', 'Reels', 'YT Shorts'].map(f => (
-                <View key={f} style={styles.formatBadge}>
-                  <Text style={styles.formatText}>{f}</Text>
+              <Text style={styles.dropTitle}>{pickedVideo ? 'Video Selected' : 'Select a Video'}</Text>
+              <Text style={styles.dropSub}>{pickedVideo ? 'Tap below to change' : 'MP4, MOV — up to 4GB'}</Text>
+              {!pickedVideo && (
+                <View style={styles.dropFormats}>
+                  {['TikTok', 'Reels', 'YT Shorts'].map(f => (
+                    <View key={f} style={styles.formatBadge}>
+                      <Text style={styles.formatText}>{f}</Text>
+                    </View>
+                  ))}
                 </View>
-              ))}
-            </View>
-          ) : null}
-
-          <Pressable
-            style={({ pressed }) => [styles.selectBtn, pressed && { opacity: 0.8 }]}
-            onPress={handlePickVideo}
-          >
-            <MaterialIcons name="video-library" size={18} color="#fff" />
-            <Text style={styles.selectBtnText}>{pickedVideo ? 'Change Video' : 'Browse Files'}</Text>
-          </Pressable>
+              )}
+              <Pressable
+                style={({ pressed }) => [styles.selectBtn, pressed && { opacity: 0.8 }]}
+                onPress={handlePickVideo}
+              >
+                <MaterialIcons name="video-library" size={18} color="#fff" />
+                <Text style={styles.selectBtnText}>{pickedVideo ? 'Change Video' : 'Browse Files'}</Text>
+              </Pressable>
+            </>
+          ) : (
+            <>
+              {/* Photos mode */}
+              {pickedPhotos.length > 0 ? (
+                <View style={styles.photoStripContainer}>
+                  <FlatList
+                    data={pickedPhotos}
+                    horizontal
+                    keyExtractor={(_, i) => String(i)}
+                    showsHorizontalScrollIndicator={false}
+                    contentContainerStyle={styles.photoStrip}
+                    renderItem={({ item, index }) => (
+                      <View style={styles.photoThumbWrapper}>
+                        <Image
+                          source={{ uri: item.uri }}
+                          style={styles.photoThumb}
+                          contentFit="cover"
+                        />
+                        <View style={styles.photoIndex}>
+                          <Text style={styles.photoIndexText}>{index + 1}</Text>
+                        </View>
+                      </View>
+                    )}
+                  />
+                </View>
+              ) : (
+                <View style={styles.dropIcon}>
+                  <MaterialIcons name="photo-library" size={44} color={Colors.primary} />
+                </View>
+              )}
+              <Text style={styles.dropTitle}>
+                {pickedPhotos.length > 0
+                  ? `${pickedPhotos.length} Photo${pickedPhotos.length > 1 ? 's' : ''} Selected`
+                  : 'Select Photos'}
+              </Text>
+              <Text style={styles.dropSub}>
+                {pickedPhotos.length > 0
+                  ? `Each shown for 3s · ${pickedPhotos.length * 3}s total`
+                  : 'Pick up to 10 photos — we\'ll make a reel'}
+              </Text>
+              <Pressable
+                style={({ pressed }) => [styles.selectBtn, pressed && { opacity: 0.8 }]}
+                onPress={handlePickPhotos}
+              >
+                <MaterialIcons name="add-photo-alternate" size={18} color="#fff" />
+                <Text style={styles.selectBtnText}>
+                  {pickedPhotos.length > 0 ? 'Change Photos' : 'Choose Photos'}
+                </Text>
+              </Pressable>
+            </>
+          )}
         </View>
 
         {/* Platforms */}
@@ -264,11 +403,23 @@ export default function UploadScreen() {
         <View style={styles.tipsCard}>
           <View style={styles.tipsHeader}>
             <MaterialIcons name="lightbulb-outline" size={16} color={Colors.amber} />
-            <Text style={styles.tipsTitle}>Upload Tips</Text>
+            <Text style={styles.tipsTitle}>
+              {mode === 'photos' ? 'Photo Reel Tips' : 'Upload Tips'}
+            </Text>
           </View>
-          <Text style={styles.tipText}>• Vertical 9:16 format works best for all platforms</Text>
-          <Text style={styles.tipText}>• Keep it under 60 seconds for max reach</Text>
-          <Text style={styles.tipText}>• Upload high resolution (1080p+) for quality</Text>
+          {mode === 'photos' ? (
+            <>
+              <Text style={styles.tipText}>• Pick 3–8 photos for the best reel length</Text>
+              <Text style={styles.tipText}>• Photos are shown in the order you select them</Text>
+              <Text style={styles.tipText}>• Add a hook and background music in the editor</Text>
+            </>
+          ) : (
+            <>
+              <Text style={styles.tipText}>• Vertical 9:16 format works best for all platforms</Text>
+              <Text style={styles.tipText}>• Keep it under 60 seconds for max reach</Text>
+              <Text style={styles.tipText}>• Upload high resolution (1080p+) for quality</Text>
+            </>
+          )}
         </View>
 
         {/* Action Button */}
@@ -276,14 +427,19 @@ export default function UploadScreen() {
           <Pressable
             style={({ pressed }) => [
               styles.editBtn,
-              (!pickedVideo || isUploading) && styles.actionBtnDisabled,
+              (!hasContent || isUploading) && styles.actionBtnDisabled,
               pressed && { opacity: 0.85 },
             ]}
             onPress={() => handleUpload('edit')}
-            disabled={!pickedVideo || isUploading}
+            disabled={!hasContent || isUploading}
           >
             {isUploading ? (
-              <ActivityIndicator size="small" color={Colors.primaryLight} />
+              <View style={styles.loadingRow}>
+                <ActivityIndicator size="small" color={Colors.primaryLight} />
+                {convertingPhotos && (
+                  <Text style={styles.convertingText}>Creating reel…</Text>
+                )}
+              </View>
             ) : (
               <>
                 <MaterialIcons name="edit" size={18} color={Colors.primaryLight} />
@@ -326,6 +482,39 @@ const styles = StyleSheet.create({
     color: Colors.textPrimary,
     includeFontPadding: false,
   },
+  modeRow: {
+    flexDirection: 'row',
+    marginHorizontal: Spacing.md,
+    marginTop: Spacing.md,
+    backgroundColor: Colors.surfaceElevated,
+    borderRadius: Radius.full,
+    padding: 3,
+    borderWidth: 1,
+    borderColor: Colors.surfaceBorder,
+  },
+  modeBtn: {
+    flex: 1,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 6,
+    paddingVertical: 8,
+    borderRadius: Radius.full,
+  },
+  modeBtnActive: {
+    backgroundColor: Colors.primaryGlow,
+    borderWidth: 1,
+    borderColor: Colors.primary + '55',
+  },
+  modeBtnText: {
+    fontSize: FontSize.sm,
+    fontWeight: FontWeight.semibold,
+    color: Colors.textMuted,
+    includeFontPadding: false,
+  },
+  modeBtnTextActive: {
+    color: Colors.primaryLight,
+  },
   dropZone: {
     margin: Spacing.md,
     backgroundColor: Colors.surfaceElevated,
@@ -356,6 +545,7 @@ const styles = StyleSheet.create({
     fontSize: FontSize.sm,
     color: Colors.textSecondary,
     includeFontPadding: false,
+    textAlign: 'center',
   },
   dropFormats: {
     flexDirection: 'row',
@@ -399,10 +589,7 @@ const styles = StyleSheet.create({
     overflow: 'hidden',
     position: 'relative',
   },
-  previewThumb: {
-    width: '100%',
-    height: '100%',
-  },
+  previewThumb: { width: '100%', height: '100%' },
   previewPlaceholder: {
     backgroundColor: Colors.surfaceBorder,
     alignItems: 'center',
@@ -433,6 +620,34 @@ const styles = StyleSheet.create({
     fontWeight: FontWeight.semibold,
     includeFontPadding: false,
   },
+  // Photos mode
+  photoStripContainer: { width: '100%' },
+  photoStrip: { gap: 8, paddingHorizontal: 4 },
+  photoThumbWrapper: {
+    width: 80,
+    height: 100,
+    borderRadius: Radius.md,
+    overflow: 'hidden',
+    position: 'relative',
+  },
+  photoThumb: { width: '100%', height: '100%' },
+  photoIndex: {
+    position: 'absolute',
+    top: 4,
+    left: 4,
+    width: 20,
+    height: 20,
+    borderRadius: 10,
+    backgroundColor: 'rgba(0,0,0,0.65)',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  photoIndexText: {
+    fontSize: 10,
+    fontWeight: FontWeight.bold,
+    color: '#fff',
+    includeFontPadding: false,
+  },
   field: {
     paddingHorizontal: Spacing.md,
     marginBottom: Spacing.lg,
@@ -444,9 +659,7 @@ const styles = StyleSheet.create({
     color: Colors.textSecondary,
     includeFontPadding: false,
   },
-  platformsList: {
-    gap: Spacing.sm,
-  },
+  platformsList: { gap: Spacing.sm },
   platformCard: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -497,12 +710,9 @@ const styles = StyleSheet.create({
     includeFontPadding: false,
   },
   actionRow: {
-    flexDirection: 'row',
-    gap: Spacing.sm,
     marginHorizontal: Spacing.md,
   },
   editBtn: {
-    flex: 1,
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'center',
@@ -519,7 +729,16 @@ const styles = StyleSheet.create({
     color: Colors.primaryLight,
     includeFontPadding: false,
   },
-  actionBtnDisabled: {
-    opacity: 0.45,
+  actionBtnDisabled: { opacity: 0.45 },
+  loadingRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+  },
+  convertingText: {
+    fontSize: FontSize.md,
+    fontWeight: FontWeight.semibold,
+    color: Colors.primaryLight,
+    includeFontPadding: false,
   },
 });

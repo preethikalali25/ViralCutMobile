@@ -180,6 +180,13 @@ export default function EditorScreen() {
   const [generatingAudio, setGeneratingAudio] = useState(false);
   const [aiPickedSong, setAiPickedSong] = useState<AISuggestedAudio | null>(null);
   const [autoGenDone, setAutoGenDone] = useState(false);
+  const [aiSuggestedSongs, setAiSuggestedSongs] = useState<typeof MOCK_TRENDING_AUDIO>(MOCK_TRENDING_AUDIO);
+  const [fetchingSuggestions, setFetchingSuggestions] = useState(false);
+  const audioSuggestionsLoadedRef = useRef(false);
+  const [songSearchQuery, setSongSearchQuery] = useState('');
+  const [songSearchResults, setSongSearchResults] = useState<{ id: string; title: string; artist: string; previewUrl: string }[]>([]);
+  const [songSearchLoading, setSongSearchLoading] = useState(false);
+  const songSearchTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const [showPlayer, setShowPlayer] = useState(false);
   const [videoTitle, setVideoTitle] = useState('');
@@ -210,7 +217,7 @@ export default function EditorScreen() {
   // await it if the user taps publish before the download finishes.
   const audioFetchPromise = useRef<Promise<string | null>>(Promise.resolve(null));
 
-  const prefetchAudioForSong = useCallback((id: string, title: string, artist: string) => {
+  const prefetchAudioForSong = useCallback((id: string, title: string, artist: string, directPreviewUrl?: string) => {
     const key = `${title}::${artist}`;
     if (key === cachedAudioKey.current) return;
     cachedAudioKey.current = key;
@@ -219,7 +226,7 @@ export default function EditorScreen() {
     setAudioStatus('loading');
     const p: Promise<string | null> = (async () => {
       try {
-        const previewUrl = await fetchItunesPreviewUrl(title, artist);
+        const previewUrl = directPreviewUrl || await fetchItunesPreviewUrl(title, artist);
         if (!previewUrl) {
           console.warn('[prefetchAudio] no iTunes preview for:', title, artist);
           setAudioStatus(prev => prev === 'loading' ? 'failed' : prev);
@@ -345,6 +352,10 @@ export default function EditorScreen() {
     setSelectedAudioId(video.audio?.id ?? '');
     setPlatforms(video.platforms ?? ['tiktok']);
     setThumbnailUri(video.thumbnail ?? null);
+    // Restore aiPickedSong if the saved audio isn't one of the static mock songs
+    if (video.audio?.id && !MOCK_TRENDING_AUDIO.find(a => a.id === video.audio!.id)) {
+      setAiPickedSong({ ...video.audio, platform: [], mood: '', id: video.audio.id } as AISuggestedAudio);
+    }
     if (video.audio?.title && video.audio?.artist) {
       prefetchAudioForSong(video.audio.id ?? 'saved', video.audio.title, video.audio.artist);
     } else {
@@ -399,6 +410,20 @@ export default function EditorScreen() {
           setAiPickedSong(data.result);
           setSelectedAudioId(data.result.id);
           prefetchAudioForSong(data.result.id, data.result.title, data.result.artist);
+        }
+      }
+
+      // Fetch personalised song suggestions for this video
+      if (!audioSuggestionsLoadedRef.current) {
+        audioSuggestionsLoadedRef.current = true;
+        setFetchingSuggestions(true);
+        const { data } = await callAIGenerator('audio_suggestions', {
+          videoTitle: cleanTitle(video.title), platforms: video.platforms ?? ['tiktok'], ...framePayload,
+        });
+        setFetchingSuggestions(false);
+        const songs = data?.result;
+        if (Array.isArray(songs) && songs.length > 0) {
+          setAiSuggestedSongs(songs);
         }
       }
     };
@@ -469,6 +494,45 @@ export default function EditorScreen() {
     }
   }, [video.title, platforms, showAlert, prefetchAudioForSong]);
 
+  const fetchAudioSuggestions = useCallback(async () => {
+    setFetchingSuggestions(true);
+    const framePayload = await ensureFrame();
+    const { data } = await callAIGenerator('audio_suggestions', {
+      videoTitle: cleanTitle(video.title), platforms, ...framePayload,
+    });
+    setFetchingSuggestions(false);
+    const songs = data?.result;
+    if (Array.isArray(songs) && songs.length > 0) {
+      setAiSuggestedSongs(songs);
+    }
+  }, [video.title, platforms]);
+
+  const handleSongSearch = useCallback((query: string) => {
+    setSongSearchQuery(query);
+    if (songSearchTimer.current) clearTimeout(songSearchTimer.current);
+    if (!query.trim()) { setSongSearchResults([]); return; }
+    songSearchTimer.current = setTimeout(async () => {
+      setSongSearchLoading(true);
+      try {
+        const encoded = encodeURIComponent(query.trim());
+        const res = await fetch(
+          `https://itunes.apple.com/search?term=${encoded}&media=music&limit=8&country=US`,
+        );
+        const data = await res.json();
+        const results = (data.results ?? []).map((r: any) => ({
+          id: `search_${r.trackId}`,
+          title: r.trackName ?? '',
+          artist: r.artistName ?? '',
+          previewUrl: r.previewUrl ?? '',
+        })).filter((r: any) => r.title && r.previewUrl);
+        setSongSearchResults(results);
+      } catch {
+        setSongSearchResults([]);
+      }
+      setSongSearchLoading(false);
+    }, 400);
+  }, []);
+
   const handleGenerateTitle = useCallback(async () => {
     setGeneratingTitle(true);
     const framePayload = await ensureFrame();
@@ -486,7 +550,9 @@ export default function EditorScreen() {
   const snapshotEditorState = () => {
     const audioSource = aiPickedSong && selectedAudioId === aiPickedSong.id
       ? aiPickedSong
-      : MOCK_TRENDING_AUDIO.find(a => a.id === selectedAudioId);
+      : (MOCK_TRENDING_AUDIO.find(a => a.id === selectedAudioId)
+        ?? aiSuggestedSongs.find(a => a.id === selectedAudioId)
+        ?? songSearchResults.find(a => a.id === selectedAudioId));
     return {
       hook: { type: hookType, text: hookText },
       caption,
@@ -654,8 +720,9 @@ export default function EditorScreen() {
     if (prepError || !videoUrl) { showAlert('Upload Failed', prepError ?? 'Could not upload video.'); return; }
 
     const captionText = [snap.caption, snap.hashtags.join(' ')].filter(Boolean).join('\n\n');
+    const audioName = snap.audio ? `${snap.audio.title} – ${snap.audio.artist}` : undefined;
     updateVideo(video.id, { ...snap, title: videoTitle });
-    const { error } = await instagram.publish(videoUrl, captionText);
+    const { error } = await instagram.publish(videoUrl, captionText, undefined, audioName);
     if (error) showAlert('Instagram Error', error);
   };
 
@@ -969,43 +1036,104 @@ export default function EditorScreen() {
                   />
                 </View>
 
-                <View style={styles.audioHeader}>
-                  <Text style={styles.sectionLabel}>Trending Audio</Text>
-                  {aiPickedSong ? <Text style={styles.orPickText}>or pick manually below</Text> : null}
+                {/* Song Search Bar */}
+                <View style={styles.songSearchBar}>
+                  <MaterialIcons name="search" size={18} color={Colors.textMuted} />
+                  <TextInput
+                    style={styles.songSearchInput}
+                    placeholder="Search any song…"
+                    placeholderTextColor={Colors.textMuted}
+                    value={songSearchQuery}
+                    onChangeText={handleSongSearch}
+                    returnKeyType="search"
+                  />
+                  {songSearchQuery.length > 0 && (
+                    <Pressable onPress={() => { setSongSearchQuery(''); setSongSearchResults([]); }}>
+                      <MaterialIcons name="close" size={16} color={Colors.textMuted} />
+                    </Pressable>
+                  )}
                 </View>
 
-                {MOCK_TRENDING_AUDIO.map(audio => {
-                  const isSelected = selectedAudioId === audio.id && !aiPickedSong;
-                  return (
-                    <Pressable
-                      key={audio.id}
-                      style={[styles.audioRow, isSelected && styles.audioRowActive]}
-                      onPress={() => {
-                        setSelectedAudioId(audio.id);
-                        setAiPickedSong(null);
-                        prefetchAudioForSong(audio.id, audio.title, audio.artist);
-                      }}
-                    >
-                      <View style={[styles.audioIcon, isSelected && { backgroundColor: Colors.primary }]}>
-                        <MaterialIcons name="music-note" size={18} color={isSelected ? '#fff' : Colors.textSecondary} />
-                      </View>
-                      <View style={{ flex: 1 }}>
-                        <Text style={styles.audioTitle}>{audio.title}</Text>
-                        <Text style={styles.audioArtist}>{audio.artist}</Text>
-                      </View>
-                      <View style={styles.audioMeta}>
-                        {audio.trending ? (
-                          <View style={styles.trendingBadge}>
-                            <MaterialIcons name="trending-up" size={10} color={Colors.primary} />
-                            <Text style={styles.trendingText}>Hot</Text>
+                {/* Search Results */}
+                {songSearchQuery.length > 0 ? (
+                  songSearchLoading ? (
+                    <View style={styles.searchLoadingRow}>
+                      <ActivityIndicator size="small" color={Colors.primary} />
+                      <Text style={styles.searchLoadingText}>Searching…</Text>
+                    </View>
+                  ) : songSearchResults.length === 0 ? (
+                    <Text style={styles.searchEmptyText}>No songs found</Text>
+                  ) : (
+                    songSearchResults.map(audio => {
+                      const isSelected = selectedAudioId === audio.id;
+                      return (
+                        <Pressable
+                          key={audio.id}
+                          style={[styles.audioRow, isSelected && styles.audioRowActive]}
+                          onPress={() => {
+                            setSelectedAudioId(audio.id);
+                            setAiPickedSong(null);
+                            prefetchAudioForSong(audio.id, audio.title, audio.artist, audio.previewUrl);
+                          }}
+                        >
+                          <View style={[styles.audioIcon, isSelected && { backgroundColor: Colors.primary }]}>
+                            <MaterialIcons name="music-note" size={18} color={isSelected ? '#fff' : Colors.textSecondary} />
                           </View>
-                        ) : null}
-                        <Text style={styles.audioUses}>{audio.uses}</Text>
-                      </View>
-                      {isSelected ? <MaterialIcons name="check-circle" size={20} color={Colors.primary} /> : null}
-                    </Pressable>
-                  );
-                })}
+                          <View style={{ flex: 1 }}>
+                            <Text style={styles.audioTitle}>{audio.title}</Text>
+                            <Text style={styles.audioArtist}>{audio.artist}</Text>
+                          </View>
+                          {isSelected ? <MaterialIcons name="check-circle" size={20} color={Colors.primary} /> : null}
+                        </Pressable>
+                      );
+                    })
+                  )
+                ) : (
+                  <>
+                    <View style={styles.audioHeader}>
+                      <Text style={styles.sectionLabel}>
+                        {fetchingSuggestions ? 'Picking songs for your video…' : 'Suggested for Your Video'}
+                      </Text>
+                      <Pressable onPress={fetchAudioSuggestions} disabled={fetchingSuggestions}>
+                        {fetchingSuggestions
+                          ? <ActivityIndicator size="small" color={Colors.primary} />
+                          : <MaterialIcons name="refresh" size={18} color={Colors.textSecondary} />}
+                      </Pressable>
+                    </View>
+                    {aiSuggestedSongs.map(audio => {
+                      const isSelected = selectedAudioId === audio.id && !aiPickedSong;
+                      return (
+                        <Pressable
+                          key={audio.id}
+                          style={[styles.audioRow, isSelected && styles.audioRowActive]}
+                          onPress={() => {
+                            setSelectedAudioId(audio.id);
+                            setAiPickedSong(null);
+                            prefetchAudioForSong(audio.id, audio.title, audio.artist);
+                          }}
+                        >
+                          <View style={[styles.audioIcon, isSelected && { backgroundColor: Colors.primary }]}>
+                            <MaterialIcons name="music-note" size={18} color={isSelected ? '#fff' : Colors.textSecondary} />
+                          </View>
+                          <View style={{ flex: 1 }}>
+                            <Text style={styles.audioTitle}>{audio.title}</Text>
+                            <Text style={styles.audioArtist}>{audio.artist}</Text>
+                          </View>
+                          <View style={styles.audioMeta}>
+                            {audio.trending ? (
+                              <View style={styles.trendingBadge}>
+                                <MaterialIcons name="trending-up" size={10} color={Colors.primary} />
+                                <Text style={styles.trendingText}>Hot</Text>
+                              </View>
+                            ) : null}
+                            <Text style={styles.audioUses}>{audio.uses}</Text>
+                          </View>
+                          {isSelected ? <MaterialIcons name="check-circle" size={20} color={Colors.primary} /> : null}
+                        </Pressable>
+                      );
+                    })}
+                  </>
+                )}
               </View>
             ) : null}
 
@@ -1523,6 +1651,42 @@ const styles = StyleSheet.create({
   },
   tagChipText: { fontSize: FontSize.sm, color: Colors.primaryLight, fontWeight: FontWeight.semibold, includeFontPadding: false },
   audioHeader: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },
+  songSearchBar: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: Colors.surfaceBorder,
+    borderRadius: Radius.full,
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    gap: 8,
+    marginBottom: Spacing.sm,
+  },
+  songSearchInput: {
+    flex: 1,
+    fontSize: FontSize.sm,
+    color: Colors.textPrimary,
+    includeFontPadding: false,
+    paddingVertical: 0,
+  },
+  searchLoadingRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    paddingVertical: Spacing.sm,
+    paddingHorizontal: 4,
+  },
+  searchLoadingText: {
+    fontSize: FontSize.sm,
+    color: Colors.textSecondary,
+    includeFontPadding: false,
+  },
+  searchEmptyText: {
+    fontSize: FontSize.sm,
+    color: Colors.textMuted,
+    textAlign: 'center',
+    paddingVertical: Spacing.md,
+    includeFontPadding: false,
+  },
   audioRow: {
     flexDirection: 'row', alignItems: 'center', gap: Spacing.sm,
     backgroundColor: Colors.surfaceElevated, borderRadius: Radius.md,

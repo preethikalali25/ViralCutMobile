@@ -600,4 +600,177 @@ RCT_EXPORT_METHOD(burnText:(NSString *)videoUri
     }
 }
 
+// ---------------------------------------------------------------------------
+// Photo → Video: renders each photo as an aspect-fill frame at 1080×1920.
+// ---------------------------------------------------------------------------
+
+- (CVPixelBufferRef)createPixelBufferFromImage:(UIImage *)image targetSize:(CGSize)targetSize {
+    CVPixelBufferRef pb = NULL;
+    NSDictionary *opts = @{
+        (NSString *)kCVPixelBufferCGImageCompatibilityKey: @YES,
+        (NSString *)kCVPixelBufferCGBitmapContextCompatibilityKey: @YES,
+    };
+    CVReturn status = CVPixelBufferCreate(kCFAllocatorDefault,
+                                         (size_t)targetSize.width, (size_t)targetSize.height,
+                                         kCVPixelFormatType_32BGRA,
+                                         (__bridge CFDictionaryRef)opts, &pb);
+    if (status != kCVReturnSuccess || !pb) return NULL;
+
+    CVPixelBufferLockBaseAddress(pb, 0);
+    void *base = CVPixelBufferGetBaseAddress(pb);
+    size_t bpr  = CVPixelBufferGetBytesPerRow(pb);
+
+    CGColorSpaceRef cs = CGColorSpaceCreateDeviceRGB();
+    CGContextRef ctx = CGBitmapContextCreate(base,
+                                             (size_t)targetSize.width, (size_t)targetSize.height,
+                                             8, bpr, cs,
+                                             kCGBitmapByteOrder32Little | kCGImageAlphaPremultipliedFirst);
+    CGColorSpaceRelease(cs);
+    if (!ctx) { CVPixelBufferUnlockBaseAddress(pb, 0); CVPixelBufferRelease(pb); return NULL; }
+
+    // Black background
+    CGContextSetFillColorWithColor(ctx, UIColor.blackColor.CGColor);
+    CGContextFillRect(ctx, CGRectMake(0, 0, targetSize.width, targetSize.height));
+
+    // Aspect-fill: scale so image fills target, centre-crop
+    CGFloat iw = image.size.width, ih = image.size.height;
+    CGFloat tw = targetSize.width,  th = targetSize.height;
+    CGFloat scale = (iw / ih > tw / th) ? (th / ih) : (tw / iw);
+    CGFloat ox = (tw - iw * scale) / 2.0;
+    CGFloat oy = (th - ih * scale) / 2.0;
+
+    // CGBitmapContext origin is bottom-left; flip Y before drawing
+    CGContextTranslateCTM(ctx, 0, th);
+    CGContextScaleCTM(ctx, 1, -1);
+    CGContextDrawImage(ctx, CGRectMake(ox, oy, iw * scale, ih * scale), image.CGImage);
+
+    CGContextRelease(ctx);
+    CVPixelBufferUnlockBaseAddress(pb, 0);
+    return pb;
+}
+
+RCT_EXPORT_METHOD(photosToVideo:(NSArray<NSString *> *)photoUris
+                  durationPerPhoto:(nonnull NSNumber *)durationNum
+                  resolver:(RCTPromiseResolveBlock)resolve
+                  rejecter:(RCTPromiseRejectBlock)reject) {
+
+    if (!photoUris || photoUris.count == 0) {
+        reject(@"photos_to_video", @"No photo URIs provided", nil);
+        return;
+    }
+
+    dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
+        float secPerPhoto = MAX([durationNum floatValue], 0.5f);
+        const int fps = 30;
+        CGSize sz = CGSizeMake(1080, 1920);
+
+        NSString *outPath = [NSTemporaryDirectory() stringByAppendingPathComponent:
+            [NSString stringWithFormat:@"photo_reel_%lld.mp4",
+             (long long)([[NSDate date] timeIntervalSince1970] * 1000)]];
+        NSURL *outUrl = [NSURL fileURLWithPath:outPath];
+        [[NSFileManager defaultManager] removeItemAtURL:outUrl error:nil];
+
+        NSError *wErr = nil;
+        AVAssetWriter *writer = [AVAssetWriter assetWriterWithURL:outUrl
+                                                         fileType:AVFileTypeMPEG4 error:&wErr];
+        if (!writer) { reject(@"photos_to_video", @"Could not create video writer", wErr); return; }
+
+        NSDictionary *vSettings = @{
+            AVVideoCodecKey: AVVideoCodecTypeH264,
+            AVVideoWidthKey: @((int)sz.width),
+            AVVideoHeightKey: @((int)sz.height),
+            AVVideoCompressionPropertiesKey: @{
+                AVVideoAverageBitRateKey: @4000000,
+                AVVideoProfileLevelKey: AVVideoProfileLevelH264HighAutoLevel,
+            }
+        };
+        AVAssetWriterInput *vInput = [AVAssetWriterInput
+            assetWriterInputWithMediaType:AVMediaTypeVideo outputSettings:vSettings];
+        vInput.expectsMediaDataInRealTime = NO;
+
+        AVAssetWriterInputPixelBufferAdaptor *adaptor =
+            [AVAssetWriterInputPixelBufferAdaptor
+                assetWriterInputPixelBufferAdaptorWithAssetWriterInput:vInput
+                sourcePixelBufferAttributes:@{
+                    (NSString *)kCVPixelBufferPixelFormatTypeKey: @(kCVPixelFormatType_32BGRA),
+                    (NSString *)kCVPixelBufferWidthKey:  @((int)sz.width),
+                    (NSString *)kCVPixelBufferHeightKey: @((int)sz.height),
+                }];
+
+        [writer addInput:vInput];
+        [writer startWriting];
+        [writer startSessionAtSourceTime:kCMTimeZero];
+
+        int framesPerPhoto = (int)roundf(secPerPhoto * fps);
+        PHImageManager *mgr = [PHImageManager defaultManager];
+        PHImageRequestOptions *imgOpts = [[PHImageRequestOptions alloc] init];
+        imgOpts.synchronous = YES;
+        imgOpts.deliveryMode = PHImageRequestOptionsDeliveryModeHighQualityFormat;
+        imgOpts.resizeMode   = PHImageRequestOptionsResizeModeExact;
+
+        __block BOOL aborted = NO;
+
+        for (NSUInteger idx = 0; idx < photoUris.count && !aborted; idx++) {
+            NSString *uri = photoUris[idx];
+            NSLog(@"[photosToVideo] photo %lu/%lu", (unsigned long)(idx+1), (unsigned long)photoUris.count);
+
+            __block UIImage *img = nil;
+
+            if ([uri hasPrefix:@"ph://"]) {
+                NSString *assetId = [[uri substringFromIndex:5]
+                                     componentsSeparatedByString:@"/"].firstObject;
+                PHFetchResult *fr = [PHAsset fetchAssetsWithLocalIdentifiers:@[assetId] options:nil];
+                PHAsset *pAsset = fr.firstObject;
+                if (pAsset) {
+                    dispatch_semaphore_t s = dispatch_semaphore_create(0);
+                    [mgr requestImageForAsset:pAsset
+                                   targetSize:CGSizeMake(sz.width, sz.height)
+                                  contentMode:PHImageContentModeAspectFill
+                                      options:imgOpts
+                                resultHandler:^(UIImage *i, NSDictionary *info) {
+                        img = i; dispatch_semaphore_signal(s);
+                    }];
+                    dispatch_semaphore_wait(s, dispatch_time(DISPATCH_TIME_NOW, 15 * NSEC_PER_SEC));
+                }
+            } else {
+                NSString *path = [uri hasPrefix:@"file://"] ? [[NSURL URLWithString:uri] path] : uri;
+                img = [UIImage imageWithContentsOfFile:path];
+            }
+
+            if (!img) { NSLog(@"[photosToVideo] skip %lu — load failed", (unsigned long)idx); continue; }
+
+            CVPixelBufferRef pb = [self createPixelBufferFromImage:img targetSize:sz];
+            if (!pb) { NSLog(@"[photosToVideo] skip %lu — pixbuf failed", (unsigned long)idx); continue; }
+
+            for (int f = 0; f < framesPerPhoto && !aborted; f++) {
+                CMTime t = CMTimeMake((int64_t)(idx * framesPerPhoto + f), fps);
+                NSUInteger w = 0;
+                while (!vInput.isReadyForMoreMediaData && !aborted) {
+                    [NSThread sleepForTimeInterval:0.01];
+                    if (++w > 500) { aborted = YES; break; }
+                }
+                if (!aborted && ![adaptor appendPixelBuffer:pb withPresentationTime:t]) {
+                    NSLog(@"[photosToVideo] append failed photo=%lu f=%d", (unsigned long)idx, f);
+                    aborted = YES;
+                }
+            }
+            CVPixelBufferRelease(pb);
+        }
+
+        [vInput markAsFinished];
+
+        dispatch_semaphore_t done = dispatch_semaphore_create(0);
+        [writer finishWritingWithCompletionHandler:^{ dispatch_semaphore_signal(done); }];
+        dispatch_semaphore_wait(done, dispatch_time(DISPATCH_TIME_NOW, 120 * NSEC_PER_SEC));
+
+        if (writer.status == AVAssetWriterStatusCompleted) {
+            NSLog(@"[photosToVideo] done → %@", outUrl.absoluteString);
+            resolve(outUrl.absoluteString);
+        } else {
+            NSLog(@"[photosToVideo] failed: %@", writer.error);
+            reject(@"photos_to_video", writer.error.localizedDescription ?: @"Writing failed", writer.error);
+        }
+    });
+}
+
 @end
