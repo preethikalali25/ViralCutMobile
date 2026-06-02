@@ -118,55 +118,52 @@ Return ONLY valid JSON — no markdown, no code blocks, no questions, no extra t
     } else if (type === 'audio') {
       const platformList = (platforms as string[]).join(', ');
 
-      systemPrompt = `You are a viral music curator for TikTok, Instagram Reels, and YouTube Shorts.
-Identify the content category of the video, then pick the single BEST song that creators in that exact niche are going viral with right now.
+      systemPrompt = `You are a viral music curator specialising in Hindi, Bollywood, and Punjabi songs trending on Instagram Reels and TikTok.
+Identify the content category of the video, then pick the single BEST Hindi/Punjabi/Bollywood song that creators in that exact niche are going viral with right now.
+Always suggest Hindi or Punjabi songs — never English songs.
+Top trending Hindi/Punjabi songs to consider: Tauba Tauba (Karan Aujla), Kesariya (Arijit Singh), Pasoori (Ali Sethi & Shae Gill), Tum Kya Mile (Arijit Singh), GOAT (Diljit Dosanjh), Softly (Karan Aujla), Heeriye (Jasleen Royal ft. Arijit Singh), Raataan Lambiyan (Jubin Nautiyal), Apna Bana Le (Arijit Singh), Brown Munde (AP Dhillon), Excuses (AP Dhillon), Lover (Diljit Dosanjh), Tere Vaaste (Varun Jain), Nain Tare (Darshan Raval), Ranjha (Shershaah OST).
 ${visualContext}
 ${SAFETY_RULES}
 Return a single JSON object:
-{ "id": "ai_best", "title": "Song Title", "artist": "Artist Name", "uses": "e.g. 2.4M uses", "trending": true, "platform": ["tiktok","reels","youtube"], "mood": "one word mood", "reason": "one sentence explaining why this specific song is viral for this type of content" }
+{ "id": "ai_best", "title": "Song Title", "artist": "Artist Name", "uses": "e.g. 2.4M uses", "trending": true, "platform": ["tiktok","reels","youtube"], "mood": "one word mood", "reason": "one sentence explaining why this Hindi song fits this video" }
 Return ONLY valid JSON — no markdown, no code blocks, no questions, no extra text.`;
 
       userPrompt = hasFrame
-        ? `Analyse this video frame. Identify the content category (baby/kids, funny/pets, fitness, food, travel, dance, fashion, etc.) and pick the single BEST song that is viral for that category right now.
+        ? `Analyse this video frame. Identify the content category and pick the single BEST trending Hindi or Punjabi song for that category.
 Video title: "${videoTitle}". Target platforms: ${platformList}. Return JSON only.`
         : `Video title: "${videoTitle}". Target platforms: ${platformList}.
-Identify the content category from the title and pick the single BEST song viral for that category. Return JSON only.`;
+Pick the single BEST trending Hindi or Punjabi song that fits this video's likely content. Return JSON only.`;
 
     } else if (type === 'audio_suggestions') {
       const platformList = (platforms as string[]).join(', ');
 
-      systemPrompt = `You are a viral music curator for TikTok, Instagram Reels, and YouTube Shorts.
-Your job: identify the exact content category of the video, then suggest 5 songs that creators in THAT SPECIFIC NICHE are actually using and going viral with right now.
+      systemPrompt = `You are a viral music curator specialising in Hindi, Bollywood, and Punjabi songs trending on Instagram Reels and TikTok.
+Your job: identify the content category of the video, then suggest 5 trending Hindi/Punjabi/Bollywood songs that creators in that exact niche are going viral with.
+Always suggest Hindi or Punjabi songs — never English songs.
 
-Content categories and the songs that work for them:
-- Baby/kids/family → emotional, cute, heartwarming songs (e.g. "Golden Hour", "Bigger Than The Whole Sky", "You Are The Best Thing")
-- Funny/comedy/pets → upbeat, quirky, meme songs (e.g. "INDUSTRY BABY", "Escapism", "Pink Pony Club")
-- Fitness/workout/sports → high-energy, hype tracks (e.g. "Superhero", "Gasoline", "Kill Bill")
-- Food/cooking/ASMR → satisfying, chill, aesthetic vibes (e.g. "As It Was", "Cruel Summer", "Flowers")
-- Travel/nature/outdoors → cinematic, uplifting, wonder (e.g. "Golden Hour", "Levitating", "Watermelon Sugar")
-- Dance/performance → trending dance audio, beat drops (e.g. "Creepin", "Flowers", "APT.")
-- Fashion/beauty/lifestyle → trendy, cool, aesthetic (e.g. "Espresso", "Die With A Smile", "Vampire")
-- Motivation/inspiration → powerful, emotional, anthemic (e.g. "I Will Survive", "Hall of Fame", "Eye of the Tiger")
-- Romance/relationship → romantic, emotional (e.g. "Perfect", "Thinking Out Loud", "A Thousand Years")
+Category → song style guide:
+- Baby/kids/family → soft, emotional Bollywood (e.g. Kesariya, Tum Kya Mile, Heeriye, Apna Bana Le, Raataan Lambiyan)
+- Funny/comedy/pets → upbeat, fun Punjabi (e.g. Tauba Tauba, GOAT, Lover, Softly, Brown Munde)
+- Fitness/workout/sports → high-energy Punjabi hype (e.g. GOAT, Brown Munde, Excuses, Insane AP Dhillon, Softly)
+- Food/cooking/lifestyle → chill, aesthetic Bollywood (e.g. Kesariya, Pasoori, Tere Vaaste, Nain Tare, Ranjha)
+- Travel/nature/outdoors → cinematic, uplifting (e.g. Kesariya, Pasoori, Heeriye, Tum Kya Mile, Ranjha)
+- Dance/performance → beat-driven Punjabi (e.g. Tauba Tauba, GOAT, Lover, Brown Munde, Excuses)
+- Fashion/beauty → trendy, cool Punjabi (e.g. Tauba Tauba, Softly, Excuses, AP Dhillon tracks, Diljit tracks)
+- Romance/relationship → romantic Bollywood (e.g. Kesariya, Tum Kya Mile, Apna Bana Le, Tere Vaaste, Nain Tare)
+- Motivation/inspiration → powerful Bollywood/Punjabi (e.g. Heeriye, Ranjha, Excuses, Brown Munde)
 
 ${visualContext}
 ${SAFETY_RULES}
-Return a JSON array of exactly 5 objects — each a real, well-known song:
+Return a JSON array of exactly 5 objects — each a real Hindi/Punjabi/Bollywood song:
 [{ "id": "sug_1", "title": "Song Title", "artist": "Artist Name", "uses": "e.g. 4.2M uses", "trending": true/false }, ...]
-IDs must be "sug_1" through "sug_5". All 5 must fit the SAME content category. Pick songs with real viral use numbers.
+IDs must be "sug_1" through "sug_5".
 Return ONLY a valid JSON array — no markdown, no code blocks, no questions, no extra text.`;
 
       userPrompt = hasFrame
-        ? `Analyse this video frame carefully.
-1. Identify the content category (baby/kids, funny/pets, fitness, food, travel, dance, fashion, motivation, romance, etc.)
-2. Identify the mood and energy level
-3. Suggest 5 songs that are SPECIFICALLY viral for that category on ${platformList}
-
-Video title for extra context: "${videoTitle}".
-Return only the JSON array.`
+        ? `Analyse this video frame. Identify the content category and mood, then suggest 5 trending Hindi/Punjabi/Bollywood songs that fit this exact type of content on ${platformList}.
+Video title for extra context: "${videoTitle}". Return only the JSON array.`
         : `Video title: "${videoTitle}". Target platforms: ${platformList}.
-Infer the content category from the title and suggest 5 songs that are specifically viral for that category.
-Return only the JSON array.`;
+Identify the content category and suggest 5 trending Hindi/Punjabi/Bollywood songs that fit. Return only the JSON array.`;
 
     } else if (type === 'title') {
       systemPrompt = `You are a social media content strategist who writes hyper-specific, descriptive video titles for TikTok, Instagram Reels, and YouTube Shorts.
