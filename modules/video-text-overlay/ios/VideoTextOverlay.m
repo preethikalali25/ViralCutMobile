@@ -649,6 +649,175 @@ RCT_EXPORT_METHOD(burnText:(NSString *)videoUri
     return pb;
 }
 
+// ---------------------------------------------------------------------------
+// Combined media (photos + video clips) → single 1080×1920 MP4.
+// Each item is { "uri": "...", "type": "photo"|"video" }.
+// Videos are frame-sampled at 30 fps (max 15 s each) so they scale correctly.
+// ---------------------------------------------------------------------------
+
+RCT_EXPORT_METHOD(combineMediaToVideo:(NSArray<NSDictionary *> *)mediaItems
+                  durationPerPhoto:(nonnull NSNumber *)durationNum
+                  resolver:(RCTPromiseResolveBlock)resolve
+                  rejecter:(RCTPromiseRejectBlock)reject) {
+
+    if (!mediaItems || mediaItems.count == 0) {
+        reject(@"combine_media", @"No media items provided", nil);
+        return;
+    }
+
+    dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
+        float secPerPhoto   = MAX([durationNum floatValue], 0.5f);
+        const int32_t fps   = 30;
+        const float maxVSec = 15.0f;
+        CGSize sz           = CGSizeMake(1080, 1920);
+
+        NSString *outPath = [NSTemporaryDirectory() stringByAppendingPathComponent:
+            [NSString stringWithFormat:@"combined_%lld.mp4",
+             (long long)([[NSDate date] timeIntervalSince1970] * 1000)]];
+        NSURL *outUrl = [NSURL fileURLWithPath:outPath];
+        [[NSFileManager defaultManager] removeItemAtURL:outUrl error:nil];
+
+        NSError *wErr = nil;
+        AVAssetWriter *writer = [AVAssetWriter assetWriterWithURL:outUrl
+                                                         fileType:AVFileTypeMPEG4 error:&wErr];
+        if (!writer) { reject(@"combine_media", @"Could not create writer", wErr); return; }
+
+        NSDictionary *vSettings = @{
+            AVVideoCodecKey: AVVideoCodecTypeH264,
+            AVVideoWidthKey: @((int)sz.width),
+            AVVideoHeightKey: @((int)sz.height),
+            AVVideoCompressionPropertiesKey: @{
+                AVVideoAverageBitRateKey: @5000000,
+                AVVideoProfileLevelKey: AVVideoProfileLevelH264HighAutoLevel,
+            }
+        };
+        AVAssetWriterInput *vIn = [AVAssetWriterInput assetWriterInputWithMediaType:AVMediaTypeVideo
+                                                                     outputSettings:vSettings];
+        vIn.expectsMediaDataInRealTime = NO;
+        AVAssetWriterInputPixelBufferAdaptor *adaptor =
+            [AVAssetWriterInputPixelBufferAdaptor
+                assetWriterInputPixelBufferAdaptorWithAssetWriterInput:vIn
+                sourcePixelBufferAttributes:@{
+                    (NSString *)kCVPixelBufferPixelFormatTypeKey: @(kCVPixelFormatType_32BGRA),
+                    (NSString *)kCVPixelBufferWidthKey:  @((int)sz.width),
+                    (NSString *)kCVPixelBufferHeightKey: @((int)sz.height),
+                }];
+        [writer addInput:vIn];
+        [writer startWriting];
+        [writer startSessionAtSourceTime:kCMTimeZero];
+
+        PHImageManager *mgr = [PHImageManager defaultManager];
+        PHImageRequestOptions *iOpts = [[PHImageRequestOptions alloc] init];
+        iOpts.synchronous = YES;
+        iOpts.deliveryMode = PHImageRequestOptionsDeliveryModeHighQualityFormat;
+        iOpts.resizeMode = PHImageRequestOptionsResizeModeExact;
+
+        __block int64_t totalFrames = 0;
+        __block BOOL aborted = NO;
+
+        for (NSDictionary *item in mediaItems) {
+            if (aborted) break;
+            NSString *uri  = item[@"uri"]  ?: @"";
+            NSString *type = item[@"type"] ?: @"photo";
+
+            if ([type isEqualToString:@"photo"]) {
+                __block UIImage *img = nil;
+                if ([uri hasPrefix:@"ph://"]) {
+                    NSString *aid = [[uri substringFromIndex:5] componentsSeparatedByString:@"/"].firstObject;
+                    PHFetchResult *fr = [PHAsset fetchAssetsWithLocalIdentifiers:@[aid] options:nil];
+                    PHAsset *pa = fr.firstObject;
+                    if (pa) {
+                        dispatch_semaphore_t s = dispatch_semaphore_create(0);
+                        [mgr requestImageForAsset:pa targetSize:CGSizeMake(sz.width, sz.height)
+                                      contentMode:PHImageContentModeAspectFill options:iOpts
+                                    resultHandler:^(UIImage *i, NSDictionary *info) { img = i; dispatch_semaphore_signal(s); }];
+                        dispatch_semaphore_wait(s, dispatch_time(DISPATCH_TIME_NOW, 15 * NSEC_PER_SEC));
+                    }
+                } else {
+                    NSString *path = [uri hasPrefix:@"file://"] ? [[NSURL URLWithString:uri] path] : uri;
+                    img = [UIImage imageWithContentsOfFile:path];
+                }
+                if (!img) { NSLog(@"[combineMedia] photo load failed: %@", uri); continue; }
+
+                CVPixelBufferRef pb = [self createPixelBufferFromImage:img targetSize:sz];
+                if (!pb) continue;
+                int nf = (int)roundf(secPerPhoto * fps);
+                for (int f = 0; f < nf && !aborted; f++) {
+                    CMTime t = CMTimeMake(totalFrames + f, fps);
+                    NSUInteger w = 0;
+                    while (!vIn.isReadyForMoreMediaData && !aborted) { [NSThread sleepForTimeInterval:0.01]; if (++w>500){aborted=YES;break;} }
+                    if (!aborted && ![adaptor appendPixelBuffer:pb withPresentationTime:t]) aborted = YES;
+                }
+                totalFrames += nf;
+                CVPixelBufferRelease(pb);
+
+            } else if ([type isEqualToString:@"video"]) {
+                __block AVAsset *asset = nil;
+                if ([uri hasPrefix:@"ph://"]) {
+                    NSString *lid = [[uri substringFromIndex:5] componentsSeparatedByString:@"?"].firstObject;
+                    PHFetchResult *r = [PHAsset fetchAssetsWithLocalIdentifiers:@[lid] options:nil];
+                    PHAsset *pa = r.firstObject;
+                    if (pa) {
+                        PHVideoRequestOptions *vOpts = [[PHVideoRequestOptions alloc] init];
+                        vOpts.version = PHVideoRequestOptionsVersionCurrent;
+                        vOpts.networkAccessAllowed = NO;
+                        dispatch_semaphore_t s = dispatch_semaphore_create(0);
+                        [mgr requestAVAssetForVideo:pa options:vOpts
+                                     resultHandler:^(AVAsset *av, AVAudioMix *mix, NSDictionary *info) { asset = av; dispatch_semaphore_signal(s); }];
+                        dispatch_semaphore_wait(s, dispatch_time(DISPATCH_TIME_NOW, 30 * NSEC_PER_SEC));
+                    }
+                } else {
+                    NSURL *url = [uri hasPrefix:@"file://"] ? [NSURL URLWithString:uri] : [NSURL fileURLWithPath:uri];
+                    if (url) asset = [AVURLAsset URLAssetWithURL:url options:nil];
+                }
+                if (!asset) { NSLog(@"[combineMedia] video load failed: %@", uri); continue; }
+
+                float vDur = MIN(CMTimeGetSeconds(asset.duration), maxVSec);
+                if (vDur <= 0) continue;
+                int nf = (int)roundf(vDur * fps);
+
+                AVAssetImageGenerator *gen = [AVAssetImageGenerator assetImageGeneratorWithAsset:asset];
+                gen.appliesPreferredTrackTransform = YES;
+                gen.maximumSize = CGSizeMake(sz.width * 2, sz.height * 2);
+                gen.requestedTimeToleranceBefore = CMTimeMake(1, fps);
+                gen.requestedTimeToleranceAfter  = CMTimeMake(1, fps);
+
+                for (int f = 0; f < nf && !aborted; f++) {
+                    CMTime vt = CMTimeMakeWithSeconds((double)f / fps, 600);
+                    NSError *iErr = nil;
+                    CGImageRef cg = [gen copyCGImageAtTime:vt actualTime:nil error:&iErr];
+                    if (!cg) continue;
+                    UIImage *frameImg = [UIImage imageWithCGImage:cg];
+                    CGImageRelease(cg);
+
+                    CVPixelBufferRef pb = [self createPixelBufferFromImage:frameImg targetSize:sz];
+                    if (!pb) continue;
+
+                    CMTime t = CMTimeMake(totalFrames + f, fps);
+                    NSUInteger w = 0;
+                    while (!vIn.isReadyForMoreMediaData && !aborted) { [NSThread sleepForTimeInterval:0.01]; if (++w>500){aborted=YES;break;} }
+                    if (!aborted && ![adaptor appendPixelBuffer:pb withPresentationTime:t]) aborted = YES;
+                    CVPixelBufferRelease(pb);
+                }
+                totalFrames += nf;
+            }
+        }
+
+        [vIn markAsFinished];
+        dispatch_semaphore_t done = dispatch_semaphore_create(0);
+        [writer finishWritingWithCompletionHandler:^{ dispatch_semaphore_signal(done); }];
+        dispatch_semaphore_wait(done, dispatch_time(DISPATCH_TIME_NOW, 300 * NSEC_PER_SEC));
+
+        if (writer.status == AVAssetWriterStatusCompleted) {
+            NSLog(@"[combineMedia] done → %@", outUrl.absoluteString);
+            resolve(outUrl.absoluteString);
+        } else {
+            NSLog(@"[combineMedia] failed: %@", writer.error);
+            reject(@"combine_media", writer.error.localizedDescription ?: @"Writing failed", writer.error);
+        }
+    });
+}
+
 RCT_EXPORT_METHOD(photosToVideo:(NSArray<NSString *> *)photoUris
                   durationPerPhoto:(nonnull NSNumber *)durationNum
                   resolver:(RCTPromiseResolveBlock)resolve
