@@ -639,10 +639,13 @@ RCT_EXPORT_METHOD(burnText:(NSString *)videoUri
     CGFloat ox = (tw - iw * scale) / 2.0;
     CGFloat oy = (th - ih * scale) / 2.0;
 
-    // CGBitmapContext origin is bottom-left; flip Y before drawing
+    // Flip Y so UIKit's top-left drawing maps correctly into this bottom-left CGBitmapContext
     CGContextTranslateCTM(ctx, 0, th);
-    CGContextScaleCTM(ctx, 1, -1);
-    CGContextDrawImage(ctx, CGRectMake(ox, oy, iw * scale, ih * scale), image.CGImage);
+    CGContextScaleCTM(ctx, 1.0, -1.0);
+    // drawInRect: honours UIImage.imageOrientation; CGContextDrawImage would not
+    UIGraphicsPushContext(ctx);
+    [image drawInRect:CGRectMake(ox, oy, iw * scale, ih * scale)];
+    UIGraphicsPopContext();
 
     CGContextRelease(ctx);
     CVPixelBufferUnlockBaseAddress(pb, 0);
