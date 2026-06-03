@@ -135,8 +135,8 @@
     // kCGBitmapByteOrder32Little | kCGImageAlphaPremultipliedFirst = BGRA.
     // ------------------------------------------------------------------
     CGColorSpaceRef cs = CGColorSpaceCreateDeviceRGB();
-    CGBitmapInfo bi = (CGBitmapInfo)(kCGBitmapByteOrder32Little |
-                                     kCGImageAlphaPremultipliedFirst);
+    CGBitmapInfo bi = (CGBitmapInfo)((uint32_t)kCGBitmapByteOrder32Little |
+                                     (uint32_t)kCGImageAlphaPremultipliedFirst);
     CGContextRef ctx = CGBitmapContextCreate(dstPtr, dstW, dstH, 8, dstBpr, cs, bi);
     CGColorSpaceRelease(cs);
 
@@ -624,7 +624,7 @@ RCT_EXPORT_METHOD(burnText:(NSString *)videoUri
     CGContextRef ctx = CGBitmapContextCreate(base,
                                              (size_t)targetSize.width, (size_t)targetSize.height,
                                              8, bpr, cs,
-                                             kCGBitmapByteOrder32Little | kCGImageAlphaPremultipliedFirst);
+                                             (CGBitmapInfo)((uint32_t)kCGBitmapByteOrder32Little | (uint32_t)kCGImageAlphaPremultipliedFirst));
     CGColorSpaceRelease(cs);
     if (!ctx) { CVPixelBufferUnlockBaseAddress(pb, 0); CVPixelBufferRelease(pb); return NULL; }
 
@@ -806,7 +806,7 @@ RCT_EXPORT_METHOD(combineMediaToVideo:(NSArray<NSDictionary *> *)mediaItems
             NSString *type = item[@"type"] ?: @"photo";
 
             if ([type isEqualToString:@"photo"]) {
-                UIImage *img = nil;
+                __block UIImage *img = nil;
                 if ([uri hasPrefix:@"ph://"]) {
                     NSString *aid = [[uri substringFromIndex:5] componentsSeparatedByString:@"/"].firstObject;
                     PHFetchResult *fr = [PHAsset fetchAssetsWithLocalIdentifiers:@[aid] options:nil];
