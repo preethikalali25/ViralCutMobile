@@ -2,6 +2,18 @@ import { NativeModules } from 'react-native';
 
 const { VideoTextOverlay } = NativeModules;
 
+export type MediaItem = { uri: string; type: 'photo' | 'video' };
+
+export async function combineMediaToVideo(
+  items: MediaItem[],
+  durationPerPhoto: number = 3.0,
+): Promise<string> {
+  if (!VideoTextOverlay?.combineMediaToVideo) {
+    throw new Error('[combineMediaToVideo] Native module not available');
+  }
+  return await VideoTextOverlay.combineMediaToVideo(items, durationPerPhoto);
+}
+
 export async function photosToVideo(
   photoUris: string[],
   durationPerPhoto: number = 3.0,

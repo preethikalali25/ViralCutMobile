@@ -135,8 +135,8 @@
     // kCGBitmapByteOrder32Little | kCGImageAlphaPremultipliedFirst = BGRA.
     // ------------------------------------------------------------------
     CGColorSpaceRef cs = CGColorSpaceCreateDeviceRGB();
-    CGBitmapInfo bi = (CGBitmapInfo)(kCGBitmapByteOrder32Little |
-                                     kCGImageAlphaPremultipliedFirst);
+    CGBitmapInfo bi = (CGBitmapInfo)((uint32_t)kCGBitmapByteOrder32Little |
+                                     (uint32_t)kCGImageAlphaPremultipliedFirst);
     CGContextRef ctx = CGBitmapContextCreate(dstPtr, dstW, dstH, 8, dstBpr, cs, bi);
     CGColorSpaceRelease(cs);
 
@@ -624,7 +624,7 @@ RCT_EXPORT_METHOD(burnText:(NSString *)videoUri
     CGContextRef ctx = CGBitmapContextCreate(base,
                                              (size_t)targetSize.width, (size_t)targetSize.height,
                                              8, bpr, cs,
-                                             kCGBitmapByteOrder32Little | kCGImageAlphaPremultipliedFirst);
+                                             (CGBitmapInfo)((uint32_t)kCGBitmapByteOrder32Little | (uint32_t)kCGImageAlphaPremultipliedFirst));
     CGColorSpaceRelease(cs);
     if (!ctx) { CVPixelBufferUnlockBaseAddress(pb, 0); CVPixelBufferRelease(pb); return NULL; }
 
@@ -639,14 +639,333 @@ RCT_EXPORT_METHOD(burnText:(NSString *)videoUri
     CGFloat ox = (tw - iw * scale) / 2.0;
     CGFloat oy = (th - ih * scale) / 2.0;
 
-    // CGBitmapContext origin is bottom-left; flip Y before drawing
+    // Flip Y so UIKit's top-left drawing maps correctly into this bottom-left CGBitmapContext
     CGContextTranslateCTM(ctx, 0, th);
-    CGContextScaleCTM(ctx, 1, -1);
-    CGContextDrawImage(ctx, CGRectMake(ox, oy, iw * scale, ih * scale), image.CGImage);
+    CGContextScaleCTM(ctx, 1.0, -1.0);
+    // drawInRect: honours UIImage.imageOrientation; CGContextDrawImage would not
+    UIGraphicsPushContext(ctx);
+    [image drawInRect:CGRectMake(ox, oy, iw * scale, ih * scale)];
+    UIGraphicsPopContext();
 
     CGContextRelease(ctx);
     CVPixelBufferUnlockBaseAddress(pb, 0);
     return pb;
+}
+
+// ---------------------------------------------------------------------------
+// Helper: build a 1080×1920 MP4 from still images using pixel buffers.
+// ---------------------------------------------------------------------------
+- (nullable NSURL *)buildPhotoSegment:(NSArray<UIImage *> *)images
+                           outputSize:(CGSize)sz
+                          secPerImage:(float)sec
+                                  fps:(int32_t)fps {
+    if (images.count == 0) return nil;
+    NSString *name = [NSString stringWithFormat:@"photo_seg_%lld.mp4",
+                      (long long)([[NSDate date] timeIntervalSince1970] * 1000)];
+    NSURL *url = [NSURL fileURLWithPath:[NSTemporaryDirectory() stringByAppendingPathComponent:name]];
+    [[NSFileManager defaultManager] removeItemAtURL:url error:nil];
+
+    NSError *err = nil;
+    AVAssetWriter *writer = [AVAssetWriter assetWriterWithURL:url fileType:AVFileTypeMPEG4 error:&err];
+    if (!writer) return nil;
+
+    AVAssetWriterInput *input = [AVAssetWriterInput assetWriterInputWithMediaType:AVMediaTypeVideo
+        outputSettings:@{
+            AVVideoCodecKey: AVVideoCodecTypeH264,
+            AVVideoWidthKey: @((int)sz.width),
+            AVVideoHeightKey: @((int)sz.height),
+            AVVideoCompressionPropertiesKey: @{ AVVideoAverageBitRateKey: @5000000 },
+        }];
+    input.expectsMediaDataInRealTime = NO;
+    AVAssetWriterInputPixelBufferAdaptor *adaptor =
+        [AVAssetWriterInputPixelBufferAdaptor
+            assetWriterInputPixelBufferAdaptorWithAssetWriterInput:input
+            sourcePixelBufferAttributes:@{
+                (NSString *)kCVPixelBufferPixelFormatTypeKey: @(kCVPixelFormatType_32BGRA),
+                (NSString *)kCVPixelBufferWidthKey:  @((int)sz.width),
+                (NSString *)kCVPixelBufferHeightKey: @((int)sz.height),
+            }];
+    [writer addInput:input];
+    [writer startWriting];
+    [writer startSessionAtSourceTime:kCMTimeZero];
+
+    int64_t frameNum = 0;
+    int nf = (int)roundf(sec * fps);
+    BOOL aborted = NO;
+
+    for (UIImage *img in images) {
+        if (aborted) break;
+        CVPixelBufferRef pb = [self createPixelBufferFromImage:img targetSize:sz];
+        if (!pb) { frameNum += nf; continue; }
+        for (int f = 0; f < nf && !aborted; f++) {
+            CMTime t = CMTimeMake(frameNum + f, fps);
+            NSUInteger w = 0;
+            while (!input.isReadyForMoreMediaData && !aborted) {
+                [NSThread sleepForTimeInterval:0.01];
+                if (++w > 500) { aborted = YES; break; }
+            }
+            if (!aborted) [adaptor appendPixelBuffer:pb withPresentationTime:t];
+        }
+        frameNum += nf;
+        CVPixelBufferRelease(pb);
+    }
+
+    [input markAsFinished];
+    dispatch_semaphore_t done = dispatch_semaphore_create(0);
+    [writer finishWritingWithCompletionHandler:^{ dispatch_semaphore_signal(done); }];
+    dispatch_semaphore_wait(done, dispatch_time(DISPATCH_TIME_NOW, 120 * NSEC_PER_SEC));
+    return (writer.status == AVAssetWriterStatusCompleted) ? url : nil;
+}
+
+// ---------------------------------------------------------------------------
+// Helper: CGAffineTransform that aspect-fills a video track into outputSize.
+// Handles rotation (preferredTransform) for portrait iPhone videos.
+// ---------------------------------------------------------------------------
+- (CGAffineTransform)fillTransformForTrack:(AVAssetTrack *)track outputSize:(CGSize)out {
+    CGSize nat   = track.naturalSize;
+    CGAffineTransform pref = track.preferredTransform;
+
+    // Bounding box of all four corners after preferredTransform
+    CGPoint c[4] = {
+        CGPointApplyAffineTransform(CGPointMake(0,          0),          pref),
+        CGPointApplyAffineTransform(CGPointMake(nat.width,  0),          pref),
+        CGPointApplyAffineTransform(CGPointMake(0,          nat.height), pref),
+        CGPointApplyAffineTransform(CGPointMake(nat.width,  nat.height), pref),
+    };
+    CGFloat minX = MIN(MIN(c[0].x,c[1].x), MIN(c[2].x,c[3].x));
+    CGFloat minY = MIN(MIN(c[0].y,c[1].y), MIN(c[2].y,c[3].y));
+    CGFloat maxX = MAX(MAX(c[0].x,c[1].x), MAX(c[2].x,c[3].x));
+    CGFloat maxY = MAX(MAX(c[0].y,c[1].y), MAX(c[2].y,c[3].y));
+
+    CGFloat dispW = maxX - minX;
+    CGFloat dispH = maxY - minY;
+    if (dispW <= 0 || dispH <= 0) return pref;
+
+    // Aspect-fill scale
+    CGFloat scale = MAX(out.width / dispW, out.height / dispH);
+
+    // Normalize origin → scale → center in output
+    CGAffineTransform norm   = CGAffineTransformMakeTranslation(-minX, -minY);
+    CGAffineTransform sc     = CGAffineTransformMakeScale(scale, scale);
+    CGAffineTransform center = CGAffineTransformMakeTranslation(
+        (out.width  - dispW * scale) / 2.0,
+        (out.height - dispH * scale) / 2.0);
+
+    CGAffineTransform t = CGAffineTransformConcat(pref, norm);
+    t = CGAffineTransformConcat(t, sc);
+    t = CGAffineTransformConcat(t, center);
+    return t;
+}
+
+// ---------------------------------------------------------------------------
+// Combined media (photos + video clips) → single 1080×1920 MP4.
+// Photos → pixel-buffer temp MP4s. Videos → inserted via AVMutableComposition
+// (no frame extraction — eliminates the hang for video clips).
+// ---------------------------------------------------------------------------
+
+RCT_EXPORT_METHOD(combineMediaToVideo:(NSArray<NSDictionary *> *)mediaItems
+                  durationPerPhoto:(nonnull NSNumber *)durationNum
+                  resolver:(RCTPromiseResolveBlock)resolve
+                  rejecter:(RCTPromiseRejectBlock)reject) {
+
+    if (!mediaItems || mediaItems.count == 0) {
+        reject(@"combine_media", @"No media items provided", nil);
+        return;
+    }
+
+    dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
+        float secPerPhoto = MAX([durationNum floatValue], 0.5f);
+        const int32_t fps = 30;
+        const float maxVSec = 15.0f;
+        CGSize outputSize = CGSizeMake(1080, 1920);
+
+        PHImageManager *mgr = [PHImageManager defaultManager];
+        PHImageRequestOptions *iOpts = [[PHImageRequestOptions alloc] init];
+        iOpts.synchronous    = YES;
+        iOpts.deliveryMode   = PHImageRequestOptionsDeliveryModeHighQualityFormat;
+        iOpts.resizeMode     = PHImageRequestOptionsResizeModeExact;
+
+        // ── Phase 1: Collect segments ─────────────────────────────────────────
+        // Each segment is an AVAsset (either a temp photo-batch MP4 or an actual video).
+        NSMutableArray<AVAsset *> *segments    = [NSMutableArray array];
+        NSMutableArray<NSURL *>   *tempFiles   = [NSMutableArray array];
+        NSMutableArray<UIImage *> *pendingPhotos = [NSMutableArray array];
+
+        void (^flushPhotos)(void) = ^{
+            if (pendingPhotos.count == 0) return;
+            NSURL *segUrl = [self buildPhotoSegment:[pendingPhotos copy]
+                                         outputSize:outputSize
+                                        secPerImage:secPerPhoto
+                                                fps:fps];
+            [pendingPhotos removeAllObjects];
+            if (segUrl) {
+                [tempFiles addObject:segUrl];
+                [segments addObject:[AVURLAsset URLAssetWithURL:segUrl options:nil]];
+            }
+        };
+
+        for (NSDictionary *item in mediaItems) {
+            NSString *uri  = item[@"uri"]  ?: @"";
+            NSString *type = item[@"type"] ?: @"photo";
+
+            if ([type isEqualToString:@"photo"]) {
+                __block UIImage *img = nil;
+                if ([uri hasPrefix:@"ph://"]) {
+                    NSString *aid = [[uri substringFromIndex:5] componentsSeparatedByString:@"/"].firstObject;
+                    PHFetchResult *fr = [PHAsset fetchAssetsWithLocalIdentifiers:@[aid] options:nil];
+                    PHAsset *pa = fr.firstObject;
+                    if (pa) {
+                        dispatch_semaphore_t s = dispatch_semaphore_create(0);
+                        [mgr requestImageForAsset:pa
+                                       targetSize:CGSizeMake(outputSize.width, outputSize.height)
+                                      contentMode:PHImageContentModeAspectFill
+                                          options:iOpts
+                                    resultHandler:^(UIImage *i, NSDictionary *info) {
+                            img = i; dispatch_semaphore_signal(s);
+                        }];
+                        dispatch_semaphore_wait(s, dispatch_time(DISPATCH_TIME_NOW, 15 * NSEC_PER_SEC));
+                    }
+                } else {
+                    NSString *path = [uri hasPrefix:@"file://"] ? [[NSURL URLWithString:uri] path] : uri;
+                    img = [UIImage imageWithContentsOfFile:path];
+                }
+                if (img) [pendingPhotos addObject:img];
+                else NSLog(@"[combineMedia] photo load failed: %@", uri);
+
+            } else {
+                // Flush accumulated photos before adding the video segment
+                flushPhotos();
+
+                __block AVAsset *asset = nil;
+                if ([uri hasPrefix:@"ph://"]) {
+                    NSString *lid = [[uri substringFromIndex:5] componentsSeparatedByString:@"?"].firstObject;
+                    PHFetchResult *r = [PHAsset fetchAssetsWithLocalIdentifiers:@[lid] options:nil];
+                    PHAsset *pa = r.firstObject;
+                    if (pa) {
+                        PHVideoRequestOptions *vOpts = [[PHVideoRequestOptions alloc] init];
+                        vOpts.version             = PHVideoRequestOptionsVersionCurrent;
+                        vOpts.networkAccessAllowed = NO;
+                        dispatch_semaphore_t s = dispatch_semaphore_create(0);
+                        [mgr requestAVAssetForVideo:pa options:vOpts
+                                     resultHandler:^(AVAsset *av, AVAudioMix *mx, NSDictionary *info) {
+                            asset = av; dispatch_semaphore_signal(s);
+                        }];
+                        dispatch_semaphore_wait(s, dispatch_time(DISPATCH_TIME_NOW, 30 * NSEC_PER_SEC));
+                    }
+                } else {
+                    NSURL *u = [uri hasPrefix:@"file://"] ? [NSURL URLWithString:uri] : [NSURL fileURLWithPath:uri];
+                    if (u) asset = [AVURLAsset URLAssetWithURL:u options:nil];
+                }
+                if (asset) [segments addObject:asset];
+                else NSLog(@"[combineMedia] video load failed: %@", uri);
+            }
+        }
+        flushPhotos(); // flush any trailing photos
+
+        if (segments.count == 0) {
+            reject(@"combine_media", @"No valid media could be loaded", nil);
+            return;
+        }
+
+        // ── Phase 2: Build AVMutableComposition ───────────────────────────────
+        AVMutableComposition *comp = [AVMutableComposition composition];
+        AVMutableCompositionTrack *compVideo =
+            [comp addMutableTrackWithMediaType:AVMediaTypeVideo
+                               preferredTrackID:kCMPersistentTrackID_Invalid];
+
+        NSMutableArray<AVMutableVideoCompositionInstruction *> *instructions = [NSMutableArray array];
+        CMTime cursor = kCMTimeZero;
+
+        for (AVAsset *asset in segments) {
+            // Load tracks synchronously
+            dispatch_semaphore_t ls = dispatch_semaphore_create(0);
+            [asset loadValuesAsynchronouslyForKeys:@[@"tracks", @"duration"]
+                                 completionHandler:^{ dispatch_semaphore_signal(ls); }];
+            dispatch_semaphore_wait(ls, dispatch_time(DISPATCH_TIME_NOW, 15 * NSEC_PER_SEC));
+
+            NSArray<AVAssetTrack *> *vTracks = [asset tracksWithMediaType:AVMediaTypeVideo];
+            if (vTracks.count == 0) continue;
+            AVAssetTrack *srcTrack = vTracks.firstObject;
+
+            // Cap video clips; photo-segment temp files use full duration
+            CMTime assetDur = asset.duration;
+            CMTime useDur = CMTimeMinimum(assetDur, CMTimeMakeWithSeconds(maxVSec, 600));
+            if (CMTIME_COMPARE_INLINE(useDur, ==, kCMTimeZero)) continue;
+
+            CMTimeRange insertRange = CMTimeRangeMake(kCMTimeZero, useDur);
+            NSError *insertErr = nil;
+            [compVideo insertTimeRange:insertRange ofTrack:srcTrack atTime:cursor error:&insertErr];
+            if (insertErr) {
+                NSLog(@"[combineMedia] insert error: %@", insertErr.localizedDescription);
+                cursor = CMTimeAdd(cursor, useDur);
+                continue;
+            }
+
+            // Composition instruction: scale/rotate video to fill 1080×1920
+            AVMutableVideoCompositionInstruction *instr =
+                [AVMutableVideoCompositionInstruction videoCompositionInstruction];
+            instr.timeRange = CMTimeRangeMake(cursor, useDur);
+
+            AVMutableVideoCompositionLayerInstruction *layerInstr =
+                [AVMutableVideoCompositionLayerInstruction
+                    videoCompositionLayerInstructionWithAssetTrack:compVideo];
+
+            CGAffineTransform transform = [self fillTransformForTrack:srcTrack outputSize:outputSize];
+            [layerInstr setTransform:transform atTime:cursor];
+            instr.layerInstructions = @[layerInstr];
+            [instructions addObject:instr];
+
+            cursor = CMTimeAdd(cursor, useDur);
+        }
+
+        if (CMTIME_COMPARE_INLINE(cursor, ==, kCMTimeZero)) {
+            for (NSURL *f in tempFiles) [[NSFileManager defaultManager] removeItemAtURL:f error:nil];
+            reject(@"combine_media", @"No segments could be composed", nil);
+            return;
+        }
+
+        // ── Phase 3: Video composition + export ───────────────────────────────
+        AVMutableVideoComposition *videoComp = [AVMutableVideoComposition videoComposition];
+        videoComp.instructions    = instructions;
+        videoComp.renderSize      = outputSize;
+        videoComp.frameDuration   = CMTimeMake(1, fps);
+
+        NSString *outPath = [NSTemporaryDirectory() stringByAppendingPathComponent:
+            [NSString stringWithFormat:@"combined_%lld.mp4",
+             (long long)([[NSDate date] timeIntervalSince1970] * 1000)]];
+        NSURL *outUrl = [NSURL fileURLWithPath:outPath];
+        [[NSFileManager defaultManager] removeItemAtURL:outUrl error:nil];
+
+        AVAssetExportSession *exporter =
+            [[AVAssetExportSession alloc] initWithAsset:comp
+                                             presetName:AVAssetExportPresetHighestQuality];
+        if (!exporter) {
+            for (NSURL *f in tempFiles) [[NSFileManager defaultManager] removeItemAtURL:f error:nil];
+            reject(@"combine_media", @"Could not create exporter", nil);
+            return;
+        }
+        exporter.outputURL                 = outUrl;
+        exporter.outputFileType            = AVFileTypeMPEG4;
+        exporter.videoComposition          = videoComp;
+        exporter.shouldOptimizeForNetworkUse = YES;
+
+        dispatch_semaphore_t done = dispatch_semaphore_create(0);
+        [exporter exportAsynchronouslyWithCompletionHandler:^{ dispatch_semaphore_signal(done); }];
+        dispatch_semaphore_wait(done, dispatch_time(DISPATCH_TIME_NOW, 300 * NSEC_PER_SEC));
+
+        // Clean up temp photo segments
+        for (NSURL *f in tempFiles) [[NSFileManager defaultManager] removeItemAtURL:f error:nil];
+
+        if (exporter.status == AVAssetExportSessionStatusCompleted) {
+            NSLog(@"[combineMedia] done → %@", outUrl.absoluteString);
+            resolve(outUrl.absoluteString);
+        } else {
+            NSLog(@"[combineMedia] export failed: %@", exporter.error.localizedDescription);
+            reject(@"combine_media",
+                   exporter.error.localizedDescription ?: @"Export failed",
+                   exporter.error);
+        }
+    });
 }
 
 RCT_EXPORT_METHOD(photosToVideo:(NSArray<NSString *> *)photoUris
