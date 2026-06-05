@@ -40,21 +40,30 @@ Deno.serve(async (req) => {
     const { access_token, ig_user_id } = tokenRow as { access_token: string; ig_user_id: string };
 
     // ── Fetch Instagram profile ────────────────────────────────────────────────
-    const [profileRes, mediaRes] = await Promise.all([
-      fetch(`${IG_GRAPH_URL}/${ig_user_id}?fields=username,biography,followers_count,media_count&access_token=${access_token}`),
-      fetch(`${IG_GRAPH_URL}/${ig_user_id}/media?fields=id,media_type,timestamp,caption,like_count,comments_count&limit=12&access_token=${access_token}`),
-    ]);
+    const igSignal = AbortSignal.timeout(12000);
+    let profile: Record<string, unknown> = {};
+    let recentPosts: unknown[] = [];
 
-    const profile = await profileRes.json();
-    const mediaData = await mediaRes.json();
+    try {
+      const [profileRes, mediaRes] = await Promise.all([
+        fetch(`${IG_GRAPH_URL}/${ig_user_id}?fields=username,biography,followers_count,media_count&access_token=${access_token}`, { signal: igSignal }),
+        fetch(`${IG_GRAPH_URL}/${ig_user_id}/media?fields=id,media_type,timestamp,caption,like_count,comments_count&limit=12&access_token=${access_token}`, { signal: igSignal }),
+      ]);
 
-    const recentPosts = ((mediaData.data ?? []) as any[]).map((p) => ({
-      type: p.media_type as string,
-      caption: (p.caption as string | undefined)?.slice(0, 120),
-      likes: p.like_count as number | undefined,
-      comments: p.comments_count as number | undefined,
-      date: (p.timestamp as string).split('T')[0],
-    }));
+      profile = await profileRes.json();
+      const mediaData = await mediaRes.json();
+
+      recentPosts = ((mediaData.data ?? []) as any[]).map((p) => ({
+        type: p.media_type as string,
+        caption: (p.caption as string | undefined)?.slice(0, 120),
+        likes: p.like_count as number | undefined,
+        comments: p.comments_count as number | undefined,
+        date: (p.timestamp as string).split('T')[0],
+      }));
+    } catch (igErr) {
+      console.warn('[content-advisor] Instagram API error:', igErr);
+      // Continue with empty profile — AI will work from gallery alone
+    }
 
     // ── Build AI prompt ────────────────────────────────────────────────────────
     const apiKey = Deno.env.get('ANTHROPIC_API_KEY');

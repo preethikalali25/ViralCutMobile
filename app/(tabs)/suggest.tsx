@@ -102,8 +102,8 @@ export default function SuggestScreen() {
       }
       const r = await ImageManipulator.manipulateAsync(
         src,
-        [{ resize: { width: 256 } }],
-        { compress: 0.65, format: ImageManipulator.SaveFormat.JPEG, base64: true },
+        [{ resize: { width: 128 } }],
+        { compress: 0.5, format: ImageManipulator.SaveFormat.JPEG, base64: true },
       );
       return { previewUri: r.uri, base64: r.base64 ?? '' };
     } catch {
