@@ -10,9 +10,11 @@ Deno.serve(async (req) => {
 
   try {
     const body = await req.json();
-    const { userId, galleryThumbnails = [] } = body as {
+    const { userId, galleryThumbnails = [], totalItems, totalEvents } = body as {
       userId: string;
-      galleryThumbnails: Array<{ id: string; type: 'photo' | 'video'; base64: string }>;
+      galleryThumbnails: Array<{ id: string; type: 'photo' | 'video'; base64: string; eventLabel?: string; eventCount?: number }>;
+      totalItems?: number;
+      totalEvents?: number;
     };
 
     if (!userId) {
@@ -84,18 +86,18 @@ ${recentPosts.map((p, i) =>
 ).join('\n')}`;
 
     const thumbCount = Math.min(galleryThumbnails.length, 8);
-    const photoCount = galleryThumbnails.filter((g) => g.type === 'photo').length;
-    const videoCount = galleryThumbnails.filter((g) => g.type === 'video').length;
 
     const systemPrompt = `You are a viral short-form video content strategist.
 You will analyse an Instagram creator's profile and their media gallery, then suggest exactly 3 Reel ideas they should make RIGHT NOW.
 
 CRITICAL RULES:
 - Suggestions must be specific to THIS creator's niche and audience — no generic advice.
-- Reference gallery items by their index (0-based) in galleryIndices.
+- Each thumbnail shown represents a DISTINCT event or occasion (like Google/Apple Memories).
+- Reference events by their 0-based index in galleryIndices.
 - Each hook must be under 80 characters.
 - Explain why each idea fits THIS account's engagement patterns.
-- If the profile shows kids/family content, suggest family reels. If fitness, suggest fitness. Match the niche.
+- Create suggestions that tell a story or theme — consider combining multiple events.
+- If the profile shows kids/family content, suggest family reels. Match the niche exactly.
 
 Return ONLY a valid JSON array of exactly 3 objects — no markdown, no code blocks, no extra text:
 [
@@ -109,10 +111,9 @@ Return ONLY a valid JSON array of exactly 3 objects — no markdown, no code blo
   }
 ]`;
 
-    // Build multimodal content
+    // Build multimodal content — one image per event cluster
     const userContent: any[] = [];
 
-    // Add up to 8 gallery thumbnails as images
     for (let i = 0; i < thumbCount; i++) {
       const item = galleryThumbnails[i];
       if (item.base64 && item.base64.length > 100) {
@@ -123,14 +124,25 @@ Return ONLY a valid JSON array of exactly 3 objects — no markdown, no code blo
       }
     }
 
+    const eventLines = galleryThumbnails.slice(0, thumbCount)
+      .map((t, i) => t.eventLabel
+        ? `  Event ${i}: ${t.eventLabel} (${t.eventCount ?? '?'} items in this session)`
+        : `  Event ${i}`)
+      .join('\n');
+
+    const galleryContext = totalItems && totalEvents
+      ? `Camera roll: ${totalItems} total items across ${totalEvents} detected events.`
+      : `Gallery: ${galleryThumbnails.length} items.`;
+
     userContent.push({
       type: 'text',
       text: `${profileSummary}
 
-Gallery: ${galleryThumbnails.length} recent items (${photoCount} photos, ${videoCount} videos).
-${thumbCount > 0 ? `I've shown you thumbnails for items 0–${thumbCount - 1} above.` : ''}
+${galleryContext}
+Each thumbnail above represents a different occasion in the creator's life:
+${eventLines}
 
-Suggest 3 Reel ideas using these specific gallery items. Return JSON only.`,
+Analyse these events and suggest 3 Reel ideas that would resonate with this creator's audience. Return JSON only.`,
     });
 
     const aiRes = await fetch(ANTHROPIC_API_URL, {
