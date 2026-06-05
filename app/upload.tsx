@@ -13,6 +13,7 @@ import { useAlert } from '@/template';
 import { Platform as PlatformType, Video } from '@/types';
 import PlatformBadge from '@/components/ui/PlatformBadge';
 import { combineMediaToVideo, type MediaItem } from '@/services/videoOverlayService';
+import { consumePendingReelItems } from '@/stores/pendingReel';
 
 const ALL_PLATFORMS: PlatformType[] = ['tiktok', 'reels', 'youtube'];
 
@@ -30,6 +31,19 @@ export default function UploadScreen() {
   const [mediaItems, setMediaItems] = useState<(MediaItem & { previewUri: string; durationSec?: number })[]>([]);
   const [isProcessing, setIsProcessing] = useState(false);
   const [processingLabel, setProcessingLabel] = useState('');
+
+  // Pre-populate from "Make This Reel" in suggest screen
+  React.useEffect(() => {
+    const pending = consumePendingReelItems();
+    if (pending && pending.length > 0) {
+      setMediaItems(pending.map(p => ({
+        uri: p.uri,
+        type: p.type,
+        previewUri: p.previewUri,
+        durationSec: p.durationSec,
+      })));
+    }
+  }, []);
 
   const togglePlatform = (p: PlatformType) => {
     setPlatforms(prev =>
