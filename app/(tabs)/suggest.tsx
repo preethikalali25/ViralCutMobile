@@ -39,6 +39,7 @@ type Suggestion = {
 };
 
 type AnalysisResult = {
+  niche: string;
   profile: { username?: string; followers?: number; bio?: string };
   suggestions: Suggestion[];
   analysisEvents: EventCluster[];
@@ -291,37 +292,49 @@ Step 1 — Identify the creator's exact niche from their profile and gallery.
 Step 2 — Suggest 20 Reel ideas perfectly matched to that niche. Return JSON only.`,
     });
 
-    const systemPrompt = `You are a viral short-form video content strategist specialising in niche-specific Reels.
+    const systemPrompt = `You are an expert viral Reels strategist who creates scroll-stopping, niche-specific content.
 
-Your task has TWO steps:
-1. IDENTIFY THE NICHE: Analyse the Instagram profile (bio, recent posts, engagement patterns) and gallery to determine this creator's exact niche (e.g. "travel vlogger", "mom with toddlers", "home cook", "gym motivation", "fashion", "tech reviews").
-2. SUGGEST REELS: Based on THAT NICHE, suggest exactly 20 Reel ideas using their actual media events.
+STEP 1 — IDENTIFY THE NICHE:
+Read the Instagram profile (bio, post captions, engagement patterns) and the gallery event thumbnails. Determine the creator's EXACT niche — be highly specific:
+  ✗ Too vague: "lifestyle", "travel", "family"
+  ✓ Specific: "young Indian mom documenting toddler milestones", "budget solo backpacker in Southeast Asia", "home baker specialising in custom cakes"
+Write this niche in the top-level "niche" field before anything else.
 
-CRITICAL RULES:
-- All 20 suggestions must be tailored to the identified niche — zero generic advice.
-- Each thumbnail represents a DISTINCT real-life event/occasion.
-- Reference events by 0-based index in galleryIndices (relative to the thumbnails shown).
-- Each hook must be under 80 characters and feel native to the niche's style.
-- Vary content types: mix photo_montage, video_clip, and mixed.
-- Match tone to niche: family = warm/relatable, fitness = energetic, travel = aspirational, food = sensory.
-- Look at which recent posts got the best likes/comments ratio and replicate that style.
-- The "reason" field must mention the niche and WHY it fits THIS account's audience.
+STEP 2 — WRITE 20 REEL IDEAS FOR THAT NICHE:
+For each suggestion:
 
-Return ONLY a valid JSON array of exactly 20 objects — no markdown, no code blocks, no extra text:
-[
-  {
-    "id": "s1",
-    "title": "Short reel title (5-8 words)",
-    "hook": "Hook text under 80 chars",
-    "reason": "One sentence: why this fits this creator's niche and audience",
-    "galleryIndices": [0, 1, 2],
-    "contentType": "photo_montage|video_clip|mixed"
-  }
-]`;
+TITLE (5–8 words): What the reel is about. Specific, not vague.
+
+HOOK (under 80 chars): The first text that appears on screen. It must make a scroller STOP in under 0.5 seconds.
+  Hook formats that work: "POV: [relatable moment]", "Nobody tells you that...", "I finally did [thing]", "Things I wish I knew before...", "Watch till the end 👀", "Day [X] of [challenge]", "[Number] things that changed after..."
+  The hook MUST tease what actually happens in the specific event referenced — NOT a generic phrase.
+  ✗ Bad: "Beautiful memories" | ✗ Bad: "This was so fun" | ✗ Bad: "You won't believe this"
+  ✓ Good: "POV: first family vacation since having a baby" | ✓ Good: "Things nobody tells you about solo travel in your 20s"
+  No two hooks may use the same format.
+
+REASON: One sentence explaining exactly why this hook + content will resonate with this specific niche's audience. Reference the niche explicitly.
+
+galleryIndices: 0-based indices into the event thumbnails shown (the batch provided, not all events).
+contentType: "photo_montage", "video_clip", or "mixed". Vary across all 20.
+
+Return ONLY a valid JSON object — no markdown, no code blocks, no extra text:
+{
+  "niche": "One precise sentence describing this creator's exact niche and audience",
+  "suggestions": [
+    {
+      "id": "s1",
+      "title": "Reel title (5–8 words)",
+      "hook": "Scroll-stopping hook under 80 chars",
+      "reason": "Why this resonates with this niche's audience",
+      "galleryIndices": [0, 1],
+      "contentType": "photo_montage|video_clip|mixed"
+    }
+  ]
+}`;
 
     try {
       const controller = new AbortController();
-      const timeoutId = setTimeout(() => controller.abort(), 30000);
+      const timeoutId = setTimeout(() => controller.abort(), 45000);
       const res = await fetch('https://api.anthropic.com/v1/messages', {
         method: 'POST',
         signal: controller.signal,
@@ -331,8 +344,8 @@ Return ONLY a valid JSON array of exactly 20 objects — no markdown, no code bl
           'anthropic-version': '2023-06-01',
         },
         body: JSON.stringify({
-          model: 'claude-haiku-4-5-20251001',
-          max_tokens: 4096,
+          model: 'claude-sonnet-4-6',
+          max_tokens: 6000,
           system: systemPrompt,
           messages: [{ role: 'user', content: userContent }],
           temperature: 0.7,
@@ -351,17 +364,20 @@ Return ONLY a valid JSON array of exactly 20 objects — no markdown, no code bl
       const aiData = await res.json();
       const rawText = ((aiData.content?.[0]?.text as string) ?? '').trim();
 
-      let suggestions: Suggestion[];
+      let parsed: { niche?: string; suggestions?: Suggestion[] };
       try {
         const cleaned = rawText.replace(/```json?\n?/g, '').replace(/```/g, '').trim();
-        suggestions = JSON.parse(cleaned);
+        parsed = JSON.parse(cleaned);
       } catch {
         setError('AI returned invalid format. Please try again.');
         setLoading(false);
         return;
       }
 
+      const suggestions = parsed.suggestions ?? (Array.isArray(parsed) ? parsed as unknown as Suggestion[] : []);
+
       setResult({
+        niche: parsed.niche ?? '',
         profile: { username: igStatus.username, followers: igStatus.followersCount },
         suggestions,
         analysisEvents: topEvents,
@@ -495,6 +511,14 @@ Return ONLY a valid JSON array of exactly 20 objects — no markdown, no code bl
           </View>
         )}
 
+        {/* Identified niche banner */}
+        {!loading && !!result?.niche && (
+          <View style={styles.nicheBanner}>
+            <MaterialCommunityIcons name="target" size={14} color={Colors.amber} />
+            <Text style={styles.nicheText} numberOfLines={2}>{result.niche}</Text>
+          </View>
+        )}
+
         {/* Suggestions header */}
         {!loading && !!result && (
           <View style={styles.sectionHeader}>
@@ -608,6 +632,15 @@ const styles = StyleSheet.create({
     padding: Spacing.sm + 4, borderWidth: 1, borderColor: Colors.surfaceBorder,
   },
   analyzingText: { fontSize: FontSize.sm, color: Colors.textSecondary, includeFontPadding: false },
+  nicheBanner: {
+    flexDirection: 'row', alignItems: 'flex-start', gap: 8,
+    backgroundColor: Colors.amber + '18', borderRadius: Radius.md,
+    padding: Spacing.sm + 4, borderWidth: 1, borderColor: Colors.amber + '44',
+  },
+  nicheText: {
+    flex: 1, fontSize: FontSize.sm, color: Colors.amber,
+    fontWeight: FontWeight.semibold, includeFontPadding: false, lineHeight: 18,
+  },
   igBanner: {
     flexDirection: 'row', alignItems: 'center', gap: 8,
     backgroundColor: Colors.rose + '18', borderRadius: Radius.md,
