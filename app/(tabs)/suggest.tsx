@@ -263,9 +263,11 @@ Return ONLY a valid JSON array of exactly 20 objects — no markdown, no code bl
 ]`;
 
     try {
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), 30000);
       const res = await fetch('https://api.anthropic.com/v1/messages', {
         method: 'POST',
-        signal: AbortSignal.timeout(30000),
+        signal: controller.signal,
         headers: {
           'Content-Type': 'application/json',
           'x-api-key': apiKey,
@@ -279,6 +281,8 @@ Return ONLY a valid JSON array of exactly 20 objects — no markdown, no code bl
           temperature: 0.7,
         }),
       });
+
+      clearTimeout(timeoutId);
 
       if (!res.ok) {
         const errText = await res.text();
