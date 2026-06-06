@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react';
 import {
-  View, Text, StyleSheet, Pressable, ScrollView, ActivityIndicator,
+  View, Text, StyleSheet, Pressable, ScrollView, ActivityIndicator, Dimensions,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { MaterialIcons, MaterialCommunityIcons } from '@expo/vector-icons';
@@ -11,11 +11,17 @@ import * as VideoThumbnails from 'expo-video-thumbnails';
 import { FunctionsHttpError } from '@supabase/supabase-js';
 import { Colors, Spacing, Radius, FontSize, FontWeight } from '@/constants/theme';
 import { useAuth, getSupabaseClient } from '@/template';
+import { Image } from 'expo-image';
 import { useInstagram } from '@/hooks/useInstagram';
 import { setPendingReelItems, PendingReelItem } from '@/stores/pendingReel';
 
+const { width } = Dimensions.get('window');
+const CARD_GAP = 10;
+const CARD_W = (width - Spacing.md * 2 - CARD_GAP) / 2;
+const CARD_H = CARD_W * 1.25;
+
 const EVENT_GAP_MS = 3 * 60 * 60 * 1000;
-const MAX_EVENTS = 8;
+const MAX_EVENTS = 20;
 
 type GalleryItem = {
   id: string; uri: string; type: 'photo' | 'video';
@@ -306,8 +312,8 @@ export default function SuggestScreen() {
           </Pressable>
         )}
 
-        {/* Connected badge (shown above suggestions) */}
-        {!igLoading && igStatus.connected && igStatus.username && !!result && (
+        {/* Connected badge */}
+        {!igLoading && igStatus.connected && igStatus.username && (
           <View style={styles.igConnected}>
             <MaterialCommunityIcons name="instagram" size={14} color={Colors.emerald} />
             <Text style={styles.igConnectedText}>@{igStatus.username}</Text>
@@ -317,11 +323,50 @@ export default function SuggestScreen() {
           </View>
         )}
 
-        {/* Loading spinner */}
-        {loading && (
+        {/* Initial scan spinner — only while no events loaded yet */}
+        {loading && events.length === 0 && (
           <View style={styles.loadingBox}>
             <ActivityIndicator size="large" color={Colors.primary} />
             <Text style={styles.loadingText}>{loadingStep}</Text>
+          </View>
+        )}
+
+        {/* Events grid — shown as soon as events are detected */}
+        {events.length > 0 && (
+          <View>
+            <View style={styles.sectionHeader}>
+              <MaterialCommunityIcons name="calendar-month-outline" size={14} color={Colors.textSecondary} />
+              <Text style={styles.sectionTitle}>Your Memories · {Math.min(events.length, MAX_EVENTS)} events</Text>
+            </View>
+            <View style={styles.eventsGrid}>
+              {events.slice(0, MAX_EVENTS).map((ev, i) => (
+                <View key={i} style={styles.eventCard}>
+                  <Image source={{ uri: ev.rep.uri }} style={styles.eventThumb} contentFit="cover" />
+                  {!ev.base64 && (
+                    <View style={styles.thumbSpinner}>
+                      <ActivityIndicator size="small" color="#fff" />
+                    </View>
+                  )}
+                  {ev.rep.type === 'video' && (
+                    <View style={styles.videoTag}>
+                      <MaterialIcons name="videocam" size={10} color="#fff" />
+                    </View>
+                  )}
+                  <View style={styles.eventOverlay}>
+                    <Text style={styles.eventDate} numberOfLines={1}>{ev.label}</Text>
+                    <Text style={styles.eventItems}>{ev.count} items</Text>
+                  </View>
+                </View>
+              ))}
+            </View>
+          </View>
+        )}
+
+        {/* Analysing indicator — shown while AI runs (events already visible) */}
+        {loading && events.length > 0 && (
+          <View style={styles.analyzingRow}>
+            <ActivityIndicator size="small" color={Colors.primary} />
+            <Text style={styles.analyzingText}>{loadingStep}</Text>
           </View>
         )}
 
@@ -347,6 +392,16 @@ export default function SuggestScreen() {
             <Pressable style={styles.actionBtn} onPress={() => router.push('/profile')}>
               <Text style={styles.actionBtnText}>Connect Instagram</Text>
             </Pressable>
+          </View>
+        )}
+
+        {/* Suggestions header */}
+        {!loading && !!result && (
+          <View style={styles.sectionHeader}>
+            <MaterialCommunityIcons name="creation" size={14} color={Colors.violet} />
+            <Text style={[styles.sectionTitle, { color: Colors.violet }]}>
+              {result.suggestions.length} Reel Ideas For You
+            </Text>
           </View>
         )}
 
@@ -403,6 +458,34 @@ const styles = StyleSheet.create({
   scrollContent: { padding: Spacing.md, gap: Spacing.md },
   loadingBox: { alignItems: 'center', justifyContent: 'center', paddingVertical: 60, gap: 16 },
   loadingText: { fontSize: FontSize.sm, color: Colors.textSecondary, includeFontPadding: false },
+  sectionHeader: { flexDirection: 'row', alignItems: 'center', gap: 6, marginBottom: 2 },
+  sectionTitle: { fontSize: FontSize.sm, fontWeight: FontWeight.semibold, color: Colors.textSecondary, includeFontPadding: false },
+  eventsGrid: { flexDirection: 'row', flexWrap: 'wrap', gap: CARD_GAP },
+  eventCard: {
+    width: CARD_W, height: CARD_H, borderRadius: Radius.md,
+    overflow: 'hidden', backgroundColor: Colors.surfaceElevated,
+  },
+  eventThumb: { width: '100%', height: '100%' },
+  thumbSpinner: {
+    ...StyleSheet.absoluteFillObject,
+    backgroundColor: 'rgba(0,0,0,0.4)', alignItems: 'center', justifyContent: 'center',
+  },
+  videoTag: {
+    position: 'absolute', top: 6, right: 6,
+    backgroundColor: 'rgba(0,0,0,0.65)', borderRadius: 4, padding: 3,
+  },
+  eventOverlay: {
+    position: 'absolute', bottom: 0, left: 0, right: 0,
+    backgroundColor: 'rgba(0,0,0,0.55)', paddingHorizontal: 8, paddingVertical: 6,
+  },
+  eventDate: { fontSize: FontSize.xs, fontWeight: FontWeight.bold, color: '#fff', includeFontPadding: false },
+  eventItems: { fontSize: 10, color: 'rgba(255,255,255,0.7)', includeFontPadding: false, marginTop: 1 },
+  analyzingRow: {
+    flexDirection: 'row', alignItems: 'center', gap: 10,
+    backgroundColor: Colors.surfaceElevated, borderRadius: Radius.md,
+    padding: Spacing.sm + 4, borderWidth: 1, borderColor: Colors.surfaceBorder,
+  },
+  analyzingText: { fontSize: FontSize.sm, color: Colors.textSecondary, includeFontPadding: false },
   igBanner: {
     flexDirection: 'row', alignItems: 'center', gap: 8,
     backgroundColor: Colors.rose + '18', borderRadius: Radius.md,
