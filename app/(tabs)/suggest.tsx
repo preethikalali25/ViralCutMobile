@@ -224,7 +224,7 @@ export default function SuggestScreen() {
       igProfileRef.current = await getInstagramProfile(user.id);
     }
 
-    setLoadingStep('Analysing your niche… (this takes ~20s)');
+    setLoadingStep('Analysing your niche… (~20 sec)');
 
     // Slice from offset, wrap around if near the end
     const total = evList.length;
@@ -287,48 +287,59 @@ ${postLines || '  (no posts found)'}`;
       text: `${profileSection}
 
 Camera roll: ${totalItems} total items across ${evList.length} detected events.
-Each thumbnail above represents a different occasion from this creator's life:
+The 8 thumbnails above (indices 0–7) are the specific occasions available as raw material:
 ${eventLines}
 
-Step 1 — Identify the creator's exact niche from their profile and gallery.
-Step 2 — Suggest 20 Reel ideas perfectly matched to that niche. Return JSON only.`,
+Identify the single dominant niche from all of this. Then give 8 niche-focused Reel ideas using these events as raw material. Return JSON only.`,
     });
 
-    const systemPrompt = `You are an expert viral Reels strategist who creates scroll-stopping, niche-specific content.
+    const systemPrompt = `You are an expert Instagram Reels strategist who creates scroll-stopping, niche-specific content.
 
-STEP 1 — IDENTIFY THE NICHE:
-Read the Instagram profile (bio, post captions, engagement patterns) and the gallery event thumbnails. Determine the creator's EXACT niche — be highly specific:
-  ✗ Too vague: "lifestyle", "travel", "family"
-  ✓ Specific: "young Indian mom documenting toddler milestones", "budget solo backpacker in Southeast Asia", "home baker specialising in custom cakes"
-Write this niche in the top-level "niche" field before anything else.
+═══ STEP 1: IDENTIFY THE NICHE ═══
+Use this priority order:
+1. If bio text is set → treat it as the primary niche signal
+2. If recent posts exist → look at captions + what got highest likes/comments
+3. If Instagram data is thin or missing → look at ALL 8 gallery thumbnails together and find the ONE consistent subject or theme (e.g. a baby appearing in most shots = "mom content", outdoor/nature shots = "adventure/hiking", food shots = "food content")
 
-STEP 2 — WRITE 20 REEL IDEAS FOR THAT NICHE:
-For each suggestion:
+Write ONE specific niche sentence — be precise, not vague:
+  ✗ "lifestyle" ✗ "family" ✗ "travel"
+  ✓ "first-time mom documenting newborn and toddler moments" ✓ "solo female traveller exploring South Asia on a budget" ✓ "home cook sharing quick 30-minute dinner ideas"
 
-TITLE (5–8 words): What the reel is about. Specific, not vague.
+═══ STEP 2: GENERATE 8 REEL IDEAS ═══
+Use the gallery events as raw material, but FILTER every idea through the niche lens.
 
-HOOK (under 80 chars): The first text that appears on screen. It must make a scroller STOP in under 0.5 seconds.
-  Hook formats that work: "POV: [relatable moment]", "Nobody tells you that...", "I finally did [thing]", "Things I wish I knew before...", "Watch till the end 👀", "Day [X] of [challenge]", "[Number] things that changed after..."
-  The hook MUST tease what actually happens in the specific event referenced — NOT a generic phrase.
-  ✗ Bad: "Beautiful memories" | ✗ Bad: "This was so fun" | ✗ Bad: "You won't believe this"
-  ✓ Good: "POV: first family vacation since having a baby" | ✓ Good: "Things nobody tells you about solo travel in your 20s"
-  No two hooks may use the same format.
+The transformation rule — do NOT just describe the thumbnail:
+  ✗ WRONG: event is beach trip → title "Fun beach day" hook "We had so much fun!"
+  ✓ RIGHT: event is beach trip, niche is mom content → title "Beach day survival guide with a toddler" hook "POV: packing for the beach with a toddler (15 bags later) 😅"
 
-REASON: One sentence explaining exactly why this hook + content will resonate with this specific niche's audience. Reference the niche explicitly.
+  ✗ WRONG: event is dinner out → title "Date night" hook "Beautiful evening"
+  ✓ RIGHT: event is dinner out, niche is budget travel → title "Eating out in [city] for under $10" hook "Nobody tells you how cheap eating out here actually is"
 
-galleryIndices: 0-based indices into the event thumbnails shown (the batch provided, not all events).
-contentType: "photo_montage", "video_clip", or "mixed". Vary across all 20.
+For each of the 8 suggestions:
+• TITLE (5–8 words): niche-branded, not a literal thumbnail description
+• HOOK (under 80 chars): use a DIFFERENT format for each one:
+    "POV: [relatable niche situation]"
+    "Nobody tells you that [niche truth]..."
+    "Things I wish I knew before [niche activity]"
+    "[Number] signs you're a [niche identity]"
+    "Real talk: [honest niche experience]"
+    "Day [X] of [niche challenge/journey]"
+    "I finally [niche milestone/thing]"
+    "How I [niche achievement] with [constraint]"
+• REASON: one sentence — name the niche and explain exactly why this will resonate
+• galleryIndices: 0-based, max index 7
+• contentType: vary across photo_montage, video_clip, mixed
 
-Return ONLY a valid JSON object — no markdown, no code blocks, no extra text:
+Return ONLY a valid JSON object — no markdown, no code blocks:
 {
-  "niche": "One precise sentence describing this creator's exact niche and audience",
+  "niche": "One specific sentence describing the creator's exact niche and target audience",
   "suggestions": [
     {
       "id": "s1",
-      "title": "Reel title (5–8 words)",
+      "title": "Niche-specific reel title",
       "hook": "Scroll-stopping hook under 80 chars",
-      "reason": "Why this resonates with this niche's audience",
-      "galleryIndices": [0, 1],
+      "reason": "Why this resonates with [niche] audience",
+      "galleryIndices": [0],
       "contentType": "photo_montage|video_clip|mixed"
     }
   ]
@@ -463,7 +474,7 @@ Return ONLY a valid JSON object — no markdown, no code blocks, no extra text:
             {loading
               ? loadingStep
               : result
-                ? `${result.suggestions.length} niche-matched ideas · ${itemCount} items`
+                ? `${result.suggestions.length} niche-matched ideas for you`
                 : 'AI-powered suggestions from your gallery'}
           </Text>
         </View>
