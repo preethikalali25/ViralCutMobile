@@ -117,6 +117,8 @@ export default function SuggestScreen() {
   const [loadingStep, setLoadingStep] = useState('Scanning your gallery…');
   const [result, setResult] = useState<AnalysisResult | null>(null);
   const [error, setError] = useState<string | null>(null);
+  // Live profile data for display (ref alone won't re-render)
+  const [liveProfile, setLiveProfile] = useState<InstagramProfile | null>(null);
 
   // Keep eventsRef in sync
   useEffect(() => { eventsRef.current = events; }, [events]);
@@ -148,6 +150,7 @@ export default function SuggestScreen() {
     analyzedRef.current = false;
     eventOffsetRef.current = 0;
     igProfileRef.current = null;
+    setLiveProfile(null);
     itemsRef.current = [];
     eventsRef.current = [];
     setItemCount(0);
@@ -221,7 +224,13 @@ export default function SuggestScreen() {
     // Fetch full Instagram profile (bio + recent posts) once per session
     if (igStatus.connected && user.id && !igProfileRef.current) {
       setLoadingStep('Loading your Instagram profile…');
-      igProfileRef.current = await getInstagramProfile(user.id);
+      const fetched = await getInstagramProfile(user.id);
+      igProfileRef.current = fetched;
+      if (fetched) {
+        setLiveProfile(fetched);
+      } else {
+        console.warn('[suggest] getInstagramProfile returned null — profile fetch failed or edge function not deployed');
+      }
     }
 
     setLoadingStep('Analysing your niche… (~20 sec)');
@@ -494,13 +503,16 @@ Return ONLY a valid JSON object — no markdown, no code blocks:
           </Pressable>
         )}
 
-        {/* Connected badge */}
+        {/* Connected badge — shows live data once profile is fetched */}
         {!igLoading && igStatus.connected && igStatus.username && (
           <View style={styles.igConnected}>
             <MaterialCommunityIcons name="instagram" size={14} color={Colors.emerald} />
-            <Text style={styles.igConnectedText}>@{igStatus.username}</Text>
-            {igStatus.followersCount != null && (
-              <Text style={styles.igFollowers}>· {igStatus.followersCount.toLocaleString()} followers</Text>
+            <Text style={styles.igConnectedText}>@{liveProfile?.username ?? igStatus.username}</Text>
+            {(liveProfile?.followersCount ?? igStatus.followersCount) != null && (
+              <Text style={styles.igFollowers}>
+                · {(liveProfile?.followersCount ?? igStatus.followersCount)!.toLocaleString()} followers
+                {liveProfile?.mediaCount != null ? ` · ${liveProfile.mediaCount} posts` : ''}
+              </Text>
             )}
           </View>
         )}

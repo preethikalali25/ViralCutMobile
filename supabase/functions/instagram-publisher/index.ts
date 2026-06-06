@@ -226,6 +226,13 @@ Deno.serve(async (req) => {
           date: (p.timestamp as string).split('T')[0],
         }));
 
+        // Refresh cached follower count in DB so get_status stays accurate
+        await supabase.from('instagram_tokens').update({
+          followers_count: profileData.followers_count,
+          username: profileData.username,
+          updated_at: new Date().toISOString(),
+        }).eq('user_id', userId);
+
         return new Response(
           JSON.stringify({
             username: profileData.username,
