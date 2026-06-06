@@ -44,7 +44,7 @@ Deno.serve(async (req) => {
     // ── Fetch Instagram profile ────────────────────────────────────────────────
     const igSignal = AbortSignal.timeout(12000);
     let profile: Record<string, unknown> = {};
-    let recentPosts: unknown[] = [];
+    let recentPosts: any[] = [];
 
     try {
       const [profileRes, mediaRes] = await Promise.all([
@@ -88,7 +88,7 @@ ${recentPosts.map((p, i) =>
     const thumbCount = Math.min(galleryThumbnails.length, 8);
 
     const systemPrompt = `You are a viral short-form video content strategist.
-You will analyse an Instagram creator's profile and their media gallery, then suggest exactly 3 Reel ideas they should make RIGHT NOW.
+You will analyse an Instagram creator's profile and their media gallery, then suggest exactly 20 Reel ideas they should make RIGHT NOW.
 
 CRITICAL RULES:
 - Suggestions must be specific to THIS creator's niche and audience — no generic advice.
@@ -96,10 +96,11 @@ CRITICAL RULES:
 - Reference events by their 0-based index in galleryIndices.
 - Each hook must be under 80 characters.
 - Explain why each idea fits THIS account's engagement patterns.
+- Vary the content types across suggestions — mix photo_montage, video_clip, and mixed.
 - Create suggestions that tell a story or theme — consider combining multiple events.
 - If the profile shows kids/family content, suggest family reels. Match the niche exactly.
 
-Return ONLY a valid JSON array of exactly 3 objects — no markdown, no code blocks, no extra text:
+Return ONLY a valid JSON array of exactly 20 objects — no markdown, no code blocks, no extra text:
 [
   {
     "id": "s1",
@@ -142,7 +143,7 @@ ${galleryContext}
 Each thumbnail above represents a different occasion in the creator's life:
 ${eventLines}
 
-Analyse these events and suggest 3 Reel ideas that would resonate with this creator's audience. Return JSON only.`,
+Analyse these events and suggest 20 Reel ideas that would resonate with this creator's audience. Return JSON only.`,
     });
 
     const aiRes = await fetch(ANTHROPIC_API_URL, {
@@ -155,7 +156,7 @@ Analyse these events and suggest 3 Reel ideas that would resonate with this crea
       },
       body: JSON.stringify({
         model: ANTHROPIC_MODEL,
-        max_tokens: 1024,
+        max_tokens: 4096,
         system: systemPrompt,
         messages: [{ role: 'user', content: userContent }],
         temperature: 0.7,
