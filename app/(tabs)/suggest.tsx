@@ -10,7 +10,7 @@ import * as ImageManipulator from 'expo-image-manipulator';
 import * as VideoThumbnails from 'expo-video-thumbnails';
 import { FunctionsHttpError } from '@supabase/supabase-js';
 import { Colors, Spacing, Radius, FontSize, FontWeight } from '@/constants/theme';
-import { useAuth, getSupabaseClient } from '@/template';
+import { useAuth } from '@/template';
 import { Image } from 'expo-image';
 import { useInstagram } from '@/hooks/useInstagram';
 import { setPendingReelItems, PendingReelItem } from '@/stores/pendingReel';
@@ -197,57 +197,134 @@ export default function SuggestScreen() {
 
   useEffect(() => { loadGallery(); }, [loadGallery]);
 
-  // ── Analysis ───────────────────────────────────────────────────────────────
+  // ── Analysis (calls Anthropic directly) ───────────────────────────────────
   const runAnalysis = useCallback(async (evList: EventCluster[], totalItems: number) => {
     if (!user?.id) return;
+
+    const apiKey = process.env.EXPO_PUBLIC_ANTHROPIC_API_KEY;
+    if (!apiKey) {
+      setError('Anthropic API key not configured. Add EXPO_PUBLIC_ANTHROPIC_API_KEY to your .env file.');
+      setLoading(false);
+      return;
+    }
+
     setLoading(true);
     setLoadingStep('Generating reel ideas…');
     setError(null);
 
     const topEvents = evList.slice(0, MAX_EVENTS);
-    const thumbs: Array<{
-      id: string; type: 'photo' | 'video'; base64: string;
-      eventLabel: string; eventCount: number;
-    }> = [];
+    const userContent: any[] = [];
+
     for (let i = 0; i < topEvents.length; i++) {
       const ev = topEvents[i];
       const b64 = ev.base64 ?? (await genThumb(ev));
-      if (b64) thumbs.push({ id: ev.rep.id, type: ev.rep.type, base64: b64, eventLabel: ev.label, eventCount: ev.count });
+      if (b64) {
+        userContent.push({
+          type: 'image',
+          source: { type: 'base64', media_type: 'image/jpeg', data: b64 },
+        });
+      }
     }
 
-    const supabase = getSupabaseClient();
-    const { data, error: fnErr } = await supabase.functions.invoke('content-advisor', {
-      body: { userId: user.id, galleryThumbnails: thumbs, totalItems, totalEvents: evList.length },
+    const profileSection = igStatus.connected && igStatus.username
+      ? `Instagram Profile:\nUsername: @${igStatus.username}\nFollowers: ${igStatus.followersCount?.toLocaleString() ?? 'unknown'}`
+      : 'No Instagram profile — base suggestions on gallery content only.';
+
+    const eventLines = topEvents
+      .map((ev, i) => `  Event ${i}: ${ev.label} (${ev.count} items)`)
+      .join('\n');
+
+    userContent.push({
+      type: 'text',
+      text: `${profileSection}\n\nCamera roll: ${totalItems} total items across ${evList.length} detected events.\nEach thumbnail above represents a different occasion:\n${eventLines}\n\nSuggest 20 Reel ideas. Return JSON only.`,
     });
 
-    if (fnErr) {
-      let msg = fnErr.message ?? 'Analysis failed. Please try again.';
-      if (fnErr instanceof FunctionsHttpError) {
-        try { msg = (await fnErr.context?.text()) ?? msg; } catch { /* ignore */ }
+    const systemPrompt = `You are a viral short-form video content strategist.
+Analyse the creator's media gallery and suggest exactly 20 Reel ideas they should make RIGHT NOW.
+
+CRITICAL RULES:
+- Suggestions must be specific to the content shown — no generic advice.
+- Each thumbnail represents a DISTINCT event or occasion (like Google/Apple Memories).
+- Reference events by their 0-based index in galleryIndices.
+- Each hook must be under 80 characters.
+- Vary content types: mix photo_montage, video_clip, and mixed.
+- If content shows kids/family, suggest family reels. Match the niche exactly.
+
+Return ONLY a valid JSON array of exactly 20 objects — no markdown, no code blocks, no extra text:
+[
+  {
+    "id": "s1",
+    "title": "Short reel title (5-8 words)",
+    "hook": "Hook text under 80 chars",
+    "reason": "One sentence: why this will perform well",
+    "galleryIndices": [0, 1, 2],
+    "contentType": "photo_montage|video_clip|mixed"
+  }
+]`;
+
+    try {
+      const res = await fetch('https://api.anthropic.com/v1/messages', {
+        method: 'POST',
+        signal: AbortSignal.timeout(30000),
+        headers: {
+          'Content-Type': 'application/json',
+          'x-api-key': apiKey,
+          'anthropic-version': '2023-06-01',
+        },
+        body: JSON.stringify({
+          model: 'claude-haiku-4-5-20251001',
+          max_tokens: 4096,
+          system: systemPrompt,
+          messages: [{ role: 'user', content: userContent }],
+          temperature: 0.7,
+        }),
+      });
+
+      if (!res.ok) {
+        const errText = await res.text();
+        setError(`AI error: ${errText}`);
+        setLoading(false);
+        return;
       }
-      setError(msg);
-      setLoading(false);
-      return;
+
+      const aiData = await res.json();
+      const rawText = ((aiData.content?.[0]?.text as string) ?? '').trim();
+
+      let suggestions: Suggestion[];
+      try {
+        const cleaned = rawText.replace(/```json?\n?/g, '').replace(/```/g, '').trim();
+        suggestions = JSON.parse(cleaned);
+      } catch {
+        setError('AI returned invalid format. Please try again.');
+        setLoading(false);
+        return;
+      }
+
+      setResult({
+        profile: { username: igStatus.username, followers: igStatus.followersCount },
+        suggestions,
+      });
+    } catch (err) {
+      setError(`Error: ${String(err)}`);
     }
 
-    setResult(data as AnalysisResult);
     setLoading(false);
-  }, [user?.id]);
+  }, [user?.id, igStatus.connected, igStatus.username, igStatus.followersCount]);
 
-  // Auto-trigger once gallery thumbnails are ready and Instagram is connected
+  // Auto-trigger once gallery thumbnails are ready (no Instagram required)
   useEffect(() => {
     if (!thumbsReady || igLoading || analyzedRef.current || !user?.id) return;
-    if (igStatus.connected && eventsRef.current.length > 0) {
+    if (eventsRef.current.length > 0) {
       analyzedRef.current = true;
       runAnalysis(eventsRef.current, itemsRef.current.length);
-    } else if (!igStatus.connected) {
+    } else {
       setLoading(false);
     }
-  }, [thumbsReady, igLoading, igStatus.connected, user?.id, runAnalysis]);
+  }, [thumbsReady, igLoading, user?.id, runAnalysis]);
 
   const handleRetry = () => {
     analyzedRef.current = false;
-    if (eventsRef.current.length > 0 && user?.id && igStatus.connected) {
+    if (eventsRef.current.length > 0 && user?.id) {
       runAnalysis(eventsRef.current, itemsRef.current.length);
     } else {
       loadGallery();
@@ -377,20 +454,6 @@ export default function SuggestScreen() {
             <Text style={styles.errorText}>{error}</Text>
             <Pressable style={styles.retryBtn} onPress={handleRetry}>
               <Text style={styles.retryBtnText}>Try Again</Text>
-            </Pressable>
-          </View>
-        )}
-
-        {/* Instagram not connected state */}
-        {!loading && !error && !result && !igLoading && !igStatus.connected && (
-          <View style={styles.centeredBox}>
-            <MaterialCommunityIcons name="instagram" size={52} color={Colors.rose} />
-            <Text style={styles.centeredTitle}>Connect Instagram</Text>
-            <Text style={styles.centeredSub}>
-              Connect your Instagram account to get 20 personalised reel ideas tailored to your audience.
-            </Text>
-            <Pressable style={styles.actionBtn} onPress={() => router.push('/profile')}>
-              <Text style={styles.actionBtnText}>Connect Instagram</Text>
             </Pressable>
           </View>
         )}
