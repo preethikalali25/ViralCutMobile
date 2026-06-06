@@ -404,50 +404,11 @@ Return ONLY a valid JSON array of exactly 20 objects — no markdown, no code bl
           </View>
         )}
 
-        {/* Initial scan spinner — only while no events loaded yet */}
-        {loading && events.length === 0 && (
+        {/* Loading spinner */}
+        {loading && (
           <View style={styles.loadingBox}>
             <ActivityIndicator size="large" color={Colors.primary} />
             <Text style={styles.loadingText}>{loadingStep}</Text>
-          </View>
-        )}
-
-        {/* Events grid — shown as soon as events are detected */}
-        {events.length > 0 && (
-          <View>
-            <View style={styles.sectionHeader}>
-              <MaterialCommunityIcons name="calendar-month-outline" size={14} color={Colors.textSecondary} />
-              <Text style={styles.sectionTitle}>Your Memories · {Math.min(events.length, MAX_EVENTS)} events</Text>
-            </View>
-            <View style={styles.eventsGrid}>
-              {events.slice(0, MAX_EVENTS).map((ev, i) => (
-                <View key={i} style={styles.eventCard}>
-                  <Image source={{ uri: ev.rep.uri }} style={styles.eventThumb} contentFit="cover" />
-                  {!ev.base64 && (
-                    <View style={styles.thumbSpinner}>
-                      <ActivityIndicator size="small" color="#fff" />
-                    </View>
-                  )}
-                  {ev.rep.type === 'video' && (
-                    <View style={styles.videoTag}>
-                      <MaterialIcons name="videocam" size={10} color="#fff" />
-                    </View>
-                  )}
-                  <View style={styles.eventOverlay}>
-                    <Text style={styles.eventDate} numberOfLines={1}>{ev.label}</Text>
-                    <Text style={styles.eventItems}>{ev.count} items</Text>
-                  </View>
-                </View>
-              ))}
-            </View>
-          </View>
-        )}
-
-        {/* Analysing indicator — shown while AI runs (events already visible) */}
-        {loading && events.length > 0 && (
-          <View style={styles.analyzingRow}>
-            <ActivityIndicator size="small" color={Colors.primary} />
-            <Text style={styles.analyzingText}>{loadingStep}</Text>
           </View>
         )}
 
@@ -475,29 +436,51 @@ Return ONLY a valid JSON array of exactly 20 objects — no markdown, no code bl
         {/* Suggestion cards */}
         {!loading && !!result && result.suggestions.map((s, i) => {
           const color = TYPE_COLOR[s.contentType] ?? Colors.sky;
+          const thumbEv = eventsRef.current[s.galleryIndices?.[0]];
           return (
             <View key={s.id ?? i} style={styles.card}>
-              <View style={styles.cardHeader}>
-                <View style={styles.cardRank}>
-                  <Text style={styles.cardRankText}>{i + 1}</Text>
+              {/* Thumbnail */}
+              {thumbEv && (
+                <View style={styles.cardThumbWrap}>
+                  <Image source={{ uri: thumbEv.rep.uri }} style={styles.cardThumb} contentFit="cover" />
+                  <View style={styles.cardThumbGradient} />
+                  <View style={styles.cardRankOverlay}>
+                    <Text style={styles.cardRankText}>{i + 1}</Text>
+                  </View>
+                  {thumbEv.rep.type === 'video' && (
+                    <View style={styles.cardVideoTag}>
+                      <MaterialIcons name="videocam" size={12} color="#fff" />
+                    </View>
+                  )}
+                  <View style={[styles.cardTypeBadge, { backgroundColor: color + 'dd' }]}>
+                    <Text style={styles.cardTypeBadgeText}>{TYPE_LABEL[s.contentType] ?? s.contentType}</Text>
+                  </View>
                 </View>
+              )}
+              {/* Content */}
+              <View style={styles.cardBody}>
+                {!thumbEv && (
+                  <View style={styles.cardHeaderNoThumb}>
+                    <View style={styles.cardRank}><Text style={styles.cardRankText}>{i + 1}</Text></View>
+                    <View style={[styles.typeBadge, { borderColor: color + '55', backgroundColor: color + '22' }]}>
+                      <Text style={[styles.typeBadgeText, { color }]}>{TYPE_LABEL[s.contentType] ?? s.contentType}</Text>
+                    </View>
+                  </View>
+                )}
                 <Text style={styles.cardTitle} numberOfLines={2}>{s.title}</Text>
-                <View style={[styles.typeBadge, { borderColor: color + '55', backgroundColor: color + '22' }]}>
-                  <Text style={[styles.typeBadgeText, { color }]}>{TYPE_LABEL[s.contentType] ?? s.contentType}</Text>
+                <View style={styles.hookBox}>
+                  <Text style={styles.hookLabel}>HOOK</Text>
+                  <Text style={styles.hookText}>"{s.hook}"</Text>
                 </View>
+                <Text style={styles.reasonText}>{s.reason}</Text>
+                <Pressable
+                  style={({ pressed }) => [styles.makeBtn, pressed && { opacity: 0.85 }]}
+                  onPress={() => handleMakeReel(s)}
+                >
+                  <MaterialIcons name="movie-creation" size={16} color="#fff" />
+                  <Text style={styles.makeBtnText}>Make This Reel</Text>
+                </Pressable>
               </View>
-              <View style={styles.hookBox}>
-                <Text style={styles.hookLabel}>HOOK</Text>
-                <Text style={styles.hookText}>"{s.hook}"</Text>
-              </View>
-              <Text style={styles.reasonText}>{s.reason}</Text>
-              <Pressable
-                style={({ pressed }) => [styles.makeBtn, pressed && { opacity: 0.85 }]}
-                onPress={() => handleMakeReel(s)}
-              >
-                <MaterialIcons name="movie-creation" size={16} color="#fff" />
-                <Text style={styles.makeBtnText}>Make This Reel</Text>
-              </Pressable>
             </View>
           );
         })}
@@ -527,7 +510,7 @@ const styles = StyleSheet.create({
   loadingText: { fontSize: FontSize.sm, color: Colors.textSecondary, includeFontPadding: false },
   sectionHeader: { flexDirection: 'row', alignItems: 'center', gap: 6, marginBottom: 2 },
   sectionTitle: { fontSize: FontSize.sm, fontWeight: FontWeight.semibold, color: Colors.textSecondary, includeFontPadding: false },
-  eventsGrid: { flexDirection: 'row', flexWrap: 'wrap', gap: CARD_GAP },
+  // keep eventCard etc. as dead styles — removed from render but keep to avoid TS error
   eventCard: {
     width: CARD_W, height: CARD_H, borderRadius: Radius.md,
     overflow: 'hidden', backgroundColor: Colors.surfaceElevated,
@@ -595,16 +578,37 @@ const styles = StyleSheet.create({
   card: {
     backgroundColor: Colors.surfaceElevated, borderRadius: Radius.xl,
     borderWidth: 1.5, borderColor: Colors.primary + '55',
-    padding: Spacing.md, gap: Spacing.sm,
+    overflow: 'hidden',
   },
-  cardHeader: { flexDirection: 'row', alignItems: 'flex-start', gap: Spacing.sm },
+  cardThumbWrap: { width: '100%', height: 180, position: 'relative' },
+  cardThumb: { width: '100%', height: '100%' },
+  cardThumbGradient: {
+    ...StyleSheet.absoluteFillObject,
+    backgroundColor: 'rgba(0,0,0,0.25)',
+  },
+  cardRankOverlay: {
+    position: 'absolute', top: 10, left: 10,
+    width: 28, height: 28, borderRadius: 14,
+    backgroundColor: Colors.primary, alignItems: 'center', justifyContent: 'center',
+  },
+  cardVideoTag: {
+    position: 'absolute', top: 10, right: 10,
+    backgroundColor: 'rgba(0,0,0,0.65)', borderRadius: 4, padding: 4,
+  },
+  cardTypeBadge: {
+    position: 'absolute', bottom: 10, left: 10,
+    borderRadius: Radius.sm, paddingHorizontal: 8, paddingVertical: 3,
+  },
+  cardTypeBadgeText: { fontSize: FontSize.xs, fontWeight: FontWeight.bold, color: '#fff', includeFontPadding: false },
+  cardBody: { padding: Spacing.md, gap: Spacing.sm },
+  cardHeaderNoThumb: { flexDirection: 'row', alignItems: 'center', gap: Spacing.sm },
   cardRank: {
     width: 26, height: 26, borderRadius: 13, flexShrink: 0,
     backgroundColor: Colors.primary, alignItems: 'center', justifyContent: 'center',
   },
   cardRankText: { fontSize: FontSize.sm, fontWeight: FontWeight.extrabold, color: '#fff', includeFontPadding: false },
   cardTitle: {
-    flex: 1, fontSize: FontSize.md, fontWeight: FontWeight.bold,
+    fontSize: FontSize.md, fontWeight: FontWeight.bold,
     color: Colors.textPrimary, includeFontPadding: false, lineHeight: 22,
   },
   typeBadge: {
@@ -629,7 +633,7 @@ const styles = StyleSheet.create({
   makeBtn: {
     flexDirection: 'row', alignItems: 'center', justifyContent: 'center',
     gap: 6, backgroundColor: Colors.primary, borderRadius: Radius.full,
-    paddingVertical: 12, marginTop: 4,
+    paddingVertical: 12,
   },
   makeBtnText: { fontSize: FontSize.sm, fontWeight: FontWeight.bold, color: '#fff', includeFontPadding: false },
 });
