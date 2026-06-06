@@ -106,6 +106,7 @@ export default function SuggestScreen() {
   const eventsRef = useRef<EventCluster[]>([]);
   const thumbsStarted = useRef(false);
   const analyzedRef = useRef(false);
+  const eventOffsetRef = useRef(0);
 
   const [permission, setPermission] = useState<'unknown' | 'granted' | 'denied'>('unknown');
   const [loading, setLoading] = useState(true);
@@ -141,6 +142,7 @@ export default function SuggestScreen() {
     setThumbsReady(false);
     thumbsStarted.current = false;
     analyzedRef.current = false;
+    eventOffsetRef.current = 0;
     itemsRef.current = [];
     eventsRef.current = [];
     setItemCount(0);
@@ -198,7 +200,7 @@ export default function SuggestScreen() {
   useEffect(() => { loadGallery(); }, [loadGallery]);
 
   // ── Analysis (calls Anthropic directly) ───────────────────────────────────
-  const runAnalysis = useCallback(async (evList: EventCluster[], totalItems: number) => {
+  const runAnalysis = useCallback(async (evList: EventCluster[], totalItems: number, offset: number = 0) => {
     if (!user?.id) return;
 
     const apiKey = process.env.EXPO_PUBLIC_ANTHROPIC_API_KEY;
@@ -212,7 +214,18 @@ export default function SuggestScreen() {
     setLoadingStep('Generating reel ideas…');
     setError(null);
 
-    const topEvents = evList.slice(0, MAX_EVENTS);
+    // Slice from offset, wrap around if near the end
+    const total = evList.length;
+    let topEvents: EventCluster[];
+    if (total <= MAX_EVENTS) {
+      topEvents = evList;
+    } else {
+      const start = offset % total;
+      const end = start + MAX_EVENTS;
+      topEvents = end <= total
+        ? evList.slice(start, end)
+        : [...evList.slice(start), ...evList.slice(0, end - total)];
+    }
     const userContent: any[] = [];
 
     for (let i = 0; i < topEvents.length; i++) {
@@ -320,7 +333,7 @@ Return ONLY a valid JSON array of exactly 20 objects — no markdown, no code bl
     if (!thumbsReady || igLoading || analyzedRef.current || !user?.id) return;
     if (eventsRef.current.length > 0) {
       analyzedRef.current = true;
-      runAnalysis(eventsRef.current, itemsRef.current.length);
+      runAnalysis(eventsRef.current, itemsRef.current.length, 0);
     } else {
       setLoading(false);
     }
@@ -329,7 +342,20 @@ Return ONLY a valid JSON array of exactly 20 objects — no markdown, no code bl
   const handleRetry = () => {
     analyzedRef.current = false;
     if (eventsRef.current.length > 0 && user?.id) {
-      runAnalysis(eventsRef.current, itemsRef.current.length);
+      runAnalysis(eventsRef.current, itemsRef.current.length, eventOffsetRef.current);
+    } else {
+      loadGallery();
+    }
+  };
+
+  const handleRefresh = () => {
+    analyzedRef.current = false;
+    const total = eventsRef.current.length;
+    if (total > MAX_EVENTS) {
+      eventOffsetRef.current = (eventOffsetRef.current + MAX_EVENTS) % total;
+    }
+    if (eventsRef.current.length > 0 && user?.id) {
+      runAnalysis(eventsRef.current, itemsRef.current.length, eventOffsetRef.current);
     } else {
       loadGallery();
     }
@@ -377,7 +403,7 @@ Return ONLY a valid JSON array of exactly 20 objects — no markdown, no code bl
                 : 'AI-powered suggestions from your gallery'}
           </Text>
         </View>
-        <Pressable style={styles.refreshBtn} onPress={() => { analyzedRef.current = false; loadGallery(); }} disabled={loading}>
+        <Pressable style={styles.refreshBtn} onPress={handleRefresh} disabled={loading}>
           <MaterialIcons name="refresh" size={20} color={loading ? Colors.textMuted : Colors.textSecondary} />
         </Pressable>
       </View>
