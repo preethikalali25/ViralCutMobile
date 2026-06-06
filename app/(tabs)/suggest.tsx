@@ -13,6 +13,7 @@ import { Colors, Spacing, Radius, FontSize, FontWeight } from '@/constants/theme
 import { useAuth } from '@/template';
 import { Image } from 'expo-image';
 import { useInstagram } from '@/hooks/useInstagram';
+import { getInstagramProfile, InstagramProfile } from '@/services/instagramService';
 import { setPendingReelItems, PendingReelItem } from '@/stores/pendingReel';
 
 const { width } = Dimensions.get('window');
@@ -108,6 +109,7 @@ export default function SuggestScreen() {
   const thumbsStarted = useRef(false);
   const analyzedRef = useRef(false);
   const eventOffsetRef = useRef(0);
+  const igProfileRef = useRef<InstagramProfile | null>(null);
 
   const [permission, setPermission] = useState<'unknown' | 'granted' | 'denied'>('unknown');
   const [loading, setLoading] = useState(true);
@@ -144,6 +146,7 @@ export default function SuggestScreen() {
     thumbsStarted.current = false;
     analyzedRef.current = false;
     eventOffsetRef.current = 0;
+    igProfileRef.current = null;
     itemsRef.current = [];
     eventsRef.current = [];
     setItemCount(0);
@@ -212,8 +215,15 @@ export default function SuggestScreen() {
     }
 
     setLoading(true);
-    setLoadingStep('Generating reel ideas…');
     setError(null);
+
+    // Fetch full Instagram profile (bio + recent posts) once per session
+    if (igStatus.connected && user.id && !igProfileRef.current) {
+      setLoadingStep('Loading your Instagram profile…');
+      igProfileRef.current = await getInstagramProfile(user.id);
+    }
+
+    setLoadingStep('Analysing your niche…');
 
     // Slice from offset, wrap around if near the end
     const total = evList.length;
@@ -227,6 +237,7 @@ export default function SuggestScreen() {
         ? evList.slice(start, end)
         : [...evList.slice(start), ...evList.slice(0, end - total)];
     }
+
     const userContent: any[] = [];
 
     for (let i = 0; i < topEvents.length; i++) {
@@ -240,9 +251,29 @@ export default function SuggestScreen() {
       }
     }
 
-    const profileSection = igStatus.connected && igStatus.username
-      ? `Instagram Profile:\nUsername: @${igStatus.username}\nFollowers: ${igStatus.followersCount?.toLocaleString() ?? 'unknown'}`
-      : 'No Instagram profile — base suggestions on gallery content only.';
+    // Build rich profile section
+    let profileSection: string;
+    const igProfile = igProfileRef.current;
+    if (igProfile) {
+      const postLines = (igProfile.recentPosts ?? [])
+        .map((p, i) =>
+          `  ${i + 1}. [${p.type}] ${p.date} | ${p.likes ?? '?'} likes | ${p.comments ?? '?'} comments | "${p.caption ?? 'no caption'}"`,
+        )
+        .join('\n');
+
+      profileSection = `Instagram Profile:
+Username: @${igProfile.username ?? igStatus.username ?? 'unknown'}
+Bio: ${igProfile.bio || 'Not set'}
+Followers: ${igProfile.followersCount?.toLocaleString() ?? igStatus.followersCount?.toLocaleString() ?? 'unknown'}
+Total posts: ${igProfile.mediaCount ?? 'unknown'}
+
+Last ${igProfile.recentPosts?.length ?? 0} posts (engagement data):
+${postLines || '  (no posts found)'}`;
+    } else if (igStatus.connected && igStatus.username) {
+      profileSection = `Instagram Profile:\nUsername: @${igStatus.username}\nFollowers: ${igStatus.followersCount?.toLocaleString() ?? 'unknown'}\n(full profile unavailable)`;
+    } else {
+      profileSection = 'No Instagram profile connected — infer niche from gallery content only.';
+    }
 
     const eventLines = topEvents
       .map((ev, i) => `  Event ${i}: ${ev.label} (${ev.count} items)`)
@@ -250,19 +281,31 @@ export default function SuggestScreen() {
 
     userContent.push({
       type: 'text',
-      text: `${profileSection}\n\nCamera roll: ${totalItems} total items across ${evList.length} detected events.\nEach thumbnail above represents a different occasion:\n${eventLines}\n\nSuggest 20 Reel ideas. Return JSON only.`,
+      text: `${profileSection}
+
+Camera roll: ${totalItems} total items across ${evList.length} detected events.
+Each thumbnail above represents a different occasion from this creator's life:
+${eventLines}
+
+Step 1 — Identify the creator's exact niche from their profile and gallery.
+Step 2 — Suggest 20 Reel ideas perfectly matched to that niche. Return JSON only.`,
     });
 
-    const systemPrompt = `You are a viral short-form video content strategist.
-Analyse the creator's media gallery and suggest exactly 20 Reel ideas they should make RIGHT NOW.
+    const systemPrompt = `You are a viral short-form video content strategist specialising in niche-specific Reels.
+
+Your task has TWO steps:
+1. IDENTIFY THE NICHE: Analyse the Instagram profile (bio, recent posts, engagement patterns) and gallery to determine this creator's exact niche (e.g. "travel vlogger", "mom with toddlers", "home cook", "gym motivation", "fashion", "tech reviews").
+2. SUGGEST REELS: Based on THAT NICHE, suggest exactly 20 Reel ideas using their actual media events.
 
 CRITICAL RULES:
-- Suggestions must be specific to the content shown — no generic advice.
-- Each thumbnail represents a DISTINCT event or occasion (like Google/Apple Memories).
-- Reference events by their 0-based index in galleryIndices.
-- Each hook must be under 80 characters.
+- All 20 suggestions must be tailored to the identified niche — zero generic advice.
+- Each thumbnail represents a DISTINCT real-life event/occasion.
+- Reference events by 0-based index in galleryIndices (relative to the thumbnails shown).
+- Each hook must be under 80 characters and feel native to the niche's style.
 - Vary content types: mix photo_montage, video_clip, and mixed.
-- If content shows kids/family, suggest family reels. Match the niche exactly.
+- Match tone to niche: family = warm/relatable, fitness = energetic, travel = aspirational, food = sensory.
+- Look at which recent posts got the best likes/comments ratio and replicate that style.
+- The "reason" field must mention the niche and WHY it fits THIS account's audience.
 
 Return ONLY a valid JSON array of exactly 20 objects — no markdown, no code blocks, no extra text:
 [
@@ -270,7 +313,7 @@ Return ONLY a valid JSON array of exactly 20 objects — no markdown, no code bl
     "id": "s1",
     "title": "Short reel title (5-8 words)",
     "hook": "Hook text under 80 chars",
-    "reason": "One sentence: why this will perform well",
+    "reason": "One sentence: why this fits this creator's niche and audience",
     "galleryIndices": [0, 1, 2],
     "contentType": "photo_montage|video_clip|mixed"
   }
@@ -402,7 +445,7 @@ Return ONLY a valid JSON array of exactly 20 objects — no markdown, no code bl
             {loading
               ? loadingStep
               : result
-                ? `${result.suggestions.length} ideas · ${itemCount} items analysed`
+                ? `${result.suggestions.length} niche-matched ideas · ${itemCount} items`
                 : 'AI-powered suggestions from your gallery'}
           </Text>
         </View>

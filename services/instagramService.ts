@@ -10,6 +10,20 @@ export interface InstagramStatus {
   igUserId?: string;
 }
 
+export interface InstagramProfile {
+  username?: string;
+  bio?: string;
+  followersCount?: number;
+  mediaCount?: number;
+  recentPosts?: Array<{
+    type: string;
+    caption?: string;
+    likes?: number;
+    comments?: number;
+    date: string;
+  }>;
+}
+
 async function invoke(action: string, payload: Record<string, unknown>) {
   const client = getSupabaseClient();
   const { data, error } = await client.functions.invoke('instagram-publisher', {
@@ -41,6 +55,12 @@ export async function exchangeInstagramCode(
   const { data, error } = await invoke('exchange_token', { code, redirectUri, userId });
   if (error) return { error };
   return { username: data.username, followersCount: data.followersCount };
+}
+
+export async function getInstagramProfile(userId: string): Promise<InstagramProfile | null> {
+  const { data, error } = await invoke('get_profile', { userId });
+  if (error || !data) return null;
+  return data as InstagramProfile;
 }
 
 export async function getInstagramStatus(userId: string): Promise<InstagramStatus> {

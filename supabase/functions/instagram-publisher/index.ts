@@ -190,7 +190,61 @@ Deno.serve(async (req) => {
       );
     }
 
-    // ── 4. Disconnect ────────────────────────────────────────────────────────
+    // ── 4. Get Full Profile (bio + recent posts for AI niche analysis) ────────
+    if (action === 'get_profile') {
+      const { userId } = body as { userId: string };
+
+      const { data: row } = await supabase
+        .from('instagram_tokens')
+        .select('access_token, instagram_user_id')
+        .eq('user_id', userId)
+        .maybeSingle();
+
+      if (!row) {
+        return new Response(
+          JSON.stringify({ error: 'Instagram not connected' }),
+          { status: 400, headers: { ...corsHeaders, 'Content-Type': 'application/json' } },
+        );
+      }
+
+      const { access_token, instagram_user_id } = row as { access_token: string; instagram_user_id: string };
+
+      try {
+        const [profileRes, mediaRes] = await Promise.all([
+          fetch(`${IG_GRAPH_URL}/${instagram_user_id}?fields=username,biography,followers_count,media_count&access_token=${access_token}`),
+          fetch(`${IG_GRAPH_URL}/${instagram_user_id}/media?fields=id,media_type,timestamp,caption,like_count,comments_count&limit=12&access_token=${access_token}`),
+        ]);
+
+        const profileData = await profileRes.json();
+        const mediaData = await mediaRes.json();
+
+        const recentPosts = ((mediaData.data ?? []) as Record<string, unknown>[]).map((p) => ({
+          type: p.media_type as string,
+          caption: (p.caption as string | undefined)?.slice(0, 120),
+          likes: p.like_count as number | undefined,
+          comments: p.comments_count as number | undefined,
+          date: (p.timestamp as string).split('T')[0],
+        }));
+
+        return new Response(
+          JSON.stringify({
+            username: profileData.username,
+            bio: profileData.biography,
+            followersCount: profileData.followers_count,
+            mediaCount: profileData.media_count,
+            recentPosts,
+          }),
+          { headers: { ...corsHeaders, 'Content-Type': 'application/json' } },
+        );
+      } catch (igErr) {
+        return new Response(
+          JSON.stringify({ error: `Instagram API error: ${String(igErr)}` }),
+          { status: 502, headers: { ...corsHeaders, 'Content-Type': 'application/json' } },
+        );
+      }
+    }
+
+    // ── 5. Disconnect ────────────────────────────────────────────────────────
     if (action === 'disconnect') {
       const { userId } = body as { userId: string };
       await supabase.from('instagram_tokens').delete().eq('user_id', userId);
@@ -200,7 +254,7 @@ Deno.serve(async (req) => {
       );
     }
 
-    // ── 5. Publish Reel ──────────────────────────────────────────────────────
+    // ── 6. Publish Reel ──────────────────────────────────────────────────────
     if (action === 'publish') {
       const { userId, videoUrl, caption = '', coverUrl, audioName } = body as {
         userId: string; videoUrl: string; caption?: string; coverUrl?: string; audioName?: string;
@@ -277,7 +331,7 @@ Deno.serve(async (req) => {
       );
     }
 
-    // ── 6. Check container status ────────────────────────────────────────────
+    // ── 7. Check container status ────────────────────────────────────────────
     if (action === 'container_status') {
       const { userId, containerId } = body as { userId: string; containerId: string };
 
@@ -306,7 +360,7 @@ Deno.serve(async (req) => {
       );
     }
 
-    // ── 7. Publish container (media_publish) ─────────────────────────────────
+    // ── 8. Publish container (media_publish) ─────────────────────────────────
     if (action === 'media_publish') {
       const { userId, containerId } = body as { userId: string; containerId: string };
 
