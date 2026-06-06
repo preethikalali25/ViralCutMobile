@@ -224,7 +224,7 @@ export default function SuggestScreen() {
       igProfileRef.current = await getInstagramProfile(user.id);
     }
 
-    setLoadingStep('Analysing your niche…');
+    setLoadingStep('Analysing your niche… (this takes ~20s)');
 
     // Slice from offset, wrap around if near the end
     const total = evList.length;
@@ -241,7 +241,9 @@ export default function SuggestScreen() {
 
     const userContent: any[] = [];
 
-    for (let i = 0; i < topEvents.length; i++) {
+    // Cap at 8 images — sending 20 over mobile is too slow even for Sonnet
+    const MAX_IMAGES = 8;
+    for (let i = 0; i < Math.min(topEvents.length, MAX_IMAGES); i++) {
       const ev = topEvents[i];
       const b64 = ev.base64 ?? (await genThumb(ev));
       if (b64) {
@@ -334,7 +336,7 @@ Return ONLY a valid JSON object — no markdown, no code blocks, no extra text:
 
     try {
       const controller = new AbortController();
-      const timeoutId = setTimeout(() => controller.abort(), 45000);
+      const timeoutId = setTimeout(() => controller.abort(), 90000);
       const res = await fetch('https://api.anthropic.com/v1/messages', {
         method: 'POST',
         signal: controller.signal,
@@ -345,7 +347,7 @@ Return ONLY a valid JSON object — no markdown, no code blocks, no extra text:
         },
         body: JSON.stringify({
           model: 'claude-sonnet-4-6',
-          max_tokens: 6000,
+          max_tokens: 4096,
           system: systemPrompt,
           messages: [{ role: 'user', content: userContent }],
           temperature: 0.7,
