@@ -40,6 +40,7 @@ type Suggestion = {
 type AnalysisResult = {
   profile: { username?: string; followers?: number; bio?: string };
   suggestions: Suggestion[];
+  analysisEvents: EventCluster[];
 };
 
 const TYPE_LABEL: Record<string, string> = {
@@ -320,6 +321,7 @@ Return ONLY a valid JSON array of exactly 20 objects — no markdown, no code bl
       setResult({
         profile: { username: igStatus.username, followers: igStatus.followersCount },
         suggestions,
+        analysisEvents: topEvents,
       });
     } catch (err) {
       setError(`Error: ${String(err)}`);
@@ -362,8 +364,9 @@ Return ONLY a valid JSON array of exactly 20 objects — no markdown, no code bl
   };
 
   const handleMakeReel = (s: Suggestion) => {
+    const analysisEvents = result?.analysisEvents ?? [];
     const picks: PendingReelItem[] = (s.galleryIndices ?? [])
-      .map(i => eventsRef.current[i]?.rep)
+      .map(i => analysisEvents[i]?.rep)
       .filter(Boolean)
       .map(g => ({ uri: g.uri, type: g.type, previewUri: g.uri, durationSec: g.durationSec }));
     if (picks.length) setPendingReelItems(picks);
@@ -462,7 +465,7 @@ Return ONLY a valid JSON array of exactly 20 objects — no markdown, no code bl
         {/* Suggestion cards */}
         {!loading && !!result && result.suggestions.map((s, i) => {
           const color = TYPE_COLOR[s.contentType] ?? Colors.sky;
-          const thumbEv = eventsRef.current[s.galleryIndices?.[0]];
+          const thumbEv = result.analysisEvents[s.galleryIndices?.[0]];
           return (
             <View key={s.id ?? i} style={styles.card}>
               {/* Thumbnail */}
