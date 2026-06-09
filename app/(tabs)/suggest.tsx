@@ -100,27 +100,24 @@ async function genThumb(ev: EventCluster): Promise<string | null> {
   } catch { return null; }
 }
 
-// Fast pre-screen: asks Haiku which thumbnails contain visible people.
-// Returns a Set of passing indices. Fails open (all indices) on error.
-async function detectPeopleIndices(
-  thumbs: Array<{ index: number; base64: string }>,
-  apiKey: string,
-): Promise<Set<number>> {
-  if (thumbs.length === 0) return new Set();
+// Pre-screen: asks Haiku which images (by sequential position) contain a visible person.
+// Returns positions (0-based into the base64 array) that passed. Fails open on error.
+async function preScreenPeople(base64Images: string[], apiKey: string): Promise<Set<number>> {
+  if (base64Images.length === 0) return new Set();
   const content: any[] = [
     {
       type: 'text',
-      text: `You are a photo classifier. For each image below (0-indexed), answer: does it contain at least one clearly visible PERSON (face, body, or human silhouette)?
+      text: `You are a photo classifier. I will show you ${base64Images.length} image(s) numbered 0 to ${base64Images.length - 1} in order.
 
-Classify each image as YES or NO:
-- YES: photo shows a person, even partially or in background
-- NO: photo shows only objects, food, landscapes, animals, buildings, or scenery with no humans
+For each image answer: does it contain at least one clearly visible PERSON (face, body, or human silhouette)?
+- YES → include its number
+- NO  → exclude it (objects, food, landscapes, animals, buildings = NO)
 
-Return ONLY valid JSON, no markdown: {"people":[indices that are YES]}`,
+Return ONLY valid JSON, no markdown: {"people":[list of image numbers that are YES]}`,
     },
   ];
-  for (const { base64 } of thumbs) {
-    content.push({ type: 'image', source: { type: 'base64', media_type: 'image/jpeg', data: base64 } });
+  for (const b64 of base64Images) {
+    content.push({ type: 'image', source: { type: 'base64', media_type: 'image/jpeg', data: b64 } });
   }
   try {
     const controller = new AbortController();
@@ -135,19 +132,19 @@ Return ONLY valid JSON, no markdown: {"people":[indices that are YES]}`,
       },
       body: JSON.stringify({
         model: 'claude-haiku-4-5-20251001',
-        max_tokens: 64,
+        max_tokens: 80,
         messages: [{ role: 'user', content }],
       }),
     });
     clearTimeout(tid);
-    if (!res.ok) return new Set(thumbs.map(t => t.index));
+    if (!res.ok) return new Set(base64Images.map((_, i) => i)); // fail open
     const data = await res.json();
     const text = ((data.content?.[0]?.text as string) ?? '').trim();
     const cleaned = text.replace(/```json?\n?/g, '').replace(/```/g, '').trim();
     const parsed = JSON.parse(cleaned);
     return new Set<number>((parsed.people ?? []).map(Number));
   } catch {
-    return new Set(thumbs.map(t => t.index)); // fail open
+    return new Set(base64Images.map((_, i) => i)); // fail open
   }
 }
 
@@ -334,25 +331,42 @@ ${postLines || '  (no posts found)'}`;
       profileSection = 'Instagram: not connected.';
     }
 
-    const eventLines = topEvents
-      .map((ev, i) => `  Event ${i}: ${ev.label} (${ev.count} items)`)
-      .join('\n');
-
-    // ── Generate thumbnails, then pre-screen for people ───────────────────────
-    const thumbMap: Map<number, string> = new Map();
+    // ── Step 1: Generate thumbnails in strict index order ─────────────────────
+    // eventsWithThumbs keeps (origIdx, base64) so positions are unambiguous.
+    type ThumbEntry = { origIdx: number; ev: EventCluster; base64: string };
+    const eventsWithThumbs: ThumbEntry[] = [];
     for (let i = 0; i < topEvents.length; i++) {
       const b64 = topEvents[i].base64 ?? (await genThumb(topEvents[i]));
-      if (b64) thumbMap.set(i, b64);
+      if (b64) eventsWithThumbs.push({ origIdx: i, ev: topEvents[i], base64: b64 });
     }
 
+    // ── Step 2: Pre-screen for people (Haiku) ─────────────────────────────────
+    // Images are sent in eventsWithThumbs order; Haiku returns positions 0..N-1.
     if (mode === 'replace') setLoadingStep('Filtering for your best moments…');
-    const thumbsToScreen = Array.from(thumbMap.entries()).map(([index, base64]) => ({ index, base64 }));
-    const peopleSet = await detectPeopleIndices(thumbsToScreen, apiKey);
-    const peopleIndices = Array.from(peopleSet).sort((a, b) => a - b);
+    const b64List = eventsWithThumbs.map(e => e.base64);
+    const peoplePositions = await preScreenPeople(b64List, apiKey);
+    // Keep only entries whose sequential position passed
+    const peopleEvents = eventsWithThumbs.filter((_, pos) => peoplePositions.has(pos));
 
-    // ── Build userContent: Instagram text FIRST, then images, then event list ──
+    if (peopleEvents.length === 0) {
+      // No people found in this batch — skip to next set silently
+      if (mode === 'replace') {
+        setResult({ niche: '', profile: { username: igStatus.username, followers: igStatus.followersCount }, batches: [] });
+        setError('No photos with visible people found in this batch. Tap refresh to try different moments.');
+      }
+      setLoading(false);
+      setLoadingMore(false);
+      return;
+    }
+
+    // ── Step 3: Build user content with ONLY people-filtered images ────────────
+    if (mode === 'replace') setLoadingStep('Analysing your niche… (~20 sec)');
+
+    const eventLines = peopleEvents
+      .map((e, pos) => `  Image ${pos}: ${e.ev.label} (${e.ev.count} items)`)
+      .join('\n');
+
     const userContent: any[] = [];
-
     userContent.push({
       type: 'text',
       text: `${profileSection}
@@ -360,32 +374,18 @@ ${postLines || '  (no posts found)'}`;
 ⚠️ NICHE SOURCE: ${igConnected ? 'Determine the niche from the Instagram profile ABOVE only. The gallery photos below are raw footage — do NOT use them to identify the niche.' : 'Instagram not connected — use gallery content to infer niche.'}`,
     });
 
-    // Gallery thumbnails (raw footage for reel selection, not niche signals)
-    for (let i = 0; i < topEvents.length; i++) {
-      const b64 = thumbMap.get(i);
-      if (b64) {
-        userContent.push({
-          type: 'image',
-          source: { type: 'base64', media_type: 'image/jpeg', data: b64 },
-        });
-      }
+    // Only images that passed the people pre-screen (positions 0..M-1)
+    for (const { base64 } of peopleEvents) {
+      userContent.push({ type: 'image', source: { type: 'base64', media_type: 'image/jpeg', data: base64 } });
     }
-
-    if (mode === 'replace') setLoadingStep('Analysing your niche… (~20 sec)');
-
-    const peopleNote = peopleIndices.length > 0
-      ? `Pre-screened people detection — indices WITH visible people: [${peopleIndices.join(', ')}]. You MUST only use these indices in galleryIndices. All other indices contain no people and are off-limits.`
-      : 'Pre-screening found NO thumbnails with visible people. Return an empty suggestions array.';
 
     userContent.push({
       type: 'text',
       text: `Camera roll: ${totalItems} total items across ${evList.length} detected events.
-These ${topEvents.length} thumbnails (indices 0–${topEvents.length - 1}) are the raw footage for reel creation:
+These ${peopleEvents.length} thumbnail(s) (positions 0–${peopleEvents.length - 1}) all contain visible people and are approved for reel creation:
 ${eventLines}
 
-${peopleNote}
-
-Now give niche-focused Reel ideas using ONLY the allowed indices. Return JSON only.`,
+Generate niche-focused Reel ideas — one per image position. Use galleryIndices values 0–${peopleEvents.length - 1}. Return JSON only.`,
     });
 
     const systemPrompt = `You are an expert Instagram Reels strategist who creates scroll-stopping, niche-specific content.
@@ -407,9 +407,9 @@ Write ONE specific niche sentence:
   ✓ "fitness coach posting workout motivation and transformation content"
 
 ═══ STEP 2: GENERATE REEL IDEAS ═══
-The user message specifies exactly which thumbnail indices contain visible people. You MUST ONLY use those indices in galleryIndices — never use any other index.
+Every image in this message has already been verified to contain at least one visible person. Generate one niche-focused Reel idea per image.
 
-Transform each allowed event through the niche lens. The event is just raw material — the idea must be niche-branded:
+Transform each event through the niche lens. The event is just raw material — the idea must be niche-branded:
   ✗ Event: beach trip → "Fun beach day" / "We had so much fun!"
   ✓ Event: beach trip, niche: mom content → "Beach day survival guide with a toddler" / "POV: packing for the beach with a toddler (15 bags later) 😅"
 
@@ -425,7 +425,7 @@ For each suggestion:
     "I finally [niche milestone/thing]"
     "How I [niche achievement] with [constraint]"
 • REASON: name the niche and explain why this will resonate with its audience
-• galleryIndices: ONLY indices pre-approved as containing people (max ${topEvents.length - 1})
+• galleryIndices: position(s) of the image(s) used (0-based, max ${peopleEvents.length - 1})
 • contentType: vary across photo_montage, video_clip, mixed
 
 Return ONLY valid JSON — no markdown, no code blocks:
@@ -489,12 +489,14 @@ Return ONLY valid JSON — no markdown, no code blocks:
 
       const allSuggestions: Suggestion[] = parsed.suggestions
         ?? (Array.isArray(parsed) ? parsed as unknown as Suggestion[] : []);
-      // Enforce pre-screened people filter — drop any suggestion that slipped through
-      const filteredSet = peopleSet.size > 0 ? peopleSet : new Set(Array.from({ length: topEvents.length }, (_, i) => i));
-      const suggestions = allSuggestions.filter(s => {
-        const primary = s.galleryIndices?.[0];
-        return primary == null || filteredSet.has(primary);
-      });
+
+      // Map model positions (0..M-1 within peopleEvents) back to original topEvents indices
+      const suggestions: Suggestion[] = allSuggestions.map(s => ({
+        ...s,
+        galleryIndices: (s.galleryIndices ?? [])
+          .map(pos => peopleEvents[pos]?.origIdx)
+          .filter((idx): idx is number => idx !== undefined),
+      }));
       const newBatch: SuggestionBatch = { suggestions, analysisEvents: topEvents };
 
       if (mode === 'replace') {
