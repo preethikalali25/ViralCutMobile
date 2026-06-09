@@ -8,7 +8,6 @@ import { useRouter } from 'expo-router';
 import * as MediaLibrary from 'expo-media-library';
 import * as ImageManipulator from 'expo-image-manipulator';
 import * as VideoThumbnails from 'expo-video-thumbnails';
-import { FunctionsHttpError } from '@supabase/supabase-js';
 import { Colors, Spacing, Radius, FontSize, FontWeight } from '@/constants/theme';
 import { useAuth } from '@/template';
 import { Image } from 'expo-image';
@@ -22,7 +21,8 @@ const CARD_W = (width - Spacing.md * 2 - CARD_GAP) / 2;
 const CARD_H = CARD_W * 1.25;
 
 const EVENT_GAP_MS = 3 * 60 * 60 * 1000;
-const MAX_EVENTS = 20;
+const BATCH_SIZE = 8;      // events per analysis batch & images sent to AI
+const THUMB_PRELOAD = 40;  // pre-generate thumbnails for first 40 events
 
 type GalleryItem = {
   id: string; uri: string; type: 'photo' | 'video';
@@ -38,11 +38,15 @@ type Suggestion = {
   galleryIndices: number[]; contentType: 'photo_montage' | 'video_clip' | 'mixed';
 };
 
-type AnalysisResult = {
-  niche: string;
-  profile: { username?: string; followers?: number; bio?: string };
+type SuggestionBatch = {
   suggestions: Suggestion[];
   analysisEvents: EventCluster[];
+};
+
+type AnalysisResult = {
+  niche: string;
+  profile: { username?: string; followers?: number };
+  batches: SuggestionBatch[];
 };
 
 const TYPE_LABEL: Record<string, string> = {
@@ -101,7 +105,6 @@ export default function SuggestScreen() {
   const { user } = useAuth();
   const { status: igStatus, loadingStatus: igLoading } = useInstagram();
 
-  // Gallery data — used for AI analysis only, not displayed
   const [events, setEvents] = useState<EventCluster[]>([]);
   const [itemCount, setItemCount] = useState(0);
   const [thumbsReady, setThumbsReady] = useState(false);
@@ -109,24 +112,24 @@ export default function SuggestScreen() {
   const eventsRef = useRef<EventCluster[]>([]);
   const thumbsStarted = useRef(false);
   const analyzedRef = useRef(false);
-  const eventOffsetRef = useRef(0);
+  // offset for the next Load More call (advances by BATCH_SIZE each time)
+  const loadMoreOffsetRef = useRef(BATCH_SIZE);
   const igProfileRef = useRef<InstagramProfile | null>(null);
 
   const [permission, setPermission] = useState<'unknown' | 'granted' | 'denied'>('unknown');
   const [loading, setLoading] = useState(true);
   const [loadingStep, setLoadingStep] = useState('Scanning your gallery…');
+  const [loadingMore, setLoadingMore] = useState(false);
   const [result, setResult] = useState<AnalysisResult | null>(null);
   const [error, setError] = useState<string | null>(null);
-  // Live profile data for display (ref alone won't re-render)
   const [liveProfile, setLiveProfile] = useState<InstagramProfile | null>(null);
 
-  // Keep eventsRef in sync
   useEffect(() => { eventsRef.current = events; }, [events]);
 
-  // ── Thumbnail generation ───────────────────────────────────────────────────
+  // ── Thumbnail pre-generation ───────────────────────────────────────────────
   const generateThumbs = useCallback(async (evList: EventCluster[]) => {
     const working = [...evList];
-    for (let i = 0; i < Math.min(working.length, MAX_EVENTS); i++) {
+    for (let i = 0; i < Math.min(working.length, THUMB_PRELOAD); i++) {
       const b64 = await genThumb(working[i]);
       if (b64) {
         working[i] = { ...working[i], base64: b64 };
@@ -148,7 +151,7 @@ export default function SuggestScreen() {
     setThumbsReady(false);
     thumbsStarted.current = false;
     analyzedRef.current = false;
-    eventOffsetRef.current = 0;
+    loadMoreOffsetRef.current = BATCH_SIZE;
     igProfileRef.current = null;
     setLiveProfile(null);
     itemsRef.current = [];
@@ -207,8 +210,13 @@ export default function SuggestScreen() {
 
   useEffect(() => { loadGallery(); }, [loadGallery]);
 
-  // ── Analysis (calls Anthropic directly) ───────────────────────────────────
-  const runAnalysis = useCallback(async (evList: EventCluster[], totalItems: number, offset: number = 0) => {
+  // ── Analysis ───────────────────────────────────────────────────────────────
+  const runAnalysis = useCallback(async (
+    evList: EventCluster[],
+    totalItems: number,
+    offset: number,
+    mode: 'replace' | 'append',
+  ) => {
     if (!user?.id) return;
 
     const apiKey = process.env.EXPO_PUBLIC_ANTHROPIC_API_KEY;
@@ -218,41 +226,34 @@ export default function SuggestScreen() {
       return;
     }
 
-    setLoading(true);
-    setError(null);
+    if (mode === 'replace') {
+      setLoading(true);
+      setError(null);
+    } else {
+      setLoadingMore(true);
+    }
 
-    // Fetch full Instagram profile (bio + recent posts) once per session
+    // Fetch full Instagram profile once per session
     if (igStatus.connected && user.id && !igProfileRef.current) {
-      setLoadingStep('Loading your Instagram profile…');
+      if (mode === 'replace') setLoadingStep('Loading your Instagram profile…');
       const fetched = await getInstagramProfile(user.id);
       igProfileRef.current = fetched;
-      if (fetched) {
-        setLiveProfile(fetched);
-      } else {
-        console.warn('[suggest] getInstagramProfile returned null — profile fetch failed or edge function not deployed');
-      }
+      if (fetched) setLiveProfile(fetched);
     }
 
-    setLoadingStep('Analysing your niche… (~20 sec)');
+    if (mode === 'replace') setLoadingStep('Analysing your niche… (~20 sec)');
 
-    // Slice from offset, wrap around if near the end
+    // Slice BATCH_SIZE events from offset, wrapping if needed
     const total = evList.length;
-    let topEvents: EventCluster[];
-    if (total <= MAX_EVENTS) {
-      topEvents = evList;
-    } else {
-      const start = offset % total;
-      const end = start + MAX_EVENTS;
-      topEvents = end <= total
-        ? evList.slice(start, end)
-        : [...evList.slice(start), ...evList.slice(0, end - total)];
-    }
+    const start = total > 0 ? offset % total : 0;
+    const end = start + BATCH_SIZE;
+    const topEvents = total === 0 ? [] : (end <= total
+      ? evList.slice(start, end)
+      : [...evList.slice(start), ...evList.slice(0, end - total)]);
 
     const userContent: any[] = [];
 
-    // Cap at 8 images — sending 20 over mobile is too slow even for Sonnet
-    const MAX_IMAGES = 8;
-    for (let i = 0; i < Math.min(topEvents.length, MAX_IMAGES); i++) {
+    for (let i = 0; i < topEvents.length; i++) {
       const ev = topEvents[i];
       const b64 = ev.base64 ?? (await genThumb(ev));
       if (b64) {
@@ -263,26 +264,25 @@ export default function SuggestScreen() {
       }
     }
 
-    // Build rich profile section
+    // Build profile section
     let profileSection: string;
     const igProfile = igProfileRef.current;
     if (igProfile) {
       const postLines = (igProfile.recentPosts ?? [])
-        .map((p, i) =>
+        .map((p: any, i: number) =>
           `  ${i + 1}. [${p.type}] ${p.date} | ${p.likes ?? '?'} likes | ${p.comments ?? '?'} comments | "${p.caption ?? 'no caption'}"`,
         )
         .join('\n');
-
       profileSection = `Instagram Profile:
 Username: @${igProfile.username ?? igStatus.username ?? 'unknown'}
 Bio: ${igProfile.bio || 'Not set'}
-Followers: ${igProfile.followersCount?.toLocaleString() ?? igStatus.followersCount?.toLocaleString() ?? 'unknown'}
+Followers: ${igProfile.followersCount?.toLocaleString() ?? 'unknown'}
 Total posts: ${igProfile.mediaCount ?? 'unknown'}
 
-Last ${igProfile.recentPosts?.length ?? 0} posts (engagement data):
+Last ${igProfile.recentPosts?.length ?? 0} posts:
 ${postLines || '  (no posts found)'}`;
     } else if (igStatus.connected && igStatus.username) {
-      profileSection = `Instagram Profile:\nUsername: @${igStatus.username}\nFollowers: ${igStatus.followersCount?.toLocaleString() ?? 'unknown'}\n(full profile unavailable)`;
+      profileSection = `Instagram Profile:\nUsername: @${igStatus.username}\nFollowers: ${igStatus.followersCount?.toLocaleString() ?? 'unknown'}\n(detailed profile unavailable)`;
     } else {
       profileSection = 'No Instagram profile connected — infer niche from gallery content only.';
     }
@@ -296,37 +296,32 @@ ${postLines || '  (no posts found)'}`;
       text: `${profileSection}
 
 Camera roll: ${totalItems} total items across ${evList.length} detected events.
-The 8 thumbnails above (indices 0–7) are the specific occasions available as raw material:
+The ${topEvents.length} thumbnails above (indices 0–${topEvents.length - 1}) are the occasions for this batch:
 ${eventLines}
 
-Identify the single dominant niche from all of this. Then give 8 niche-focused Reel ideas using these events as raw material. Return JSON only.`,
+Identify the single dominant niche. Then give 8 niche-focused Reel ideas for THESE specific events. Return JSON only.`,
     });
 
     const systemPrompt = `You are an expert Instagram Reels strategist who creates scroll-stopping, niche-specific content.
 
 ═══ STEP 1: IDENTIFY THE NICHE ═══
-Use this priority order:
-1. If bio text is set → treat it as the primary niche signal
-2. If recent posts exist → look at captions + what got highest likes/comments
-3. If Instagram data is thin or missing → look at ALL 8 gallery thumbnails together and find the ONE consistent subject or theme (e.g. a baby appearing in most shots = "mom content", outdoor/nature shots = "adventure/hiking", food shots = "food content")
+Priority order:
+1. If bio text is set → use it as the primary niche signal
+2. If recent posts exist → look at captions + engagement patterns
+3. If Instagram data is thin → look at ALL thumbnails together and find the ONE consistent theme
 
-Write ONE specific niche sentence — be precise, not vague:
+Be specific, not vague:
   ✗ "lifestyle" ✗ "family" ✗ "travel"
-  ✓ "first-time mom documenting newborn and toddler moments" ✓ "solo female traveller exploring South Asia on a budget" ✓ "home cook sharing quick 30-minute dinner ideas"
+  ✓ "first-time mom documenting toddler milestones" ✓ "solo budget traveller in Southeast Asia"
 
-═══ STEP 2: GENERATE 8 REEL IDEAS ═══
-Use the gallery events as raw material, but FILTER every idea through the niche lens.
+═══ STEP 2: GENERATE 8 REEL IDEAS FOR THESE EVENTS ═══
+Transform each gallery event through the niche lens — do NOT just describe the thumbnail:
+  ✗ Event: beach trip → "Fun beach day" / "We had so much fun!"
+  ✓ Event: beach trip, niche: mom content → "Beach day survival guide with a toddler" / "POV: packing for the beach with a toddler (15 bags later) 😅"
 
-The transformation rule — do NOT just describe the thumbnail:
-  ✗ WRONG: event is beach trip → title "Fun beach day" hook "We had so much fun!"
-  ✓ RIGHT: event is beach trip, niche is mom content → title "Beach day survival guide with a toddler" hook "POV: packing for the beach with a toddler (15 bags later) 😅"
-
-  ✗ WRONG: event is dinner out → title "Date night" hook "Beautiful evening"
-  ✓ RIGHT: event is dinner out, niche is budget travel → title "Eating out in [city] for under $10" hook "Nobody tells you how cheap eating out here actually is"
-
-For each of the 8 suggestions:
+For each suggestion:
 • TITLE (5–8 words): niche-branded, not a literal thumbnail description
-• HOOK (under 80 chars): use a DIFFERENT format for each one:
+• HOOK (under 80 chars): use a DIFFERENT format for each:
     "POV: [relatable niche situation]"
     "Nobody tells you that [niche truth]..."
     "Things I wish I knew before [niche activity]"
@@ -335,11 +330,11 @@ For each of the 8 suggestions:
     "Day [X] of [niche challenge/journey]"
     "I finally [niche milestone/thing]"
     "How I [niche achievement] with [constraint]"
-• REASON: one sentence — name the niche and explain exactly why this will resonate
-• galleryIndices: 0-based, max index 7
+• REASON: name the niche and explain why this will resonate with its audience
+• galleryIndices: 0-based indices into THIS batch's thumbnails (max ${topEvents.length - 1})
 • contentType: vary across photo_montage, video_clip, mixed
 
-Return ONLY a valid JSON object — no markdown, no code blocks:
+Return ONLY valid JSON — no markdown, no code blocks:
 {
   "niche": "One specific sentence describing the creator's exact niche and target audience",
   "suggestions": [
@@ -378,7 +373,8 @@ Return ONLY a valid JSON object — no markdown, no code blocks:
 
       if (!res.ok) {
         const errText = await res.text();
-        setError(`AI error: ${errText}`);
+        if (mode === 'replace') setError(`AI error: ${errText}`);
+        else setLoadingMore(false);
         setLoading(false);
         return;
       }
@@ -391,32 +387,42 @@ Return ONLY a valid JSON object — no markdown, no code blocks:
         const cleaned = rawText.replace(/```json?\n?/g, '').replace(/```/g, '').trim();
         parsed = JSON.parse(cleaned);
       } catch {
-        setError('AI returned invalid format. Please try again.');
+        if (mode === 'replace') setError('AI returned invalid format. Please try again.');
         setLoading(false);
+        setLoadingMore(false);
         return;
       }
 
-      const suggestions = parsed.suggestions ?? (Array.isArray(parsed) ? parsed as unknown as Suggestion[] : []);
+      const suggestions: Suggestion[] = parsed.suggestions
+        ?? (Array.isArray(parsed) ? parsed as unknown as Suggestion[] : []);
+      const newBatch: SuggestionBatch = { suggestions, analysisEvents: topEvents };
 
-      setResult({
-        niche: parsed.niche ?? '',
-        profile: { username: igStatus.username, followers: igStatus.followersCount },
-        suggestions,
-        analysisEvents: topEvents,
-      });
+      if (mode === 'replace') {
+        setResult({
+          niche: parsed.niche ?? '',
+          profile: { username: igStatus.username, followers: igStatus.followersCount },
+          batches: [newBatch],
+        });
+      } else {
+        setResult(prev => prev
+          ? { ...prev, batches: [...prev.batches, newBatch] }
+          : { niche: parsed.niche ?? '', profile: {}, batches: [newBatch] },
+        );
+      }
     } catch (err) {
-      setError(`Error: ${String(err)}`);
+      if (mode === 'replace') setError(`Error: ${String(err)}`);
     }
 
     setLoading(false);
+    setLoadingMore(false);
   }, [user?.id, igStatus.connected, igStatus.username, igStatus.followersCount]);
 
-  // Auto-trigger once gallery thumbnails are ready (no Instagram required)
+  // Auto-trigger once thumbnails are ready
   useEffect(() => {
     if (!thumbsReady || igLoading || analyzedRef.current || !user?.id) return;
     if (eventsRef.current.length > 0) {
       analyzedRef.current = true;
-      runAnalysis(eventsRef.current, itemsRef.current.length, 0);
+      runAnalysis(eventsRef.current, itemsRef.current.length, 0, 'replace');
     } else {
       setLoading(false);
     }
@@ -424,35 +430,43 @@ Return ONLY a valid JSON object — no markdown, no code blocks:
 
   const handleRetry = () => {
     analyzedRef.current = false;
+    loadMoreOffsetRef.current = BATCH_SIZE;
     if (eventsRef.current.length > 0 && user?.id) {
-      runAnalysis(eventsRef.current, itemsRef.current.length, eventOffsetRef.current);
+      runAnalysis(eventsRef.current, itemsRef.current.length, 0, 'replace');
     } else {
       loadGallery();
     }
   };
 
   const handleRefresh = () => {
+    if (loading || loadingMore) return;
     analyzedRef.current = false;
-    const total = eventsRef.current.length;
-    if (total > MAX_EVENTS) {
-      eventOffsetRef.current = (eventOffsetRef.current + MAX_EVENTS) % total;
-    }
+    loadMoreOffsetRef.current = BATCH_SIZE;
     if (eventsRef.current.length > 0 && user?.id) {
-      runAnalysis(eventsRef.current, itemsRef.current.length, eventOffsetRef.current);
+      runAnalysis(eventsRef.current, itemsRef.current.length, 0, 'replace');
     } else {
       loadGallery();
     }
   };
 
-  const handleMakeReel = (s: Suggestion) => {
-    const analysisEvents = result?.analysisEvents ?? [];
+  const handleLoadMore = () => {
+    if (loading || loadingMore || !user?.id || eventsRef.current.length === 0) return;
+    const total = eventsRef.current.length;
+    const offset = loadMoreOffsetRef.current;
+    loadMoreOffsetRef.current = (offset + BATCH_SIZE) % total;
+    runAnalysis(eventsRef.current, itemsRef.current.length, offset, 'append');
+  };
+
+  const handleMakeReel = (s: Suggestion, batchEvents: EventCluster[]) => {
     const picks: PendingReelItem[] = (s.galleryIndices ?? [])
-      .map(i => analysisEvents[i]?.rep)
+      .map(i => batchEvents[i]?.rep)
       .filter(Boolean)
       .map(g => ({ uri: g.uri, type: g.type, previewUri: g.uri, durationSec: g.durationSec }));
     if (picks.length) setPendingReelItems(picks, true);
     router.push('/upload');
   };
+
+  const totalSuggestions = result?.batches.reduce((n, b) => n + b.suggestions.length, 0) ?? 0;
 
   // ── Permission denied ─────────────────────────────────────────────────────
   if (permission === 'denied') {
@@ -483,12 +497,12 @@ Return ONLY a valid JSON object — no markdown, no code blocks:
             {loading
               ? loadingStep
               : result
-                ? `${result.suggestions.length} niche-matched ideas for you`
+                ? `${totalSuggestions} niche-matched ideas for you`
                 : 'AI-powered suggestions from your gallery'}
           </Text>
         </View>
-        <Pressable style={styles.refreshBtn} onPress={handleRefresh} disabled={loading}>
-          <MaterialIcons name="refresh" size={20} color={loading ? Colors.textMuted : Colors.textSecondary} />
+        <Pressable style={styles.refreshBtn} onPress={handleRefresh} disabled={loading || loadingMore}>
+          <MaterialIcons name="refresh" size={20} color={(loading || loadingMore) ? Colors.textMuted : Colors.textSecondary} />
         </Pressable>
       </View>
 
@@ -503,7 +517,7 @@ Return ONLY a valid JSON object — no markdown, no code blocks:
           </Pressable>
         )}
 
-        {/* Connected badge — shows live data once profile is fetched */}
+        {/* Connected badge */}
         {!igLoading && igStatus.connected && igStatus.username && (
           <View style={styles.igConnected}>
             <MaterialCommunityIcons name="instagram" size={14} color={Colors.emerald} />
@@ -517,7 +531,7 @@ Return ONLY a valid JSON object — no markdown, no code blocks:
           </View>
         )}
 
-        {/* Loading spinner */}
+        {/* Full-screen loading */}
         {loading && (
           <View style={styles.loadingBox}>
             <ActivityIndicator size="large" color={Colors.primary} />
@@ -536,7 +550,7 @@ Return ONLY a valid JSON object — no markdown, no code blocks:
           </View>
         )}
 
-        {/* Identified niche banner */}
+        {/* Niche banner */}
         {!loading && !!result?.niche && (
           <View style={styles.nicheBanner}>
             <MaterialCommunityIcons name="target" size={14} color={Colors.amber} />
@@ -544,67 +558,107 @@ Return ONLY a valid JSON object — no markdown, no code blocks:
           </View>
         )}
 
-        {/* Suggestions header */}
-        {!loading && !!result && (
-          <View style={styles.sectionHeader}>
-            <MaterialCommunityIcons name="creation" size={14} color={Colors.violet} />
-            <Text style={[styles.sectionTitle, { color: Colors.violet }]}>
-              {result.suggestions.length} Reel Ideas For You
-            </Text>
-          </View>
-        )}
-
-        {/* Suggestion cards */}
-        {!loading && !!result && result.suggestions.map((s, i) => {
-          const color = TYPE_COLOR[s.contentType] ?? Colors.sky;
-          const thumbEv = result.analysisEvents[s.galleryIndices?.[0]];
+        {/* All batches */}
+        {!loading && !!result && result.batches.map((batch, batchIdx) => {
+          const globalOffset = batchIdx * BATCH_SIZE;
           return (
-            <View key={s.id ?? i} style={styles.card}>
-              {/* Thumbnail */}
-              {thumbEv && (
-                <View style={styles.cardThumbWrap}>
-                  <Image source={{ uri: thumbEv.rep.uri }} style={styles.cardThumb} contentFit="cover" />
-                  <View style={styles.cardThumbGradient} />
-                  <View style={styles.cardRankOverlay}>
-                    <Text style={styles.cardRankText}>{i + 1}</Text>
+            <React.Fragment key={batchIdx}>
+              {/* Batch header (only for load-more batches) */}
+              {batchIdx > 0 && (
+                <View style={styles.batchDivider}>
+                  <View style={styles.batchDividerLine} />
+                  <View style={styles.batchDividerChip}>
+                    <MaterialCommunityIcons name="creation" size={12} color={Colors.violet} />
+                    <Text style={styles.batchDividerText}>More Ideas</Text>
                   </View>
-                  {thumbEv.rep.type === 'video' && (
-                    <View style={styles.cardVideoTag}>
-                      <MaterialIcons name="videocam" size={12} color="#fff" />
-                    </View>
-                  )}
-                  <View style={[styles.cardTypeBadge, { backgroundColor: color + 'dd' }]}>
-                    <Text style={styles.cardTypeBadgeText}>{TYPE_LABEL[s.contentType] ?? s.contentType}</Text>
-                  </View>
+                  <View style={styles.batchDividerLine} />
                 </View>
               )}
-              {/* Content */}
-              <View style={styles.cardBody}>
-                {!thumbEv && (
-                  <View style={styles.cardHeaderNoThumb}>
-                    <View style={styles.cardRank}><Text style={styles.cardRankText}>{i + 1}</Text></View>
-                    <View style={[styles.typeBadge, { borderColor: color + '55', backgroundColor: color + '22' }]}>
-                      <Text style={[styles.typeBadgeText, { color }]}>{TYPE_LABEL[s.contentType] ?? s.contentType}</Text>
+
+              {/* First batch section header */}
+              {batchIdx === 0 && (
+                <View style={styles.sectionHeader}>
+                  <MaterialCommunityIcons name="creation" size={14} color={Colors.violet} />
+                  <Text style={[styles.sectionTitle, { color: Colors.violet }]}>
+                    {batch.suggestions.length} Reel Ideas For You
+                  </Text>
+                </View>
+              )}
+
+              {/* Suggestion cards */}
+              {batch.suggestions.map((s, i) => {
+                const globalIndex = globalOffset + i + 1;
+                const color = TYPE_COLOR[s.contentType] ?? Colors.sky;
+                const thumbEv = batch.analysisEvents[s.galleryIndices?.[0]];
+                return (
+                  <View key={`${batchIdx}-${s.id ?? i}`} style={styles.card}>
+                    {thumbEv && (
+                      <View style={styles.cardThumbWrap}>
+                        <Image source={{ uri: thumbEv.rep.uri }} style={styles.cardThumb} contentFit="cover" />
+                        <View style={styles.cardThumbGradient} />
+                        <View style={styles.cardRankOverlay}>
+                          <Text style={styles.cardRankText}>{globalIndex}</Text>
+                        </View>
+                        {thumbEv.rep.type === 'video' && (
+                          <View style={styles.cardVideoTag}>
+                            <MaterialIcons name="videocam" size={12} color="#fff" />
+                          </View>
+                        )}
+                        <View style={[styles.cardTypeBadge, { backgroundColor: color + 'dd' }]}>
+                          <Text style={styles.cardTypeBadgeText}>{TYPE_LABEL[s.contentType] ?? s.contentType}</Text>
+                        </View>
+                      </View>
+                    )}
+                    <View style={styles.cardBody}>
+                      {!thumbEv && (
+                        <View style={styles.cardHeaderNoThumb}>
+                          <View style={styles.cardRank}><Text style={styles.cardRankText}>{globalIndex}</Text></View>
+                          <View style={[styles.typeBadge, { borderColor: color + '55', backgroundColor: color + '22' }]}>
+                            <Text style={[styles.typeBadgeText, { color }]}>{TYPE_LABEL[s.contentType] ?? s.contentType}</Text>
+                          </View>
+                        </View>
+                      )}
+                      <Text style={styles.cardTitle} numberOfLines={2}>{s.title}</Text>
+                      <View style={styles.hookBox}>
+                        <Text style={styles.hookLabel}>HOOK</Text>
+                        <Text style={styles.hookText}>"{s.hook}"</Text>
+                      </View>
+                      <Text style={styles.reasonText}>{s.reason}</Text>
+                      <Pressable
+                        style={({ pressed }) => [styles.makeBtn, pressed && { opacity: 0.85 }]}
+                        onPress={() => handleMakeReel(s, batch.analysisEvents)}
+                      >
+                        <MaterialIcons name="movie-creation" size={16} color="#fff" />
+                        <Text style={styles.makeBtnText}>Make This Reel</Text>
+                      </Pressable>
                     </View>
                   </View>
-                )}
-                <Text style={styles.cardTitle} numberOfLines={2}>{s.title}</Text>
-                <View style={styles.hookBox}>
-                  <Text style={styles.hookLabel}>HOOK</Text>
-                  <Text style={styles.hookText}>"{s.hook}"</Text>
-                </View>
-                <Text style={styles.reasonText}>{s.reason}</Text>
-                <Pressable
-                  style={({ pressed }) => [styles.makeBtn, pressed && { opacity: 0.85 }]}
-                  onPress={() => handleMakeReel(s)}
-                >
-                  <MaterialIcons name="movie-creation" size={16} color="#fff" />
-                  <Text style={styles.makeBtnText}>Make This Reel</Text>
-                </Pressable>
-              </View>
-            </View>
+                );
+              })}
+            </React.Fragment>
           );
         })}
+
+        {/* Load More */}
+        {!loading && !!result && (
+          <View style={styles.loadMoreSection}>
+            {loadingMore ? (
+              <View style={styles.loadMoreSpinner}>
+                <ActivityIndicator size="small" color={Colors.primary} />
+                <Text style={styles.loadMoreText}>Finding more ideas…</Text>
+              </View>
+            ) : (
+              <Pressable
+                style={({ pressed }) => [styles.loadMoreBtn, pressed && { opacity: 0.8 }]}
+                onPress={handleLoadMore}
+              >
+                <MaterialCommunityIcons name="creation-outline" size={18} color={Colors.primary} />
+                <Text style={styles.loadMoreBtnText}>Load More Ideas</Text>
+                <Text style={styles.loadMoreHint}>from different moments</Text>
+              </Pressable>
+            )}
+          </View>
+        )}
 
         <View style={{ height: 40 }} />
       </ScrollView>
@@ -630,33 +684,29 @@ const styles = StyleSheet.create({
   loadingBox: { alignItems: 'center', justifyContent: 'center', paddingVertical: 60, gap: 16 },
   loadingText: { fontSize: FontSize.sm, color: Colors.textSecondary, includeFontPadding: false },
   sectionHeader: { flexDirection: 'row', alignItems: 'center', gap: 6, marginBottom: 2 },
-  sectionTitle: { fontSize: FontSize.sm, fontWeight: FontWeight.semibold, color: Colors.textSecondary, includeFontPadding: false },
-  // keep eventCard etc. as dead styles — removed from render but keep to avoid TS error
-  eventCard: {
-    width: CARD_W, height: CARD_H, borderRadius: Radius.md,
-    overflow: 'hidden', backgroundColor: Colors.surfaceElevated,
+  sectionTitle: { fontSize: FontSize.sm, fontWeight: FontWeight.semibold, includeFontPadding: false },
+  batchDivider: { flexDirection: 'row', alignItems: 'center', gap: 10, marginVertical: 4 },
+  batchDividerLine: { flex: 1, height: 1, backgroundColor: Colors.surfaceBorder },
+  batchDividerChip: {
+    flexDirection: 'row', alignItems: 'center', gap: 5,
+    backgroundColor: Colors.violet + '22', borderRadius: Radius.full,
+    paddingHorizontal: 12, paddingVertical: 5,
+    borderWidth: 1, borderColor: Colors.violet + '44',
   },
-  eventThumb: { width: '100%', height: '100%' },
-  thumbSpinner: {
-    ...StyleSheet.absoluteFillObject,
-    backgroundColor: 'rgba(0,0,0,0.4)', alignItems: 'center', justifyContent: 'center',
+  batchDividerText: { fontSize: FontSize.xs, fontWeight: FontWeight.bold, color: Colors.violet, includeFontPadding: false },
+  loadMoreSection: { alignItems: 'center', paddingVertical: Spacing.sm },
+  loadMoreBtn: {
+    alignItems: 'center', gap: 4,
+    backgroundColor: Colors.surfaceElevated, borderRadius: Radius.xl,
+    paddingVertical: 16, paddingHorizontal: 32,
+    borderWidth: 1.5, borderColor: Colors.primary + '66',
+    borderStyle: 'dashed',
+    width: '100%',
   },
-  videoTag: {
-    position: 'absolute', top: 6, right: 6,
-    backgroundColor: 'rgba(0,0,0,0.65)', borderRadius: 4, padding: 3,
-  },
-  eventOverlay: {
-    position: 'absolute', bottom: 0, left: 0, right: 0,
-    backgroundColor: 'rgba(0,0,0,0.55)', paddingHorizontal: 8, paddingVertical: 6,
-  },
-  eventDate: { fontSize: FontSize.xs, fontWeight: FontWeight.bold, color: '#fff', includeFontPadding: false },
-  eventItems: { fontSize: 10, color: 'rgba(255,255,255,0.7)', includeFontPadding: false, marginTop: 1 },
-  analyzingRow: {
-    flexDirection: 'row', alignItems: 'center', gap: 10,
-    backgroundColor: Colors.surfaceElevated, borderRadius: Radius.md,
-    padding: Spacing.sm + 4, borderWidth: 1, borderColor: Colors.surfaceBorder,
-  },
-  analyzingText: { fontSize: FontSize.sm, color: Colors.textSecondary, includeFontPadding: false },
+  loadMoreBtnText: { fontSize: FontSize.md, fontWeight: FontWeight.bold, color: Colors.primary, includeFontPadding: false },
+  loadMoreHint: { fontSize: FontSize.xs, color: Colors.textMuted, includeFontPadding: false },
+  loadMoreSpinner: { flexDirection: 'row', alignItems: 'center', gap: 10, paddingVertical: 16 },
+  loadMoreText: { fontSize: FontSize.sm, color: Colors.textSecondary, includeFontPadding: false },
   nicheBanner: {
     flexDirection: 'row', alignItems: 'flex-start', gap: 8,
     backgroundColor: Colors.amber + '18', borderRadius: Radius.md,
@@ -689,9 +739,7 @@ const styles = StyleSheet.create({
     paddingVertical: 8, paddingHorizontal: 18,
   },
   retryBtnText: { color: '#fff', fontSize: FontSize.sm, fontWeight: FontWeight.bold, includeFontPadding: false },
-  centeredBox: {
-    alignItems: 'center', gap: Spacing.sm, paddingVertical: 60, paddingHorizontal: Spacing.xl,
-  },
+  centeredBox: { alignItems: 'center', gap: Spacing.sm, paddingVertical: 60, paddingHorizontal: Spacing.xl },
   centeredTitle: {
     fontSize: FontSize.lg, fontWeight: FontWeight.bold, color: Colors.textPrimary,
     includeFontPadding: false, textAlign: 'center',
@@ -712,10 +760,7 @@ const styles = StyleSheet.create({
   },
   cardThumbWrap: { width: '100%', height: 180, position: 'relative' },
   cardThumb: { width: '100%', height: '100%' },
-  cardThumbGradient: {
-    ...StyleSheet.absoluteFillObject,
-    backgroundColor: 'rgba(0,0,0,0.25)',
-  },
+  cardThumbGradient: { ...StyleSheet.absoluteFillObject, backgroundColor: 'rgba(0,0,0,0.25)' },
   cardRankOverlay: {
     position: 'absolute', top: 10, left: 10,
     width: 28, height: 28, borderRadius: 14,
@@ -741,10 +786,7 @@ const styles = StyleSheet.create({
     fontSize: FontSize.md, fontWeight: FontWeight.bold,
     color: Colors.textPrimary, includeFontPadding: false, lineHeight: 22,
   },
-  typeBadge: {
-    borderRadius: Radius.sm, paddingHorizontal: 7, paddingVertical: 3,
-    borderWidth: 1, flexShrink: 0,
-  },
+  typeBadge: { borderRadius: Radius.sm, paddingHorizontal: 7, paddingVertical: 3, borderWidth: 1, flexShrink: 0 },
   typeBadgeText: { fontSize: FontSize.xs, fontWeight: FontWeight.bold, includeFontPadding: false },
   hookBox: {
     backgroundColor: Colors.primaryGlow, borderRadius: Radius.md,
