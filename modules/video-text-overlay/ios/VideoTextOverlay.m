@@ -800,21 +800,22 @@ RCT_EXPORT_METHOD(combineMediaToVideo:(NSArray<NSDictionary *> *)mediaItems
     CGColorSpaceRelease(cs);
     if (!ctx) { CVPixelBufferUnlockBaseAddress(pb, 0); CVPixelBufferRelease(pb); return NULL; }
 
-    // Black background
-    CGContextSetFillColorWithColor(ctx, UIColor.blackColor.CGColor);
-    CGContextFillRect(ctx, CGRectMake(0, 0, targetSize.width, targetSize.height));
-
-    // Aspect-fill: scale so image fills target, centre-crop
     CGFloat iw = image.size.width, ih = image.size.height;
     CGFloat tw = targetSize.width,  th = targetSize.height;
     CGFloat scale = (iw / ih > tw / th) ? (th / ih) : (tw / iw);
     CGFloat ox = (tw - iw * scale) / 2.0;
     CGFloat oy = (th - ih * scale) / 2.0;
 
-    // CGBitmapContext origin is bottom-left; flip Y before drawing
+    // Flip context to UIKit coordinates (top-left origin) then draw via UIKit so that
+    // UIImage.imageOrientation is respected. CGContextDrawImage ignores orientation;
+    // [UIImage drawInRect:] applies the orientation transform before drawing.
     CGContextTranslateCTM(ctx, 0, th);
-    CGContextScaleCTM(ctx, 1, -1);
-    CGContextDrawImage(ctx, CGRectMake(ox, oy, iw * scale, ih * scale), image.CGImage);
+    CGContextScaleCTM(ctx, 1.0, -1.0);
+    UIGraphicsPushContext(ctx);
+    [[UIColor blackColor] setFill];
+    UIRectFill(CGRectMake(0, 0, tw, th));
+    [image drawInRect:CGRectMake(ox, oy, iw * scale, ih * scale)];
+    UIGraphicsPopContext();
 
     CGContextRelease(ctx);
     CVPixelBufferUnlockBaseAddress(pb, 0);
