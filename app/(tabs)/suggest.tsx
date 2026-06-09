@@ -374,23 +374,29 @@ ${postLines || '  (no posts found)'}`;
       profileSection = '';
     }
 
-    // ── Step 1: Determine niche from Instagram profile ONLY (text-only Haiku call) ──
-    // Completely separate from gallery — images never influence this step.
-    let determinedNiche = '';
-    if (igConnected && profileSection) {
-      if (mode === 'replace') setLoadingStep('Analysing your Instagram niche…');
-      determinedNiche = await determineNicheFromProfile(profileSection, apiKey);
-    }
+    // ── Steps 1 + 2 in parallel: niche determination & thumbnail generation ──────
+    // Niche uses only text (no images), thumbnails use only local files (no API).
+    // Both can run simultaneously; step 3 (people pre-screen) needs both results.
+    if (mode === 'replace') setLoadingStep('Analysing niche & scanning moments…');
 
-    // ── Step 2: Generate thumbnails in strict index order ─────────────────────
     type ThumbEntry = { origIdx: number; ev: EventCluster; base64: string };
-    const eventsWithThumbs: ThumbEntry[] = [];
-    for (let i = 0; i < topEvents.length; i++) {
-      const b64 = topEvents[i].base64 ?? (await genThumb(topEvents[i]));
-      if (b64) eventsWithThumbs.push({ origIdx: i, ev: topEvents[i], base64: b64 });
-    }
 
-    // ── Step 3: Pre-screen for people (Haiku) ─────────────────────────────────
+    const [determinedNiche, eventsWithThumbs] = await Promise.all([
+      // Step 1: text-only Haiku call — determines niche from Instagram profile
+      (igConnected && profileSection)
+        ? determineNicheFromProfile(profileSection, apiKey)
+        : Promise.resolve(''),
+
+      // Step 2: parallel thumbnail generation for all batch events
+      Promise.all(
+        topEvents.map(async (ev, i) => {
+          const b64 = ev.base64 ?? (await genThumb(ev));
+          return b64 ? { origIdx: i, ev, base64: b64 } as ThumbEntry : null;
+        }),
+      ).then(results => results.filter((x): x is ThumbEntry => x !== null)),
+    ]);
+
+    // ── Step 3: Pre-screen for people (Haiku) — needs thumbnails from step 2 ──
     if (mode === 'replace') setLoadingStep('Filtering for your best moments…');
     const b64List = eventsWithThumbs.map(e => e.base64);
     const peoplePositions = await preScreenPeople(b64List, apiKey);
