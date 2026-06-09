@@ -128,7 +128,6 @@ export function useInstagram() {
     videoUrl: string,
     caption: string,
     coverUrl?: string,
-    audioName?: string,
   ): Promise<{ mediaId?: string; error?: string }> => {
     if (!user?.id) return { error: 'Not logged in' };
     if (!status.connected) return { error: 'Instagram not connected' };
@@ -137,7 +136,7 @@ export function useInstagram() {
 
     // Step 1: Create media container
     const { containerId, error: containerErr } = await createInstagramContainer(
-      user.id, videoUrl, caption, coverUrl, audioName,
+      user.id, videoUrl, caption, coverUrl,
     );
 
     if (containerErr || !containerId) {

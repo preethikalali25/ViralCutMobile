@@ -31,7 +31,6 @@ export interface Video {
   metrics?: VideoMetrics;
   createdAt: string;
   videoUri?: string;
-  videoAssetId?: string;  // iOS Photos assetId — used for audio-safe burning via PHImageManager
 }
 
 export interface TrendingAudio {
@@ -40,7 +39,6 @@ export interface TrendingAudio {
   artist: string;
   uses: string;
   trending: boolean;
-  previewUrl?: string;
 }
 
 export interface CalendarEvent {

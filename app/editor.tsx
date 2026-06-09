@@ -23,7 +23,6 @@ import { useInstagram } from '@/hooks/useInstagram';
 import { uploadVideoToStorage } from '@/services/tiktokService';
 import { burnHookOverlay } from '@/services/videoOverlayService';
 import * as FileSystem from 'expo-file-system';
-import Slider from '@react-native-community/slider';
 
 type Tab = 'hook' | 'caption' | 'audio' | 'platforms';
 
@@ -97,36 +96,6 @@ function cleanTitle(raw: string): string {
     .trim() || 'my video';
 }
 
-async function fetchItunesPreviewUrl(title: string, artist: string): Promise<string | null> {
-  const trySearch = async (q: string): Promise<string | null> => {
-    try {
-      const encoded = encodeURIComponent(q);
-      // Promise.race timeout — more compatible with RN's fetch than AbortController.signal
-      const timeoutP = new Promise<null>(resolve => setTimeout(() => resolve(null), 10000));
-      const fetchP = fetch(
-        `https://itunes.apple.com/search?term=${encoded}&media=music&limit=5&country=US`,
-      ).then(async r => {
-        if (!r.ok) return null;
-        const d = await r.json();
-        return (d.results?.[0]?.previewUrl as string) ?? null;
-      }).catch(() => null);
-      return await Promise.race([fetchP, timeoutP]);
-    } catch {
-      return null;
-    }
-  };
-
-  // Take first artist when multiple are listed (e.g. "ROSE & Bruno Mars" → "ROSE")
-  const firstArtist = artist.split(/[&,]/)[0].trim();
-  const cleanTitle  = title.replace(/[.!?]+$/, '').trim();
-
-  return (
-    (await trySearch(`${cleanTitle} ${firstArtist}`)) ??
-    (await trySearch(cleanTitle)) ??
-    (await trySearch(`${title} ${artist}`))
-  );
-}
-
 async function callAIGenerator(type: string, payload: Record<string, unknown>) {
   const client = getSupabaseClient();
 
@@ -180,13 +149,6 @@ export default function EditorScreen() {
   const [generatingAudio, setGeneratingAudio] = useState(false);
   const [aiPickedSong, setAiPickedSong] = useState<AISuggestedAudio | null>(null);
   const [autoGenDone, setAutoGenDone] = useState(false);
-  const [aiSuggestedSongs, setAiSuggestedSongs] = useState<typeof MOCK_TRENDING_AUDIO>(MOCK_TRENDING_AUDIO);
-  const [fetchingSuggestions, setFetchingSuggestions] = useState(false);
-  const audioSuggestionsLoadedRef = useRef(false);
-  const [songSearchQuery, setSongSearchQuery] = useState('');
-  const [songSearchResults, setSongSearchResults] = useState<{ id: string; title: string; artist: string; previewUrl: string }[]>([]);
-  const [songSearchLoading, setSongSearchLoading] = useState(false);
-  const songSearchTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const [showPlayer, setShowPlayer] = useState(false);
   const [videoTitle, setVideoTitle] = useState('');
@@ -197,116 +159,26 @@ export default function EditorScreen() {
   const [uploadingToStorage, setUploadingToStorage] = useState(false);
   const [uploadProgress, setUploadProgress] = useState(0);
   const [burningOverlay, setBurningOverlay] = useState(false);
-  const [burnAudioLabel, setBurnAudioLabel] = useState<string | null>(null);
   const [generatingThumbnail, setGeneratingThumbnail] = useState(false);
   const [thumbnailUri, setThumbnailUri] = useState<string | null>(video?.thumbnail ?? null);
 
-  // Audio mix volumes: 0.0–1.0 each. Shown as sliders in the Audio tab.
-  const [originalVolume, setOriginalVolume] = useState(0.6); // original voice
-  const [bgVolume, setBgVolume] = useState(0.8);             // background music
-
-  // Eagerly pre-fetched local path for the selected song's iTunes 30-s preview.
-  const [cachedAudioUri, setCachedAudioUri] = useState<string | null>(null);
-  // Ref mirrors the state so async functions (which close over stale state)
-  // always read the latest downloaded URI without needing a re-render.
-  const cachedAudioUriRef = useRef<string | null>(null);
-  const [audioStatus, setAudioStatus] = useState<'idle' | 'loading' | 'ready' | 'failed'>('idle');
-  // Use title+artist as the dedup key — AI always returns id='ai_best' so id alone isn't unique.
-  const cachedAudioKey = useRef<string>('');
-  // Holds the in-progress (or already-resolved) prefetch Promise so publish can
-  // await it if the user taps publish before the download finishes.
-  const audioFetchPromise = useRef<Promise<string | null>>(Promise.resolve(null));
-
-  const prefetchAudioForSong = useCallback((id: string, title: string, artist: string, directPreviewUrl?: string) => {
-    const key = `${title}::${artist}`;
-    if (key === cachedAudioKey.current) return;
-    cachedAudioKey.current = key;
-    // Do NOT wipe cachedAudioUri here — keep the previous download as fallback
-    // while the new one loads so we always have something to mix.
-    setAudioStatus('loading');
-    const p: Promise<string | null> = (async () => {
-      try {
-        const previewUrl = directPreviewUrl || await fetchItunesPreviewUrl(title, artist);
-        if (!previewUrl) {
-          console.warn('[prefetchAudio] no iTunes preview for:', title, artist);
-          setAudioStatus(prev => prev === 'loading' ? 'failed' : prev);
-          return null;
-        }
-        const dest = `${FileSystem.cacheDirectory}bgaudio_${Date.now()}.m4a`;
-        const dl = await FileSystem.downloadAsync(previewUrl, dest);
-        if (dl.status === 200) {
-          cachedAudioUriRef.current = dl.uri;
-          setCachedAudioUri(dl.uri);
-          setAudioStatus('ready');
-          console.log('[prefetchAudio] ready:', dl.uri);
-          return dl.uri;
-        }
-        console.warn('[prefetchAudio] download status:', dl.status);
-        setAudioStatus(prev => prev === 'loading' ? 'failed' : prev);
-        return null;
-      } catch (e) {
-        console.warn('[prefetchAudio] failed:', e);
-        setAudioStatus(prev => prev === 'loading' ? 'failed' : prev);
-        return null;
-      }
-    })();
-    audioFetchPromise.current = p;
-  }, []);
-
   // ── Edge Function Test Panel ──
   const [showTestModal, setShowTestModal] = useState(false);
-  type TestKey = 'ai-content-generator' | 'wayinvideo-analyzer' | 'tiktok-publisher' | 'audio-pipeline';
+  type TestKey = 'ai-content-generator' | 'wayinvideo-analyzer' | 'tiktok-publisher';
   const [testLoading, setTestLoading] = useState<Record<TestKey, boolean>>({
     'ai-content-generator': false,
     'wayinvideo-analyzer': false,
     'tiktok-publisher': false,
-    'audio-pipeline': false,
   });
   const [testResults, setTestResults] = useState<Record<TestKey, string | null>>({
     'ai-content-generator': null,
     'wayinvideo-analyzer': null,
     'tiktok-publisher': null,
-    'audio-pipeline': null,
   });
 
   const runFunctionTest = async (fn: TestKey) => {
     setTestLoading(prev => ({ ...prev, [fn]: true }));
     setTestResults(prev => ({ ...prev, [fn]: null }));
-
-    if (fn === 'audio-pipeline') {
-      // End-to-end audio pipeline test: iTunes search → download → show result
-      try {
-        const song = MOCK_TRENDING_AUDIO[0]; // APT. by ROSE & Bruno Mars — known real song
-        const steps: string[] = [];
-        steps.push(`Searching iTunes: "${song.title}" by ${song.artist}`);
-        const previewUrl = await fetchItunesPreviewUrl(song.title, song.artist);
-        if (!previewUrl) {
-          setTestResults(prev => ({ ...prev, [fn]: steps.concat('❌ No preview URL returned').join('\n') }));
-          setTestLoading(prev => ({ ...prev, [fn]: false }));
-          return;
-        }
-        steps.push(`✓ Preview URL: ${previewUrl.slice(0, 60)}...`);
-        const dest = `${FileSystem.cacheDirectory}test_audio_${Date.now()}.m4a`;
-        steps.push('Downloading preview...');
-        const dl = await FileSystem.downloadAsync(previewUrl, dest);
-        steps.push(`Download status: ${dl.status}`);
-        if (dl.status === 200) {
-          const info = await FileSystem.getInfoAsync(dl.uri, { size: true });
-          steps.push(`✓ File size: ${(info as any).size ?? '?'} bytes`);
-          steps.push(`✓ URI: ${dl.uri.split('/').slice(-2).join('/')}`);
-          steps.push('');
-          steps.push('cachedAudioUri: ' + (cachedAudioUri ? cachedAudioUri.split('/').pop() : 'null'));
-        } else {
-          steps.push('❌ Download failed');
-        }
-        setTestResults(prev => ({ ...prev, [fn]: steps.join('\n') }));
-      } catch (e) {
-        setTestResults(prev => ({ ...prev, [fn]: `EXCEPTION: ${String(e)}` }));
-      }
-      setTestLoading(prev => ({ ...prev, [fn]: false }));
-      return;
-    }
-
     const client = getSupabaseClient();
     try {
       let body: Record<string, unknown> = {};
@@ -352,17 +224,6 @@ export default function EditorScreen() {
     setSelectedAudioId(video.audio?.id ?? '');
     setPlatforms(video.platforms ?? ['tiktok']);
     setThumbnailUri(video.thumbnail ?? null);
-    // Restore aiPickedSong if the saved audio isn't one of the static mock songs
-    if (video.audio?.id && !MOCK_TRENDING_AUDIO.find(a => a.id === video.audio!.id)) {
-      setAiPickedSong({ ...video.audio, platform: [], mood: '', id: video.audio.id } as AISuggestedAudio);
-    }
-    if (video.audio?.title && video.audio?.artist) {
-      prefetchAudioForSong(video.audio.id ?? 'saved', video.audio.title, video.audio.artist);
-    } else {
-      // No saved audio yet — pre-warm with the first MOCK song so there's always
-      // something ready while the AI generator runs.
-      prefetchAudioForSong(MOCK_TRENDING_AUDIO[0].id, MOCK_TRENDING_AUDIO[0].title, MOCK_TRENDING_AUDIO[0].artist);
-    }
   }, [video?.id]);
 
   // Auto-generate hook, caption, and audio on first open
@@ -409,21 +270,6 @@ export default function EditorScreen() {
         if (data?.result?.id) {
           setAiPickedSong(data.result);
           setSelectedAudioId(data.result.id);
-          prefetchAudioForSong(data.result.id, data.result.title, data.result.artist);
-        }
-      }
-
-      // Fetch personalised song suggestions for this video
-      if (!audioSuggestionsLoadedRef.current) {
-        audioSuggestionsLoadedRef.current = true;
-        setFetchingSuggestions(true);
-        const { data } = await callAIGenerator('audio_suggestions', {
-          videoTitle: cleanTitle(video.title), platforms: video.platforms ?? ['tiktok'], ...framePayload,
-        });
-        setFetchingSuggestions(false);
-        const songs = data?.result;
-        if (Array.isArray(songs) && songs.length > 0) {
-          setAiSuggestedSongs(songs);
         }
       }
     };
@@ -487,51 +333,8 @@ export default function EditorScreen() {
     setGeneratingAudio(false);
     if (error) { showAlert('AI Error', error); return; }
     const song = data?.result;
-    if (song?.id) {
-      setAiPickedSong(song);
-      setSelectedAudioId(song.id);
-      prefetchAudioForSong(song.id, song.title, song.artist);
-    }
-  }, [video.title, platforms, showAlert, prefetchAudioForSong]);
-
-  const fetchAudioSuggestions = useCallback(async () => {
-    setFetchingSuggestions(true);
-    const framePayload = await ensureFrame();
-    const { data } = await callAIGenerator('audio_suggestions', {
-      videoTitle: cleanTitle(video.title), platforms, ...framePayload,
-    });
-    setFetchingSuggestions(false);
-    const songs = data?.result;
-    if (Array.isArray(songs) && songs.length > 0) {
-      setAiSuggestedSongs(songs);
-    }
-  }, [video.title, platforms]);
-
-  const handleSongSearch = useCallback((query: string) => {
-    setSongSearchQuery(query);
-    if (songSearchTimer.current) clearTimeout(songSearchTimer.current);
-    if (!query.trim()) { setSongSearchResults([]); return; }
-    songSearchTimer.current = setTimeout(async () => {
-      setSongSearchLoading(true);
-      try {
-        const encoded = encodeURIComponent(query.trim());
-        const res = await fetch(
-          `https://itunes.apple.com/search?term=${encoded}&media=music&limit=8&country=US`,
-        );
-        const data = await res.json();
-        const results = (data.results ?? []).map((r: any) => ({
-          id: `search_${r.trackId}`,
-          title: r.trackName ?? '',
-          artist: r.artistName ?? '',
-          previewUrl: r.previewUrl ?? '',
-        })).filter((r: any) => r.title && r.previewUrl);
-        setSongSearchResults(results);
-      } catch {
-        setSongSearchResults([]);
-      }
-      setSongSearchLoading(false);
-    }, 400);
-  }, []);
+    if (song?.id) { setAiPickedSong(song); setSelectedAudioId(song.id); }
+  }, [video.title, platforms, showAlert]);
 
   const handleGenerateTitle = useCallback(async () => {
     setGeneratingTitle(true);
@@ -550,9 +353,7 @@ export default function EditorScreen() {
   const snapshotEditorState = () => {
     const audioSource = aiPickedSong && selectedAudioId === aiPickedSong.id
       ? aiPickedSong
-      : (MOCK_TRENDING_AUDIO.find(a => a.id === selectedAudioId)
-        ?? aiSuggestedSongs.find(a => a.id === selectedAudioId)
-        ?? songSearchResults.find(a => a.id === selectedAudioId));
+      : MOCK_TRENDING_AUDIO.find(a => a.id === selectedAudioId);
     return {
       hook: { type: hookType, text: hookText },
       caption,
@@ -580,88 +381,6 @@ export default function EditorScreen() {
       { text: 'View Schedule', onPress: () => router.push('/(tabs)/schedule') },
       { text: 'OK', style: 'cancel' },
     ]);
-  };
-
-  const prepareVideoForPublish = async (
-    videoUri: string,
-    hookText: string,
-  ): Promise<{ videoUrl?: string; error?: string }> => {
-    try {
-      setUploadingToStorage(true);
-      setBurningOverlay(true);
-      setBurnAudioLabel('searching…');
-
-      const burnUri = video.videoAssetId
-        ? `ph://${video.videoAssetId}`
-        : videoUri;
-
-      // Determine which song to use: AI pick > user selection > first MOCK track.
-      const snap2 = snapshotEditorState();
-      const audioSong = snap2.audio ?? {
-        title: MOCK_TRENDING_AUDIO[0].title,
-        artist: MOCK_TRENDING_AUDIO[0].artist,
-      };
-
-      // 1. Await any in-flight prefetch so we don't race with it.
-      //    audioFetchPromise.current is always set to the latest prefetch, resolved or pending.
-      setBurnAudioLabel(`Finding music…`);
-      const prefetchedUri = await audioFetchPromise.current;
-
-      // 2. Prefer in-flight result → ref (latest state, avoids stale closure) → state.
-      let backgroundAudioUri: string | undefined =
-        prefetchedUri ?? cachedAudioUriRef.current ?? cachedAudioUri ?? undefined;
-
-      // 3. If still nothing, do a fresh search. Try the AI/selected song first,
-      //    then fall back through MOCK_TRENDING_AUDIO to guarantee we always have music.
-      if (!backgroundAudioUri) {
-        const fallbackSongs = [
-          { title: audioSong.title, artist: audioSong.artist },
-          ...MOCK_TRENDING_AUDIO.map(s => ({ title: s.title, artist: s.artist })),
-        ];
-
-        for (const song of fallbackSongs) {
-          setBurnAudioLabel(`Searching: ${song.title}…`);
-          try {
-            const previewUrl = await fetchItunesPreviewUrl(song.title, song.artist);
-            if (!previewUrl) {
-              console.warn('[burn] no iTunes preview for:', song.title, song.artist);
-              continue;
-            }
-            setBurnAudioLabel(`Downloading: ${song.title}…`);
-            const dest = `${FileSystem.cacheDirectory}bgburn_${Date.now()}.m4a`;
-            const dl = await FileSystem.downloadAsync(previewUrl, dest);
-            if (dl.status === 200) {
-              backgroundAudioUri = dl.uri;
-              cachedAudioUriRef.current = dl.uri;
-              setCachedAudioUri(dl.uri);
-              console.log('[burn] fallback audio ready:', song.title, dl.uri);
-              break;
-            }
-            console.warn('[burn] download status', dl.status, 'for', song.title);
-          } catch (audioErr) {
-            console.warn('[burn] fetch error for', song.title, audioErr);
-          }
-        }
-      }
-
-      const label = backgroundAudioUri
-        ? `${audioSong.title} – ${audioSong.artist}`
-        : 'no music (preview unavailable)';
-      setBurnAudioLabel(label);
-      console.log('[burn] backgroundAudioUri going to native:', backgroundAudioUri ?? 'NONE');
-
-      const { outputUri: burnedUri } = await burnHookOverlay(burnUri, hookText, backgroundAudioUri, originalVolume, bgVolume);
-      setBurningOverlay(false);
-      const resolvedUri = await resolveVideoUri(burnedUri);
-      const { publicUrl, error } = await uploadVideoToStorage(resolvedUri, user!.id, video.id, (p) => setUploadProgress(p));
-      setUploadingToStorage(false);
-      if (error || !publicUrl) return { error: error ?? 'Upload failed' };
-      return { videoUrl: publicUrl };
-    } catch (e: any) {
-      setBurningOverlay(false);
-      setUploadingToStorage(false);
-      return { error: String(e?.message ?? e) };
-    }
   };
 
   const handlePublish = () => {
@@ -720,9 +439,8 @@ export default function EditorScreen() {
     if (prepError || !videoUrl) { showAlert('Upload Failed', prepError ?? 'Could not upload video.'); return; }
 
     const captionText = [snap.caption, snap.hashtags.join(' ')].filter(Boolean).join('\n\n');
-    const audioName = snap.audio ? `${snap.audio.title} – ${snap.audio.artist}` : undefined;
     updateVideo(video.id, { ...snap, title: videoTitle });
-    const { error } = await instagram.publish(videoUrl, captionText, undefined, audioName);
+    const { error } = await instagram.publish(videoUrl, captionText);
     if (error) showAlert('Instagram Error', error);
   };
 
@@ -986,154 +704,39 @@ export default function EditorScreen() {
                   </View>
                 ) : null}
 
-                {/* Music mixing status pill */}
-                {audioStatus !== 'idle' ? (
-                  <View style={styles.audioStatusRow}>
-                    {audioStatus === 'loading' ? (
-                      <><ActivityIndicator size="small" color={Colors.primaryLight} style={{ marginRight: 6 }} /><Text style={styles.audioStatusText}>Fetching preview…</Text></>
-                    ) : audioStatus === 'ready' ? (
-                      <><MaterialIcons name="music-note" size={14} color={Colors.emerald} /><Text style={[styles.audioStatusText, { color: Colors.emerald }]}>Music ready to mix</Text></>
-                    ) : (
-                      <><MaterialIcons name="music-off" size={14} color={Colors.amber} /><Text style={[styles.audioStatusText, { color: Colors.amber }]}>Preview unavailable — no music will be mixed</Text></>
-                    )}
-                  </View>
-                ) : null}
-
-                {/* Audio mix volume controls */}
-                <View style={styles.mixSection}>
-                  <Text style={styles.mixTitle}>Audio Mix</Text>
-                  <View style={styles.mixRow}>
-                    <MaterialIcons name="record-voice-over" size={16} color={Colors.textSecondary} />
-                    <Text style={styles.mixLabel}>Original Voice</Text>
-                    <Text style={styles.mixValue}>{Math.round(originalVolume * 100)}%</Text>
-                  </View>
-                  <Slider
-                    style={styles.mixSlider}
-                    minimumValue={0}
-                    maximumValue={1}
-                    step={0.05}
-                    value={originalVolume}
-                    onValueChange={setOriginalVolume}
-                    minimumTrackTintColor={Colors.primary}
-                    maximumTrackTintColor={Colors.border}
-                    thumbTintColor={Colors.primary}
-                  />
-                  <View style={styles.mixRow}>
-                    <MaterialIcons name="music-note" size={16} color={Colors.primaryLight} />
-                    <Text style={styles.mixLabel}>Background Music</Text>
-                    <Text style={styles.mixValue}>{Math.round(bgVolume * 100)}%</Text>
-                  </View>
-                  <Slider
-                    style={styles.mixSlider}
-                    minimumValue={0}
-                    maximumValue={1}
-                    step={0.05}
-                    value={bgVolume}
-                    onValueChange={setBgVolume}
-                    minimumTrackTintColor={Colors.primaryLight}
-                    maximumTrackTintColor={Colors.border}
-                    thumbTintColor={Colors.primaryLight}
-                  />
+                <View style={styles.audioHeader}>
+                  <Text style={styles.sectionLabel}>Trending Audio</Text>
+                  {aiPickedSong ? <Text style={styles.orPickText}>or pick manually below</Text> : null}
                 </View>
 
-                {/* Song Search Bar */}
-                <View style={styles.songSearchBar}>
-                  <MaterialIcons name="search" size={18} color={Colors.textMuted} />
-                  <TextInput
-                    style={styles.songSearchInput}
-                    placeholder="Search any song…"
-                    placeholderTextColor={Colors.textMuted}
-                    value={songSearchQuery}
-                    onChangeText={handleSongSearch}
-                    returnKeyType="search"
-                  />
-                  {songSearchQuery.length > 0 && (
-                    <Pressable onPress={() => { setSongSearchQuery(''); setSongSearchResults([]); }}>
-                      <MaterialIcons name="close" size={16} color={Colors.textMuted} />
+                {MOCK_TRENDING_AUDIO.map(audio => {
+                  const isSelected = selectedAudioId === audio.id && !aiPickedSong;
+                  return (
+                    <Pressable
+                      key={audio.id}
+                      style={[styles.audioRow, isSelected && styles.audioRowActive]}
+                      onPress={() => { setSelectedAudioId(audio.id); setAiPickedSong(null); }}
+                    >
+                      <View style={[styles.audioIcon, isSelected && { backgroundColor: Colors.primary }]}>
+                        <MaterialIcons name="music-note" size={18} color={isSelected ? '#fff' : Colors.textSecondary} />
+                      </View>
+                      <View style={{ flex: 1 }}>
+                        <Text style={styles.audioTitle}>{audio.title}</Text>
+                        <Text style={styles.audioArtist}>{audio.artist}</Text>
+                      </View>
+                      <View style={styles.audioMeta}>
+                        {audio.trending ? (
+                          <View style={styles.trendingBadge}>
+                            <MaterialIcons name="trending-up" size={10} color={Colors.primary} />
+                            <Text style={styles.trendingText}>Hot</Text>
+                          </View>
+                        ) : null}
+                        <Text style={styles.audioUses}>{audio.uses}</Text>
+                      </View>
+                      {isSelected ? <MaterialIcons name="check-circle" size={20} color={Colors.primary} /> : null}
                     </Pressable>
-                  )}
-                </View>
-
-                {/* Search Results */}
-                {songSearchQuery.length > 0 ? (
-                  songSearchLoading ? (
-                    <View style={styles.searchLoadingRow}>
-                      <ActivityIndicator size="small" color={Colors.primary} />
-                      <Text style={styles.searchLoadingText}>Searching…</Text>
-                    </View>
-                  ) : songSearchResults.length === 0 ? (
-                    <Text style={styles.searchEmptyText}>No songs found</Text>
-                  ) : (
-                    songSearchResults.map(audio => {
-                      const isSelected = selectedAudioId === audio.id;
-                      return (
-                        <Pressable
-                          key={audio.id}
-                          style={[styles.audioRow, isSelected && styles.audioRowActive]}
-                          onPress={() => {
-                            setSelectedAudioId(audio.id);
-                            setAiPickedSong(null);
-                            prefetchAudioForSong(audio.id, audio.title, audio.artist, audio.previewUrl);
-                          }}
-                        >
-                          <View style={[styles.audioIcon, isSelected && { backgroundColor: Colors.primary }]}>
-                            <MaterialIcons name="music-note" size={18} color={isSelected ? '#fff' : Colors.textSecondary} />
-                          </View>
-                          <View style={{ flex: 1 }}>
-                            <Text style={styles.audioTitle}>{audio.title}</Text>
-                            <Text style={styles.audioArtist}>{audio.artist}</Text>
-                          </View>
-                          {isSelected ? <MaterialIcons name="check-circle" size={20} color={Colors.primary} /> : null}
-                        </Pressable>
-                      );
-                    })
-                  )
-                ) : (
-                  <>
-                    <View style={styles.audioHeader}>
-                      <Text style={styles.sectionLabel}>
-                        {fetchingSuggestions ? 'Picking songs for your video…' : 'Suggested for Your Video'}
-                      </Text>
-                      <Pressable onPress={fetchAudioSuggestions} disabled={fetchingSuggestions}>
-                        {fetchingSuggestions
-                          ? <ActivityIndicator size="small" color={Colors.primary} />
-                          : <MaterialIcons name="refresh" size={18} color={Colors.textSecondary} />}
-                      </Pressable>
-                    </View>
-                    {aiSuggestedSongs.map(audio => {
-                      const isSelected = selectedAudioId === audio.id && !aiPickedSong;
-                      return (
-                        <Pressable
-                          key={audio.id}
-                          style={[styles.audioRow, isSelected && styles.audioRowActive]}
-                          onPress={() => {
-                            setSelectedAudioId(audio.id);
-                            setAiPickedSong(null);
-                            prefetchAudioForSong(audio.id, audio.title, audio.artist);
-                          }}
-                        >
-                          <View style={[styles.audioIcon, isSelected && { backgroundColor: Colors.primary }]}>
-                            <MaterialIcons name="music-note" size={18} color={isSelected ? '#fff' : Colors.textSecondary} />
-                          </View>
-                          <View style={{ flex: 1 }}>
-                            <Text style={styles.audioTitle}>{audio.title}</Text>
-                            <Text style={styles.audioArtist}>{audio.artist}</Text>
-                          </View>
-                          <View style={styles.audioMeta}>
-                            {audio.trending ? (
-                              <View style={styles.trendingBadge}>
-                                <MaterialIcons name="trending-up" size={10} color={Colors.primary} />
-                                <Text style={styles.trendingText}>Hot</Text>
-                              </View>
-                            ) : null}
-                            <Text style={styles.audioUses}>{audio.uses}</Text>
-                          </View>
-                          {isSelected ? <MaterialIcons name="check-circle" size={20} color={Colors.primary} /> : null}
-                        </Pressable>
-                      );
-                    })}
-                  </>
-                )}
+                  );
+                })}
               </View>
             ) : null}
 
@@ -1232,15 +835,9 @@ export default function EditorScreen() {
             {uploadingToStorage ? (
               <View style={styles.sheetPhase}>
                 <ActivityIndicator size="large" color="#e1306c" />
-                <Text style={styles.sheetPhaseTitle}>
-                  {burningOverlay ? 'Burning hook overlay...' : 'Uploading video...'}
-                </Text>
-                <Text style={styles.sheetPhaseSub}>
-                  {burningOverlay
-                    ? (burnAudioLabel ? `🎵 ${burnAudioLabel}` : 'Adding hook text...')
-                    : 'Preparing your video for Instagram.'}
-                </Text>
-                {!burningOverlay && uploadProgress > 0 ? (
+                <Text style={styles.sheetPhaseTitle}>Uploading video...</Text>
+                <Text style={styles.sheetPhaseSub}>Preparing your video for Instagram.</Text>
+                {uploadProgress > 0 ? (
                   <View style={styles.progressBarBg}>
                     <View style={[styles.progressBarFill, { width: `${uploadProgress}%` as any, backgroundColor: '#e1306c' }]} />
                   </View>
@@ -1365,9 +962,7 @@ export default function EditorScreen() {
               <View style={styles.sheetPhase}>
                 <ActivityIndicator size="large" color={Colors.primaryLight} />
                 <Text style={styles.sheetPhaseTitle}>Burning hook overlay...</Text>
-                <Text style={styles.sheetPhaseSub}>
-                  {burnAudioLabel ? `Mixing: ${burnAudioLabel}` : 'Adding hook text (no music)'}
-                </Text>
+                <Text style={styles.sheetPhaseSub}>Adding your hook text to the video.</Text>
               </View>
             ) : null}
 
@@ -1457,7 +1052,6 @@ export default function EditorScreen() {
             </View>
             <ScrollView showsVerticalScrollIndicator={false} style={{ flex: 1 }}>
               {([
-                { key: 'audio-pipeline' as TestKey, label: 'Audio Pipeline', desc: 'iTunes search → download → show file size', icon: 'music-circle', color: Colors.amber },
                 { key: 'ai-content-generator' as TestKey, label: 'AI Content Generator', desc: 'Sends a test hook request (type=hook)', icon: 'auto-fix', color: Colors.primaryLight },
                 { key: 'wayinvideo-analyzer' as TestKey, label: 'WayinVideo Analyzer', desc: 'Sends a ping/action=ping request', icon: 'movie-filter', color: Colors.emerald },
                 { key: 'tiktok-publisher' as TestKey, label: 'TikTok Publisher', desc: 'Sends a status check request', icon: 'music-note', color: '#ee1d52' },
@@ -1621,14 +1215,6 @@ const styles = StyleSheet.create({
   },
   aiReasonText: { fontSize: FontSize.xs, color: Colors.textSecondary, lineHeight: 16, fontStyle: 'italic', marginTop: 2, includeFontPadding: false },
   orPickText: { fontSize: FontSize.xs, color: Colors.textMuted, fontWeight: FontWeight.medium, includeFontPadding: false },
-  audioStatusRow: { flexDirection: 'row', alignItems: 'center', gap: 5, paddingVertical: 6, paddingHorizontal: 10, backgroundColor: Colors.surfaceElevated, borderRadius: Radius.md, borderWidth: 1, borderColor: Colors.surfaceBorder },
-  audioStatusText: { fontSize: FontSize.xs, color: Colors.textSecondary, includeFontPadding: false },
-  mixSection: { backgroundColor: Colors.surfaceElevated, borderRadius: Radius.md, borderWidth: 1, borderColor: Colors.surfaceBorder, padding: Spacing.sm, gap: 4 },
-  mixTitle: { fontSize: FontSize.xs, fontWeight: FontWeight.bold, color: Colors.textMuted, textTransform: 'uppercase', letterSpacing: 0.5, marginBottom: 2 },
-  mixRow: { flexDirection: 'row', alignItems: 'center', gap: 6 },
-  mixLabel: { flex: 1, fontSize: FontSize.sm, color: Colors.textSecondary },
-  mixValue: { fontSize: FontSize.sm, fontWeight: FontWeight.bold, color: Colors.textPrimary, minWidth: 36, textAlign: 'right' },
-  mixSlider: { width: '100%', height: 32 },
   hookTypes: { flexDirection: 'row', gap: Spacing.sm },
   hookTypeCard: {
     flex: 1, backgroundColor: Colors.surfaceElevated, borderRadius: Radius.md,
@@ -1651,42 +1237,6 @@ const styles = StyleSheet.create({
   },
   tagChipText: { fontSize: FontSize.sm, color: Colors.primaryLight, fontWeight: FontWeight.semibold, includeFontPadding: false },
   audioHeader: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },
-  songSearchBar: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    backgroundColor: Colors.surfaceBorder,
-    borderRadius: Radius.full,
-    paddingHorizontal: 12,
-    paddingVertical: 8,
-    gap: 8,
-    marginBottom: Spacing.sm,
-  },
-  songSearchInput: {
-    flex: 1,
-    fontSize: FontSize.sm,
-    color: Colors.textPrimary,
-    includeFontPadding: false,
-    paddingVertical: 0,
-  },
-  searchLoadingRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 8,
-    paddingVertical: Spacing.sm,
-    paddingHorizontal: 4,
-  },
-  searchLoadingText: {
-    fontSize: FontSize.sm,
-    color: Colors.textSecondary,
-    includeFontPadding: false,
-  },
-  searchEmptyText: {
-    fontSize: FontSize.sm,
-    color: Colors.textMuted,
-    textAlign: 'center',
-    paddingVertical: Spacing.md,
-    includeFontPadding: false,
-  },
   audioRow: {
     flexDirection: 'row', alignItems: 'center', gap: Spacing.sm,
     backgroundColor: Colors.surfaceElevated, borderRadius: Radius.md,

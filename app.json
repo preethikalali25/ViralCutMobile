@@ -7,7 +7,7 @@
     "icon": "./assets/images/logo.png",
     "scheme": "viralcut",
     "userInterfaceStyle": "automatic",
-    "newArchEnabled": false,
+    "newArchEnabled": true,
     "ios": {
       "supportsTablet": true,
       "bundleIdentifier": "com.kalel.KalelViralCut"
