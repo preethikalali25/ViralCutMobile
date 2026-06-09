@@ -337,17 +337,9 @@ Write ONE specific niche sentence:
   ✓ "solo budget traveller sharing hidden gems in Southeast Asia"
   ✓ "fitness coach posting workout motivation and transformation content"
 
-═══ STEP 2: PEOPLE FILTER (MANDATORY FIRST) ═══
-Look at EACH thumbnail image (indices 0–${topEvents.length - 1}) and determine which ones show at least one clearly visible PERSON (face, body, or silhouette).
+═══ STEP 2: GENERATE 8 REEL IDEAS ═══
+⚠️ PEOPLE RULE: Only use events where the thumbnail clearly shows at least one visible person (face or body). Skip any thumbnail that shows only objects, food, landscapes, nature, animals, or scenery with no people. If fewer than 8 thumbnails have visible people, use fewer suggestions — do not make up ideas for people-less shots.
 
-EXCLUDE an index if the thumbnail shows ONLY:
-  • Objects, products, or food with no human present
-  • Landscapes, nature, animals, or architecture with no human present
-  • Abstract scenes, text-only images, or screenshots
-
-Record passing indices in "has_people". If ZERO thumbnails have visible people, return an empty suggestions array.
-
-═══ STEP 3: GENERATE REEL IDEAS (only for indices in has_people) ═══
 Transform each gallery event through the niche lens. The event is just raw material — the idea must be niche-branded:
   ✗ Event: beach trip → "Fun beach day" / "We had so much fun!"
   ✓ Event: beach trip, niche: mom content → "Beach day survival guide with a toddler" / "POV: packing for the beach with a toddler (15 bags later) 😅"
@@ -364,13 +356,12 @@ For each suggestion:
     "I finally [niche milestone/thing]"
     "How I [niche achievement] with [constraint]"
 • REASON: name the niche and explain why this will resonate with its audience
-• galleryIndices: MUST only contain indices that appear in has_people (max ${topEvents.length - 1})
+• galleryIndices: 0-based indices into THIS batch's thumbnails (max ${topEvents.length - 1})
 • contentType: vary across photo_montage, video_clip, mixed
 
 Return ONLY valid JSON — no markdown, no code blocks:
 {
   "niche": "One specific sentence describing the creator's exact niche and target audience",
-  "has_people": [0, 2, 3],
   "suggestions": [
     {
       "id": "s1",
@@ -416,7 +407,7 @@ Return ONLY valid JSON — no markdown, no code blocks:
       const aiData = await res.json();
       const rawText = ((aiData.content?.[0]?.text as string) ?? '').trim();
 
-      let parsed: { niche?: string; has_people?: number[]; suggestions?: Suggestion[] };
+      let parsed: { niche?: string; suggestions?: Suggestion[] };
       try {
         const cleaned = rawText.replace(/```json?\n?/g, '').replace(/```/g, '').trim();
         parsed = JSON.parse(cleaned);
@@ -427,14 +418,8 @@ Return ONLY valid JSON — no markdown, no code blocks:
         return;
       }
 
-      const peopleSet = new Set<number>(parsed.has_people ?? Array.from({ length: topEvents.length }, (_, i) => i));
-      const allSuggestions: Suggestion[] = parsed.suggestions
+      const suggestions: Suggestion[] = parsed.suggestions
         ?? (Array.isArray(parsed) ? parsed as unknown as Suggestion[] : []);
-      // Drop suggestions whose primary thumbnail index is not a people photo
-      const suggestions = allSuggestions.filter(s => {
-        const primary = s.galleryIndices?.[0];
-        return primary == null || peopleSet.has(primary);
-      });
       const newBatch: SuggestionBatch = { suggestions, analysisEvents: topEvents };
 
       if (mode === 'replace') {
