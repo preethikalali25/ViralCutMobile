@@ -100,6 +100,57 @@ async function genThumb(ev: EventCluster): Promise<string | null> {
   } catch { return null; }
 }
 
+// Fast pre-screen: asks Haiku which thumbnails contain visible people.
+// Returns a Set of passing indices. Fails open (all indices) on error.
+async function detectPeopleIndices(
+  thumbs: Array<{ index: number; base64: string }>,
+  apiKey: string,
+): Promise<Set<number>> {
+  if (thumbs.length === 0) return new Set();
+  const content: any[] = [
+    {
+      type: 'text',
+      text: `You are a photo classifier. For each image below (0-indexed), answer: does it contain at least one clearly visible PERSON (face, body, or human silhouette)?
+
+Classify each image as YES or NO:
+- YES: photo shows a person, even partially or in background
+- NO: photo shows only objects, food, landscapes, animals, buildings, or scenery with no humans
+
+Return ONLY valid JSON, no markdown: {"people":[indices that are YES]}`,
+    },
+  ];
+  for (const { base64 } of thumbs) {
+    content.push({ type: 'image', source: { type: 'base64', media_type: 'image/jpeg', data: base64 } });
+  }
+  try {
+    const controller = new AbortController();
+    const tid = setTimeout(() => controller.abort(), 20000);
+    const res = await fetch('https://api.anthropic.com/v1/messages', {
+      method: 'POST',
+      signal: controller.signal,
+      headers: {
+        'Content-Type': 'application/json',
+        'x-api-key': apiKey,
+        'anthropic-version': '2023-06-01',
+      },
+      body: JSON.stringify({
+        model: 'claude-haiku-4-5-20251001',
+        max_tokens: 64,
+        messages: [{ role: 'user', content }],
+      }),
+    });
+    clearTimeout(tid);
+    if (!res.ok) return new Set(thumbs.map(t => t.index));
+    const data = await res.json();
+    const text = ((data.content?.[0]?.text as string) ?? '').trim();
+    const cleaned = text.replace(/```json?\n?/g, '').replace(/```/g, '').trim();
+    const parsed = JSON.parse(cleaned);
+    return new Set<number>((parsed.people ?? []).map(Number));
+  } catch {
+    return new Set(thumbs.map(t => t.index)); // fail open
+  }
+}
+
 export default function SuggestScreen() {
   const router = useRouter();
   const { user } = useAuth();
@@ -248,7 +299,7 @@ export default function SuggestScreen() {
       }
     }
 
-    if (mode === 'replace') setLoadingStep('Analysing your niche… (~20 sec)');
+    if (mode === 'replace') setLoadingStep('Selecting your best moments…');
 
     // Slice BATCH_SIZE events from offset, wrapping if needed
     const total = evList.length;
@@ -287,8 +338,19 @@ ${postLines || '  (no posts found)'}`;
       .map((ev, i) => `  Event ${i}: ${ev.label} (${ev.count} items)`)
       .join('\n');
 
+    // ── Generate thumbnails, then pre-screen for people ───────────────────────
+    const thumbMap: Map<number, string> = new Map();
+    for (let i = 0; i < topEvents.length; i++) {
+      const b64 = topEvents[i].base64 ?? (await genThumb(topEvents[i]));
+      if (b64) thumbMap.set(i, b64);
+    }
+
+    if (mode === 'replace') setLoadingStep('Filtering for your best moments…');
+    const thumbsToScreen = Array.from(thumbMap.entries()).map(([index, base64]) => ({ index, base64 }));
+    const peopleSet = await detectPeopleIndices(thumbsToScreen, apiKey);
+    const peopleIndices = Array.from(peopleSet).sort((a, b) => a - b);
+
     // ── Build userContent: Instagram text FIRST, then images, then event list ──
-    // Putting text first ensures the AI reads the niche context before seeing images.
     const userContent: any[] = [];
 
     userContent.push({
@@ -300,8 +362,7 @@ ${postLines || '  (no posts found)'}`;
 
     // Gallery thumbnails (raw footage for reel selection, not niche signals)
     for (let i = 0; i < topEvents.length; i++) {
-      const ev = topEvents[i];
-      const b64 = ev.base64 ?? (await genThumb(ev));
+      const b64 = thumbMap.get(i);
       if (b64) {
         userContent.push({
           type: 'image',
@@ -310,13 +371,21 @@ ${postLines || '  (no posts found)'}`;
       }
     }
 
+    if (mode === 'replace') setLoadingStep('Analysing your niche… (~20 sec)');
+
+    const peopleNote = peopleIndices.length > 0
+      ? `Pre-screened people detection — indices WITH visible people: [${peopleIndices.join(', ')}]. You MUST only use these indices in galleryIndices. All other indices contain no people and are off-limits.`
+      : 'Pre-screening found NO thumbnails with visible people. Return an empty suggestions array.';
+
     userContent.push({
       type: 'text',
       text: `Camera roll: ${totalItems} total items across ${evList.length} detected events.
 These ${topEvents.length} thumbnails (indices 0–${topEvents.length - 1}) are the raw footage for reel creation:
 ${eventLines}
 
-Now give 8 niche-focused Reel ideas using these events as raw material. Return JSON only.`,
+${peopleNote}
+
+Now give niche-focused Reel ideas using ONLY the allowed indices. Return JSON only.`,
     });
 
     const systemPrompt = `You are an expert Instagram Reels strategist who creates scroll-stopping, niche-specific content.
@@ -337,18 +406,10 @@ Write ONE specific niche sentence:
   ✓ "solo budget traveller sharing hidden gems in Southeast Asia"
   ✓ "fitness coach posting workout motivation and transformation content"
 
-═══ STEP 2: PEOPLE FILTER (MANDATORY FIRST) ═══
-Look at EACH thumbnail image (indices 0–${topEvents.length - 1}) and determine which ones show at least one clearly visible PERSON (face, body, or silhouette).
+═══ STEP 2: GENERATE REEL IDEAS ═══
+The user message specifies exactly which thumbnail indices contain visible people. You MUST ONLY use those indices in galleryIndices — never use any other index.
 
-EXCLUDE an index if the thumbnail shows ONLY:
-  • Objects, products, or food with no human present
-  • Landscapes, nature, animals, or architecture with no human present
-  • Abstract scenes, text-only images, or screenshots
-
-Record passing indices in "has_people". If ZERO thumbnails have visible people, return an empty suggestions array.
-
-═══ STEP 3: GENERATE REEL IDEAS (only for indices in has_people) ═══
-Transform each gallery event through the niche lens. The event is just raw material — the idea must be niche-branded:
+Transform each allowed event through the niche lens. The event is just raw material — the idea must be niche-branded:
   ✗ Event: beach trip → "Fun beach day" / "We had so much fun!"
   ✓ Event: beach trip, niche: mom content → "Beach day survival guide with a toddler" / "POV: packing for the beach with a toddler (15 bags later) 😅"
 
@@ -364,13 +425,12 @@ For each suggestion:
     "I finally [niche milestone/thing]"
     "How I [niche achievement] with [constraint]"
 • REASON: name the niche and explain why this will resonate with its audience
-• galleryIndices: MUST only contain indices that appear in has_people (max ${topEvents.length - 1})
+• galleryIndices: ONLY indices pre-approved as containing people (max ${topEvents.length - 1})
 • contentType: vary across photo_montage, video_clip, mixed
 
 Return ONLY valid JSON — no markdown, no code blocks:
 {
   "niche": "One specific sentence describing the creator's exact niche and target audience",
-  "has_people": [0, 2, 3],
   "suggestions": [
     {
       "id": "s1",
@@ -416,7 +476,7 @@ Return ONLY valid JSON — no markdown, no code blocks:
       const aiData = await res.json();
       const rawText = ((aiData.content?.[0]?.text as string) ?? '').trim();
 
-      let parsed: { niche?: string; has_people?: number[]; suggestions?: Suggestion[] };
+      let parsed: { niche?: string; suggestions?: Suggestion[] };
       try {
         const cleaned = rawText.replace(/```json?\n?/g, '').replace(/```/g, '').trim();
         parsed = JSON.parse(cleaned);
@@ -427,13 +487,13 @@ Return ONLY valid JSON — no markdown, no code blocks:
         return;
       }
 
-      const peopleSet = new Set<number>(parsed.has_people ?? Array.from({ length: topEvents.length }, (_, i) => i));
       const allSuggestions: Suggestion[] = parsed.suggestions
         ?? (Array.isArray(parsed) ? parsed as unknown as Suggestion[] : []);
-      // Drop suggestions whose primary thumbnail is not a people photo
+      // Enforce pre-screened people filter — drop any suggestion that slipped through
+      const filteredSet = peopleSet.size > 0 ? peopleSet : new Set(Array.from({ length: topEvents.length }, (_, i) => i));
       const suggestions = allSuggestions.filter(s => {
         const primary = s.galleryIndices?.[0];
-        return primary == null || peopleSet.has(primary);
+        return primary == null || filteredSet.has(primary);
       });
       const newBatch: SuggestionBatch = { suggestions, analysisEvents: topEvents };
 
