@@ -450,7 +450,7 @@ Return ONLY a valid JSON object — no markdown, no code blocks:
       .map(i => analysisEvents[i]?.rep)
       .filter(Boolean)
       .map(g => ({ uri: g.uri, type: g.type, previewUri: g.uri, durationSec: g.durationSec }));
-    if (picks.length) setPendingReelItems(picks);
+    if (picks.length) setPendingReelItems(picks, true);
     router.push('/upload');
   };
 

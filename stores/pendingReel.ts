@@ -5,14 +5,19 @@ export type PendingReelItem = {
   durationSec?: number;
 };
 
-let pendingItems: PendingReelItem[] | null = null;
+type PendingReel = {
+  items: PendingReelItem[];
+  autoProcess: boolean;
+};
 
-export function setPendingReelItems(items: PendingReelItem[]): void {
-  pendingItems = items;
+let pending: PendingReel | null = null;
+
+export function setPendingReelItems(items: PendingReelItem[], autoProcess = false): void {
+  pending = { items, autoProcess };
 }
 
-export function consumePendingReelItems(): PendingReelItem[] | null {
-  const items = pendingItems;
-  pendingItems = null;
-  return items;
+export function consumePendingReelItems(): PendingReel | null {
+  const p = pending;
+  pending = null;
+  return p;
 }

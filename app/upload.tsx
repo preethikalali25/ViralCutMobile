@@ -32,18 +32,29 @@ export default function UploadScreen() {
   const [isProcessing, setIsProcessing] = useState(false);
   const [processingLabel, setProcessingLabel] = useState('');
 
+  const autoProcessRef = React.useRef(false);
+
   // Pre-populate from "Make This Reel" in suggest screen
   React.useEffect(() => {
     const pending = consumePendingReelItems();
-    if (pending && pending.length > 0) {
-      setMediaItems(pending.map(p => ({
+    if (pending && pending.items.length > 0) {
+      setMediaItems(pending.items.map(p => ({
         uri: p.uri,
         type: p.type,
         previewUri: p.previewUri,
         durationSec: p.durationSec,
       })));
+      autoProcessRef.current = pending.autoProcess;
     }
   }, []);
+
+  // Auto-process and jump straight to editor when coming from suggest
+  React.useEffect(() => {
+    if (autoProcessRef.current && mediaItems.length > 0 && !isProcessing) {
+      autoProcessRef.current = false;
+      handleEdit();
+    }
+  }, [mediaItems]);
 
   const togglePlatform = (p: PlatformType) => {
     setPlatforms(prev =>
