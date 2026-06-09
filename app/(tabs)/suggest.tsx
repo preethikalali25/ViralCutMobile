@@ -162,12 +162,17 @@ export default function SuggestScreen() {
     if (!granted) { setPermission('denied'); setLoading(false); return; }
     setPermission('granted');
 
-    const toItem = (a: MediaLibrary.Asset): GalleryItem => ({
-      id: a.id, uri: a.uri,
-      type: a.mediaType === MediaLibrary.MediaType.video ? 'video' : 'photo',
-      durationSec: a.duration ? Math.round(a.duration) : undefined,
-      creationTime: a.creationTime,
-    });
+    const toItem = (a: MediaLibrary.Asset): GalleryItem | null => {
+      // Drop screenshots and screen recordings using iOS mediaSubtypes
+      const subs = (a as any).mediaSubtypes as string[] | undefined;
+      if (subs?.includes('screenshot') || subs?.includes('videoScreenRecording')) return null;
+      return {
+        id: a.id, uri: a.uri,
+        type: a.mediaType === MediaLibrary.MediaType.video ? 'video' : 'photo',
+        durationSec: a.duration ? Math.round(a.duration) : undefined,
+        creationTime: a.creationTime,
+      };
+    };
 
     const first = await MediaLibrary.getAssetsAsync({
       mediaType: [MediaLibrary.MediaType.photo, MediaLibrary.MediaType.video],
@@ -175,7 +180,7 @@ export default function SuggestScreen() {
       first: 200,
     });
 
-    let allLoaded = first.assets.map(toItem);
+    let allLoaded = first.assets.map(toItem).filter((x): x is GalleryItem => x !== null);
     itemsRef.current = allLoaded;
     setItemCount(allLoaded.length);
 
@@ -196,7 +201,7 @@ export default function SuggestScreen() {
           first: 200,
           after: cursor,
         });
-        allLoaded = [...allLoaded, ...page.assets.map(toItem)];
+        allLoaded = [...allLoaded, ...page.assets.map(toItem).filter((x): x is GalleryItem => x !== null)];
         itemsRef.current = allLoaded;
         setItemCount(allLoaded.length);
         cursor = page.hasNextPage ? page.endCursor : undefined;
@@ -333,6 +338,8 @@ Write ONE specific niche sentence:
   ✓ "fitness coach posting workout motivation and transformation content"
 
 ═══ STEP 2: GENERATE 8 REEL IDEAS ═══
+⚠️ PEOPLE RULE: Only use events where the thumbnail clearly shows at least one visible person (face or body). Skip any thumbnail that shows only objects, food, landscapes, nature, animals, or scenery with no people. If fewer than 8 thumbnails have visible people, use fewer suggestions — do not make up ideas for people-less shots.
+
 Transform each gallery event through the niche lens. The event is just raw material — the idea must be niche-branded:
   ✗ Event: beach trip → "Fun beach day" / "We had so much fun!"
   ✓ Event: beach trip, niche: mom content → "Beach day survival guide with a toddler" / "POV: packing for the beach with a toddler (15 bags later) 😅"
