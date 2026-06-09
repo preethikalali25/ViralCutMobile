@@ -67,15 +67,6 @@ export default function TabLayout() {
           ),
         }}
       />
-      <Tabs.Screen
-        name="suggest"
-        options={{
-          title: 'Ideas',
-          tabBarIcon: ({ color, size }) => (
-            <MaterialCommunityIcons name="creation" size={size} color={color} />
-          ),
-        }}
-      />
     </Tabs>
   );
 }
