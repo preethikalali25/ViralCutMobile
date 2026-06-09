@@ -8,6 +8,30 @@ export interface InstagramStatus {
   profilePictureUrl?: string;
   followersCount?: number;
   igUserId?: string;
+  // populated when fetched with full:true
+  bio?: string;
+  mediaCount?: number;
+  recentPosts?: Array<{
+    type: string;
+    caption?: string;
+    likes?: number;
+    comments?: number;
+    date: string;
+  }>;
+}
+
+export interface InstagramProfile {
+  username?: string;
+  bio?: string;
+  followersCount?: number;
+  mediaCount?: number;
+  recentPosts?: Array<{
+    type: string;
+    caption?: string;
+    likes?: number;
+    comments?: number;
+    date: string;
+  }>;
 }
 
 async function invoke(action: string, payload: Record<string, unknown>) {
@@ -43,8 +67,20 @@ export async function exchangeInstagramCode(
   return { username: data.username, followersCount: data.followersCount };
 }
 
+export async function getInstagramProfile(userId: string): Promise<InstagramProfile | null> {
+  const { data, error } = await invoke('get_profile', { userId });
+  if (error || !data) return null;
+  return data as InstagramProfile;
+}
+
 export async function getInstagramStatus(userId: string): Promise<InstagramStatus> {
   const { data, error } = await invoke('get_status', { userId });
+  if (error || !data) return { connected: false };
+  return data as InstagramStatus;
+}
+
+export async function getInstagramFullStatus(userId: string): Promise<InstagramStatus> {
+  const { data, error } = await invoke('get_status', { userId, full: true });
   if (error || !data) return { connected: false };
   return data as InstagramStatus;
 }
@@ -59,8 +95,9 @@ export async function createInstagramContainer(
   videoUrl: string,
   caption: string,
   coverUrl?: string,
+  audioName?: string,
 ): Promise<{ containerId?: string; error?: string }> {
-  const { data, error } = await invoke('publish', { userId, videoUrl, caption, coverUrl });
+  const { data, error } = await invoke('publish', { userId, videoUrl, caption, coverUrl, audioName });
   if (error) return { error };
   return { containerId: data.containerId };
 }

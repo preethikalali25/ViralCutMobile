@@ -140,9 +140,9 @@ export const MOCK_CALENDAR_EVENTS: CalendarEvent[] = [
 ];
 
 export const MOCK_TRENDING_AUDIO = [
-  { id: 'a1', title: 'APT.', artist: 'ROSE & Bruno Mars', uses: '8.4M', trending: true },
-  { id: 'a2', title: 'Espresso', artist: 'Sabrina Carpenter', uses: '6.2M', trending: true },
-  { id: 'a3', title: 'Flowers', artist: 'Miley Cyrus', uses: '4.1M', trending: false },
-  { id: 'a4', title: 'As It Was', artist: 'Harry Styles', uses: '3.8M', trending: false },
-  { id: 'a5', title: 'Die With A Smile', artist: 'Lady Gaga & Bruno Mars', uses: '7.1M', trending: true },
+  { id: 'a1', title: 'Tauba Tauba', artist: 'Karan Aujla', uses: '9.2M', trending: true },
+  { id: 'a2', title: 'Kesariya', artist: 'Arijit Singh', uses: '7.8M', trending: true },
+  { id: 'a3', title: 'Pasoori', artist: 'Ali Sethi & Shae Gill', uses: '6.4M', trending: true },
+  { id: 'a4', title: 'Tum Kya Mile', artist: 'Arijit Singh', uses: '5.1M', trending: false },
+  { id: 'a5', title: 'GOAT', artist: 'Diljit Dosanjh', uses: '4.7M', trending: true },
 ];

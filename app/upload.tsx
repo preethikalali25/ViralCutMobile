@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import {
   View, Text, ScrollView, StyleSheet, Pressable, ActivityIndicator, FlatList,
 } from 'react-native';
@@ -13,6 +13,7 @@ import { useAlert } from '@/template';
 import { Platform as PlatformType, Video } from '@/types';
 import PlatformBadge from '@/components/ui/PlatformBadge';
 import { combineMediaToVideo, type MediaItem } from '@/services/videoOverlayService';
+import { consumePendingReelItems } from '@/stores/pendingReel';
 
 const ALL_PLATFORMS: PlatformType[] = ['tiktok', 'reels', 'youtube'];
 
@@ -32,6 +33,21 @@ export default function UploadScreen() {
   const [mediaItems, setMediaItems] = useState<MediaPreviewItem[]>([]);
   const [isProcessing, setIsProcessing] = useState(false);
   const [processingLabel, setProcessingLabel] = useState('');
+  const autoProcessRef = useRef(false);
+
+  useEffect(() => {
+    const p = consumePendingReelItems();
+    if (!p || p.items.length === 0) return;
+    autoProcessRef.current = p.autoProcess;
+    setMediaItems(p.items as MediaPreviewItem[]);
+  }, []);
+
+  useEffect(() => {
+    if (autoProcessRef.current && mediaItems.length > 0 && !isProcessing) {
+      autoProcessRef.current = false;
+      handleEdit();
+    }
+  }, [mediaItems]);
 
   const togglePlatform = (p: PlatformType) => {
     setPlatforms(prev =>
