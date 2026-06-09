@@ -100,6 +100,49 @@ async function genThumb(ev: EventCluster): Promise<string | null> {
   } catch { return null; }
 }
 
+// Determines niche from Instagram profile text ONLY — no images, no gallery context.
+async function determineNicheFromProfile(profileText: string, apiKey: string): Promise<string> {
+  try {
+    const controller = new AbortController();
+    const tid = setTimeout(() => controller.abort(), 15000);
+    const res = await fetch('https://api.anthropic.com/v1/messages', {
+      method: 'POST',
+      signal: controller.signal,
+      headers: {
+        'Content-Type': 'application/json',
+        'x-api-key': apiKey,
+        'anthropic-version': '2023-06-01',
+      },
+      body: JSON.stringify({
+        model: 'claude-haiku-4-5-20251001',
+        max_tokens: 120,
+        messages: [{
+          role: 'user',
+          content: `Analyse this Instagram profile and write ONE specific sentence describing the creator's exact niche and target audience.
+
+${profileText}
+
+Rules:
+- Use ONLY the profile data above — do not guess from names or generic patterns
+- Be specific, not generic
+  ✗ "lifestyle" ✗ "fitness" ✗ "family" ✗ "travel"
+  ✓ "fitness coach posting home workout motivation for busy South Asian moms"
+  ✓ "first-time mom documenting toddler milestones for Indian-American parents"
+  ✓ "solo budget traveller sharing hidden gems in Southeast Asia"
+- If bio is empty, infer from post captions and engagement patterns
+- Return ONLY the niche sentence, nothing else`,
+        }],
+      }),
+    });
+    clearTimeout(tid);
+    if (!res.ok) return '';
+    const data = await res.json();
+    return ((data.content?.[0]?.text as string) ?? '').trim();
+  } catch {
+    return '';
+  }
+}
+
 // Pre-screen: asks Haiku which images (by sequential position) contain a visible person.
 // Returns positions (0-based into the base64 array) that passed. Fails open on error.
 async function preScreenPeople(base64Images: string[], apiKey: string): Promise<Set<number>> {
@@ -328,11 +371,18 @@ ${postLines || '  (no posts found)'}`;
     } else if (igConnected && igStatus.username) {
       profileSection = `Instagram Profile:\nUsername: @${igStatus.username}\nFollowers: ${igStatus.followersCount?.toLocaleString() ?? 'unknown'}\nBio: (not loaded yet)`;
     } else {
-      profileSection = 'Instagram: not connected.';
+      profileSection = '';
     }
 
-    // ── Step 1: Generate thumbnails in strict index order ─────────────────────
-    // eventsWithThumbs keeps (origIdx, base64) so positions are unambiguous.
+    // ── Step 1: Determine niche from Instagram profile ONLY (text-only Haiku call) ──
+    // Completely separate from gallery — images never influence this step.
+    let determinedNiche = '';
+    if (igConnected && profileSection) {
+      if (mode === 'replace') setLoadingStep('Analysing your Instagram niche…');
+      determinedNiche = await determineNicheFromProfile(profileSection, apiKey);
+    }
+
+    // ── Step 2: Generate thumbnails in strict index order ─────────────────────
     type ThumbEntry = { origIdx: number; ev: EventCluster; base64: string };
     const eventsWithThumbs: ThumbEntry[] = [];
     for (let i = 0; i < topEvents.length; i++) {
@@ -340,18 +390,15 @@ ${postLines || '  (no posts found)'}`;
       if (b64) eventsWithThumbs.push({ origIdx: i, ev: topEvents[i], base64: b64 });
     }
 
-    // ── Step 2: Pre-screen for people (Haiku) ─────────────────────────────────
-    // Images are sent in eventsWithThumbs order; Haiku returns positions 0..N-1.
+    // ── Step 3: Pre-screen for people (Haiku) ─────────────────────────────────
     if (mode === 'replace') setLoadingStep('Filtering for your best moments…');
     const b64List = eventsWithThumbs.map(e => e.base64);
     const peoplePositions = await preScreenPeople(b64List, apiKey);
-    // Keep only entries whose sequential position passed
     const peopleEvents = eventsWithThumbs.filter((_, pos) => peoplePositions.has(pos));
 
     if (peopleEvents.length === 0) {
-      // No people found in this batch — skip to next set silently
       if (mode === 'replace') {
-        setResult({ niche: '', profile: { username: igStatus.username, followers: igStatus.followersCount }, batches: [] });
+        setResult({ niche: determinedNiche, profile: { username: igStatus.username, followers: igStatus.followersCount }, batches: [] });
         setError('No photos with visible people found in this batch. Tap refresh to try different moments.');
       }
       setLoading(false);
@@ -359,8 +406,8 @@ ${postLines || '  (no posts found)'}`;
       return;
     }
 
-    // ── Step 3: Build user content with ONLY people-filtered images ────────────
-    if (mode === 'replace') setLoadingStep('Analysing your niche… (~20 sec)');
+    // ── Step 4: Build user content with ONLY people-filtered images ────────────
+    if (mode === 'replace') setLoadingStep('Generating reel ideas… (~15 sec)');
 
     const eventLines = peopleEvents
       .map((e, pos) => `  Image ${pos}: ${e.ev.label} (${e.ev.count} items)`)
@@ -382,34 +429,28 @@ ${postLines || '  (no posts found)'}`;
     userContent.push({
       type: 'text',
       text: `Camera roll: ${totalItems} total items across ${evList.length} detected events.
-These ${peopleEvents.length} thumbnail(s) (positions 0–${peopleEvents.length - 1}) all contain visible people and are approved for reel creation:
+These ${peopleEvents.length} thumbnail(s) (positions 0–${peopleEvents.length - 1}) contain visible people and are approved for reel creation:
 ${eventLines}
+${determinedNiche ? `\nCreator niche (pre-determined from Instagram): "${determinedNiche}"` : ''}
 
-Generate niche-focused Reel ideas — one per image position. Use galleryIndices values 0–${peopleEvents.length - 1}. Return JSON only.`,
+Generate one niche-focused Reel idea per image. Use galleryIndices values 0–${peopleEvents.length - 1}. Return JSON only.`,
     });
 
     const systemPrompt = `You are an expert Instagram Reels strategist who creates scroll-stopping, niche-specific content.
 
-═══ STEP 1: IDENTIFY THE NICHE ═══
-${igConnected
-  ? `Instagram IS connected. Determine the niche from the Instagram profile text ONLY:
-  • Bio text is the strongest signal
-  • Post captions and engagement patterns reveal content style
-  • Username may hint at the niche
-  ⛔ DO NOT use the gallery thumbnail images to determine the niche.
-  The photos/videos shown are the creator's personal camera roll — they may include unrelated personal moments.`
-  : `Instagram is NOT connected. Infer the niche from the gallery thumbnails and event dates.`}
-
-Write ONE specific niche sentence:
+${determinedNiche
+  ? `CREATOR NICHE (already determined from Instagram — do NOT change it): "${determinedNiche}"
+Use this exact niche for all suggestions. Echo it back in the "niche" JSON field unchanged.`
+  : `Infer the creator's niche from the gallery thumbnails. Write ONE specific niche sentence:
   ✗ "lifestyle" ✗ "family" ✗ "travel"
   ✓ "first-time mom documenting toddler milestones for Indian-American parents"
   ✓ "solo budget traveller sharing hidden gems in Southeast Asia"
-  ✓ "fitness coach posting workout motivation and transformation content"
+  ✓ "fitness coach posting workout motivation and transformation content"`}
 
-═══ STEP 2: GENERATE REEL IDEAS ═══
-Every image in this message has already been verified to contain at least one visible person. Generate one niche-focused Reel idea per image.
+═══ GENERATE REEL IDEAS ═══
+Every image has been verified to contain a visible person. Generate one niche-branded Reel idea per image.
 
-Transform each event through the niche lens. The event is just raw material — the idea must be niche-branded:
+Transform each event through the niche lens — the event is raw material, not the topic:
   ✗ Event: beach trip → "Fun beach day" / "We had so much fun!"
   ✓ Event: beach trip, niche: mom content → "Beach day survival guide with a toddler" / "POV: packing for the beach with a toddler (15 bags later) 😅"
 
@@ -424,19 +465,19 @@ For each suggestion:
     "Day [X] of [niche challenge/journey]"
     "I finally [niche milestone/thing]"
     "How I [niche achievement] with [constraint]"
-• REASON: name the niche and explain why this will resonate with its audience
-• galleryIndices: position(s) of the image(s) used (0-based, max ${peopleEvents.length - 1})
+• REASON: explain why this resonates with the niche audience
+• galleryIndices: position(s) used (0-based, max ${peopleEvents.length - 1})
 • contentType: vary across photo_montage, video_clip, mixed
 
 Return ONLY valid JSON — no markdown, no code blocks:
 {
-  "niche": "One specific sentence describing the creator's exact niche and target audience",
+  "niche": "Echo the pre-determined niche, or your inferred niche if not provided",
   "suggestions": [
     {
       "id": "s1",
       "title": "Niche-specific reel title",
       "hook": "Scroll-stopping hook under 80 chars",
-      "reason": "Why this resonates with [niche] audience",
+      "reason": "Why this resonates with the niche audience",
       "galleryIndices": [0],
       "contentType": "photo_montage|video_clip|mixed"
     }
@@ -499,16 +540,19 @@ Return ONLY valid JSON — no markdown, no code blocks:
       }));
       const newBatch: SuggestionBatch = { suggestions, analysisEvents: topEvents };
 
+      // Prefer the pre-determined niche (from Instagram text-only call) over AI's echo
+      const finalNiche = determinedNiche || parsed.niche || '';
+
       if (mode === 'replace') {
         setResult({
-          niche: parsed.niche ?? '',
+          niche: finalNiche,
           profile: { username: igStatus.username, followers: igStatus.followersCount },
           batches: [newBatch],
         });
       } else {
         setResult(prev => prev
           ? { ...prev, batches: [...prev.batches, newBatch] }
-          : { niche: parsed.niche ?? '', profile: {}, batches: [newBatch] },
+          : { niche: finalNiche, profile: {}, batches: [newBatch] },
         );
       }
     } catch (err) {
