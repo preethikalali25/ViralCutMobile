@@ -419,12 +419,17 @@ ${postLines || '  (no posts found)'}`;
       .map((e, pos) => `  Image ${pos}: ${e.ev.label} (${e.ev.count} items)`)
       .join('\n');
 
+    // Extract captions so the model can match the creator's writing voice
+    const captions = (igProfileRef.current?.recentPosts ?? [])
+      .map(p => p.caption).filter(Boolean) as string[];
+    const captionsBlock = captions.length > 0
+      ? `\nCREATOR'S ACTUAL INSTAGRAM CAPTIONS — study these to match their exact writing voice, tone, emoji usage, and phrasing style when writing hooks:\n${captions.map((c, i) => `${i + 1}. "${c}"`).join('\n')}`
+      : '';
+
     const userContent: any[] = [];
     userContent.push({
       type: 'text',
-      text: `${profileSection}
-
-⚠️ NICHE SOURCE: ${igConnected ? 'Determine the niche from the Instagram profile ABOVE only. The gallery photos below are raw footage — do NOT use them to identify the niche.' : 'Instagram not connected — use gallery content to infer niche.'}`,
+      text: `${profileSection}${captionsBlock}`,
     });
 
     // Only images that passed the people pre-screen (positions 0..M-1)
@@ -462,15 +467,18 @@ Transform each event through the niche lens — the event is raw material, not t
 
 For each suggestion:
 • TITLE (5–8 words): niche-branded, not a literal thumbnail description
-• HOOK (under 80 chars): use a DIFFERENT format for each:
-    "POV: [relatable niche situation]"
-    "Nobody tells you that [niche truth]..."
-    "Things I wish I knew before [niche activity]"
-    "[Number] signs you're a [niche identity]"
-    "Real talk: [honest niche experience]"
-    "Day [X] of [niche challenge/journey]"
-    "I finally [niche milestone/thing]"
-    "How I [niche achievement] with [constraint]"
+• HOOK (under 80 chars):
+    1. Read the creator's ACTUAL INSTAGRAM CAPTIONS provided in the user message
+    2. Identify their natural voice: tone (funny/serious/motivational/casual), vocabulary,
+       emoji style, how they open sentences, any recurring phrases or patterns
+    3. Write the hook IN THAT EXACT SAME VOICE — it must sound like THIS person wrote it,
+       not a generic social media template
+    4. Vary the hook type across suggestions (question, bold statement, relatable moment,
+       confession, challenge) but always in the creator's own voice
+    ✗ "POV: relatable mom moment" — generic template voice
+    ✓ Match their actual caption style: if they write "ok so i FINALLY did the thing 😭🙌"
+       then hook should sound like "ok so i actually survived this with my toddler 😭✨"
+    If no captions are available, write scroll-stopping hooks suited to the niche
 • REASON: explain why this resonates with the niche audience
 • galleryIndices: position(s) used (0-based, max ${peopleEvents.length - 1})
 • contentType: vary across photo_montage, video_clip, mixed
