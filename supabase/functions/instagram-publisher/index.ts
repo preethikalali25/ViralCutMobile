@@ -159,13 +159,13 @@ Deno.serve(async (req) => {
       );
     }
 
-    // ── 3. Get Status ────────────────────────────────────────────────────────
+    // ── 3. Get Status (pass full:true to also fetch live bio + recent posts) ──
     if (action === 'get_status') {
-      const { userId } = body as { userId: string };
+      const { userId, full } = body as { userId: string; full?: boolean };
 
       const { data: row } = await supabase
         .from('instagram_tokens')
-        .select('instagram_user_id, expires_at, username, profile_picture_url, followers_count')
+        .select('instagram_user_id, access_token, expires_at, username, profile_picture_url, followers_count')
         .eq('user_id', userId)
         .maybeSingle();
 
@@ -177,14 +177,65 @@ Deno.serve(async (req) => {
       }
 
       const isExpired = row.expires_at ? new Date(row.expires_at) < new Date() : false;
+
+      let bio: string | undefined;
+      let followersCount: number = (row.followers_count as number) ?? 0;
+      let username: string = (row.username as string) ?? '';
+      let mediaCount: number | undefined;
+      let recentPosts: unknown[] = [];
+
+      if (full && !isExpired && row.access_token && row.instagram_user_id) {
+        try {
+          const [profileRes, mediaRes] = await Promise.all([
+            fetch(`${IG_GRAPH_URL}/${row.instagram_user_id}?fields=username,biography,followers_count,media_count&access_token=${row.access_token}`,
+              { signal: AbortSignal.timeout(8000) }),
+            fetch(`${IG_GRAPH_URL}/${row.instagram_user_id}/media?fields=id,media_type,timestamp,caption,like_count,comments_count&limit=12&access_token=${row.access_token}`,
+              { signal: AbortSignal.timeout(8000) }),
+          ]);
+
+          if (profileRes.ok) {
+            const pd = await profileRes.json();
+            bio = pd.biography as string | undefined;
+            followersCount = (pd.followers_count as number) ?? followersCount;
+            username = (pd.username as string) ?? username;
+            mediaCount = pd.media_count as number | undefined;
+          }
+
+          if (mediaRes.ok) {
+            const md = await mediaRes.json();
+            recentPosts = ((md.data ?? []) as Record<string, unknown>[]).map((p) => ({
+              type: p.media_type,
+              caption: (p.caption as string | undefined)?.slice(0, 120),
+              likes: p.like_count,
+              comments: p.comments_count,
+              date: (p.timestamp as string).split('T')[0],
+            }));
+          }
+
+          // Refresh cached follower count
+          await supabase.from('instagram_tokens').update({
+            followers_count: followersCount,
+            username,
+            updated_at: new Date().toISOString(),
+          }).eq('user_id', userId);
+
+        } catch (igErr) {
+          console.warn('[get_status] Instagram live fetch failed, using cache:', igErr);
+        }
+      } else {
+        followersCount = (row.followers_count as number) ?? 0;
+        username = (row.username as string) ?? '';
+      }
+
       return new Response(
         JSON.stringify({
           connected: true,
           expired: isExpired,
-          username: row.username,
+          username,
           profilePictureUrl: row.profile_picture_url,
-          followersCount: row.followers_count,
+          followersCount,
           igUserId: row.instagram_user_id,
+          ...(full ? { bio, mediaCount, recentPosts } : {}),
         }),
         { headers: { ...corsHeaders, 'Content-Type': 'application/json' } },
       );

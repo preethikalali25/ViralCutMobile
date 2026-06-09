@@ -8,6 +8,16 @@ export interface InstagramStatus {
   profilePictureUrl?: string;
   followersCount?: number;
   igUserId?: string;
+  // populated when fetched with full:true
+  bio?: string;
+  mediaCount?: number;
+  recentPosts?: Array<{
+    type: string;
+    caption?: string;
+    likes?: number;
+    comments?: number;
+    date: string;
+  }>;
 }
 
 export interface InstagramProfile {
@@ -65,6 +75,12 @@ export async function getInstagramProfile(userId: string): Promise<InstagramProf
 
 export async function getInstagramStatus(userId: string): Promise<InstagramStatus> {
   const { data, error } = await invoke('get_status', { userId });
+  if (error || !data) return { connected: false };
+  return data as InstagramStatus;
+}
+
+export async function getInstagramFullStatus(userId: string): Promise<InstagramStatus> {
+  const { data, error } = await invoke('get_status', { userId, full: true });
   if (error || !data) return { connected: false };
   return data as InstagramStatus;
 }

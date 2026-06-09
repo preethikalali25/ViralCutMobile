@@ -12,7 +12,7 @@ import { Colors, Spacing, Radius, FontSize, FontWeight } from '@/constants/theme
 import { useAuth } from '@/template';
 import { Image } from 'expo-image';
 import { useInstagram } from '@/hooks/useInstagram';
-import { getInstagramProfile, InstagramProfile } from '@/services/instagramService';
+import { getInstagramFullStatus, InstagramStatus } from '@/services/instagramService';
 import { setPendingReelItems, PendingReelItem } from '@/stores/pendingReel';
 
 const { width } = Dimensions.get('window');
@@ -114,7 +114,7 @@ export default function SuggestScreen() {
   const analyzedRef = useRef(false);
   // offset for the next Load More call (advances by BATCH_SIZE each time)
   const loadMoreOffsetRef = useRef(BATCH_SIZE);
-  const igProfileRef = useRef<InstagramProfile | null>(null);
+  const igProfileRef = useRef<InstagramStatus | null>(null);
 
   const [permission, setPermission] = useState<'unknown' | 'granted' | 'denied'>('unknown');
   const [loading, setLoading] = useState(true);
@@ -122,7 +122,7 @@ export default function SuggestScreen() {
   const [loadingMore, setLoadingMore] = useState(false);
   const [result, setResult] = useState<AnalysisResult | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const [liveProfile, setLiveProfile] = useState<InstagramProfile | null>(null);
+  const [liveProfile, setLiveProfile] = useState<InstagramStatus | null>(null);
 
   useEffect(() => { eventsRef.current = events; }, [events]);
 
@@ -233,12 +233,14 @@ export default function SuggestScreen() {
       setLoadingMore(true);
     }
 
-    // Fetch full Instagram profile once per session
+    // Fetch live Instagram profile (bio + posts) once per session via get_status?full=true
     if (igStatus.connected && user.id && !igProfileRef.current) {
       if (mode === 'replace') setLoadingStep('Loading your Instagram profile…');
-      const fetched = await getInstagramProfile(user.id);
-      igProfileRef.current = fetched;
-      if (fetched) setLiveProfile(fetched);
+      const fetched = await getInstagramFullStatus(user.id);
+      if (fetched.connected) {
+        igProfileRef.current = fetched;
+        setLiveProfile(fetched);
+      }
     }
 
     if (mode === 'replace') setLoadingStep('Analysing your niche… (~20 sec)');
