@@ -253,8 +253,47 @@ export default function SuggestScreen() {
       ? evList.slice(start, end)
       : [...evList.slice(start), ...evList.slice(0, end - total)]);
 
+    // ── Build Instagram profile section ────────────────────────────────────────
+    const igProfile = igProfileRef.current;
+    const igConnected = igStatus.connected;
+
+    let profileSection: string;
+    if (igProfile?.bio || (igProfile?.recentPosts?.length ?? 0) > 0) {
+      const postLines = (igProfile!.recentPosts ?? [])
+        .map((p: any, i: number) =>
+          `  ${i + 1}. [${p.type}] ${p.date} | ${p.likes ?? '?'} likes | ${p.comments ?? '?'} comments | "${p.caption ?? 'no caption'}"`,
+        )
+        .join('\n');
+      profileSection = `Instagram Profile:
+Username: @${igProfile!.username ?? igStatus.username ?? 'unknown'}
+Bio: ${igProfile!.bio || 'Not set'}
+Followers: ${igProfile!.followersCount?.toLocaleString() ?? 'unknown'}
+Total posts: ${igProfile!.mediaCount ?? 'unknown'}
+
+Last ${igProfile!.recentPosts?.length ?? 0} posts (engagement data):
+${postLines || '  (no posts found)'}`;
+    } else if (igConnected && igStatus.username) {
+      profileSection = `Instagram Profile:\nUsername: @${igStatus.username}\nFollowers: ${igStatus.followersCount?.toLocaleString() ?? 'unknown'}\nBio: (not loaded yet)`;
+    } else {
+      profileSection = 'Instagram: not connected.';
+    }
+
+    const eventLines = topEvents
+      .map((ev, i) => `  Event ${i}: ${ev.label} (${ev.count} items)`)
+      .join('\n');
+
+    // ── Build userContent: Instagram text FIRST, then images, then event list ──
+    // Putting text first ensures the AI reads the niche context before seeing images.
     const userContent: any[] = [];
 
+    userContent.push({
+      type: 'text',
+      text: `${profileSection}
+
+⚠️ NICHE SOURCE: ${igConnected ? 'Determine the niche from the Instagram profile ABOVE only. The gallery photos below are raw footage — do NOT use them to identify the niche.' : 'Instagram not connected — use gallery content to infer niche.'}`,
+    });
+
+    // Gallery thumbnails (raw footage for reel selection, not niche signals)
     for (let i = 0; i < topEvents.length; i++) {
       const ev = topEvents[i];
       const b64 = ev.base64 ?? (await genThumb(ev));
@@ -266,58 +305,35 @@ export default function SuggestScreen() {
       }
     }
 
-    // Build profile section
-    let profileSection: string;
-    const igProfile = igProfileRef.current;
-    if (igProfile) {
-      const postLines = (igProfile.recentPosts ?? [])
-        .map((p: any, i: number) =>
-          `  ${i + 1}. [${p.type}] ${p.date} | ${p.likes ?? '?'} likes | ${p.comments ?? '?'} comments | "${p.caption ?? 'no caption'}"`,
-        )
-        .join('\n');
-      profileSection = `Instagram Profile:
-Username: @${igProfile.username ?? igStatus.username ?? 'unknown'}
-Bio: ${igProfile.bio || 'Not set'}
-Followers: ${igProfile.followersCount?.toLocaleString() ?? 'unknown'}
-Total posts: ${igProfile.mediaCount ?? 'unknown'}
-
-Last ${igProfile.recentPosts?.length ?? 0} posts:
-${postLines || '  (no posts found)'}`;
-    } else if (igStatus.connected && igStatus.username) {
-      profileSection = `Instagram Profile:\nUsername: @${igStatus.username}\nFollowers: ${igStatus.followersCount?.toLocaleString() ?? 'unknown'}\n(detailed profile unavailable)`;
-    } else {
-      profileSection = 'No Instagram profile connected — infer niche from gallery content only.';
-    }
-
-    const eventLines = topEvents
-      .map((ev, i) => `  Event ${i}: ${ev.label} (${ev.count} items)`)
-      .join('\n');
-
     userContent.push({
       type: 'text',
-      text: `${profileSection}
-
-Camera roll: ${totalItems} total items across ${evList.length} detected events.
-The ${topEvents.length} thumbnails above (indices 0–${topEvents.length - 1}) are the occasions for this batch:
+      text: `Camera roll: ${totalItems} total items across ${evList.length} detected events.
+These ${topEvents.length} thumbnails (indices 0–${topEvents.length - 1}) are the raw footage for reel creation:
 ${eventLines}
 
-Identify the single dominant niche. Then give 8 niche-focused Reel ideas for THESE specific events. Return JSON only.`,
+Now give 8 niche-focused Reel ideas using these events as raw material. Return JSON only.`,
     });
 
     const systemPrompt = `You are an expert Instagram Reels strategist who creates scroll-stopping, niche-specific content.
 
 ═══ STEP 1: IDENTIFY THE NICHE ═══
-Priority order:
-1. If bio text is set → use it as the primary niche signal
-2. If recent posts exist → look at captions + engagement patterns
-3. If Instagram data is thin → look at ALL thumbnails together and find the ONE consistent theme
+${igConnected
+  ? `Instagram IS connected. Determine the niche from the Instagram profile text ONLY:
+  • Bio text is the strongest signal
+  • Post captions and engagement patterns reveal content style
+  • Username may hint at the niche
+  ⛔ DO NOT use the gallery thumbnail images to determine the niche.
+  The photos/videos shown are the creator's personal camera roll — they may include unrelated personal moments.`
+  : `Instagram is NOT connected. Infer the niche from the gallery thumbnails and event dates.`}
 
-Be specific, not vague:
+Write ONE specific niche sentence:
   ✗ "lifestyle" ✗ "family" ✗ "travel"
-  ✓ "first-time mom documenting toddler milestones" ✓ "solo budget traveller in Southeast Asia"
+  ✓ "first-time mom documenting toddler milestones for Indian-American parents"
+  ✓ "solo budget traveller sharing hidden gems in Southeast Asia"
+  ✓ "fitness coach posting workout motivation and transformation content"
 
-═══ STEP 2: GENERATE 8 REEL IDEAS FOR THESE EVENTS ═══
-Transform each gallery event through the niche lens — do NOT just describe the thumbnail:
+═══ STEP 2: GENERATE 8 REEL IDEAS ═══
+Transform each gallery event through the niche lens. The event is just raw material — the idea must be niche-branded:
   ✗ Event: beach trip → "Fun beach day" / "We had so much fun!"
   ✓ Event: beach trip, niche: mom content → "Beach day survival guide with a toddler" / "POV: packing for the beach with a toddler (15 bags later) 😅"
 
