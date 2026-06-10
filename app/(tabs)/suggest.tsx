@@ -300,9 +300,8 @@ ${postLines || '  (no posts found)'}`;
 
     try {
       const client = getSupabaseClient();
-      const { data, error: fnError } = await client.functions.invoke('ai-content-generator', {
+      const { data, error: fnError } = await client.functions.invoke('analyze-gallery', {
         body: {
-          type: 'gallery_analyze',
           profileSection,
           captionsBlock,
           thumbnails: eventsWithThumbs.map(e => ({
