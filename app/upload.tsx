@@ -33,6 +33,8 @@ export default function UploadScreen() {
   const [processingLabel, setProcessingLabel] = useState('');
 
   const autoProcessRef = React.useRef(false);
+  const suggestedHookRef = React.useRef<string | undefined>();
+  const suggestedTitleRef = React.useRef<string | undefined>();
 
   // Pre-populate from "Make This Reel" in suggest screen
   React.useEffect(() => {
@@ -45,6 +47,8 @@ export default function UploadScreen() {
         durationSec: p.durationSec,
       })));
       autoProcessRef.current = pending.autoProcess;
+      suggestedHookRef.current = pending.suggestedHook;
+      suggestedTitleRef.current = pending.suggestedTitle;
     }
   }, []);
 
@@ -110,6 +114,11 @@ export default function UploadScreen() {
       let thumbnail: string = mediaItems[0].previewUri;
       let duration = totalDuration;
 
+      const presetHook = suggestedHookRef.current
+        ? { type: 'question' as const, text: suggestedHookRef.current }
+        : undefined;
+      const presetTitle = suggestedTitleRef.current ?? '';
+
       if (mediaItems.length === 1 && mediaItems[0].type === 'video') {
         // Single video — use directly, no conversion needed
         videoUri = mediaItems[0].uri;
@@ -118,11 +127,12 @@ export default function UploadScreen() {
           : undefined;
 
         const newVideo: Video = {
-          id, title: '', thumbnail,
+          id, title: presetTitle, thumbnail,
           duration: mediaItems[0].durationSec ?? 15,
           status: 'ready', platforms,
           createdAt: new Date().toISOString(),
           videoUri,
+          ...(presetHook ? { hook: presetHook } : {}),
           ...(assetId ? { videoAssetId: assetId } : {}),
         };
         addVideo(newVideo);
@@ -133,10 +143,11 @@ export default function UploadScreen() {
         videoUri = await combineMediaToVideo(items, 3.0);
 
         const newVideo: Video = {
-          id, title: '', thumbnail,
+          id, title: presetTitle, thumbnail,
           duration, status: 'ready', platforms,
           createdAt: new Date().toISOString(),
           videoUri,
+          ...(presetHook ? { hook: presetHook } : {}),
         };
         addVideo(newVideo);
       }

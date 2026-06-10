@@ -403,7 +403,7 @@ ${postLines || '  (no posts found)'}`;
       .map(i => batchEvents[i]?.rep)
       .filter(Boolean)
       .map(g => ({ uri: g.uri, type: g.type, previewUri: g.uri, durationSec: g.durationSec }));
-    if (picks.length) setPendingReelItems(picks, true);
+    if (picks.length) setPendingReelItems(picks, true, s.hook, s.title);
     router.push('/upload');
   };
 

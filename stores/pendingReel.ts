@@ -8,12 +8,19 @@ export type PendingReelItem = {
 type PendingReel = {
   items: PendingReelItem[];
   autoProcess: boolean;
+  suggestedHook?: string;
+  suggestedTitle?: string;
 };
 
 let pending: PendingReel | null = null;
 
-export function setPendingReelItems(items: PendingReelItem[], autoProcess = false): void {
-  pending = { items, autoProcess };
+export function setPendingReelItems(
+  items: PendingReelItem[],
+  autoProcess = false,
+  suggestedHook?: string,
+  suggestedTitle?: string,
+): void {
+  pending = { items, autoProcess, suggestedHook, suggestedTitle };
 }
 
 export function consumePendingReelItems(): PendingReel | null {
