@@ -9,7 +9,7 @@ import * as MediaLibrary from 'expo-media-library';
 import * as ImageManipulator from 'expo-image-manipulator';
 import * as VideoThumbnails from 'expo-video-thumbnails';
 import { Colors, Spacing, Radius, FontSize, FontWeight } from '@/constants/theme';
-import { useAuth } from '@/template';
+import { useAuth, getSupabaseClient } from '@/template';
 import { Image } from 'expo-image';
 import { useInstagram } from '@/hooks/useInstagram';
 import { getInstagramFullStatus, InstagramStatus } from '@/services/instagramService';
@@ -100,98 +100,6 @@ async function genThumb(ev: EventCluster): Promise<string | null> {
   } catch { return null; }
 }
 
-// Determines niche from Instagram profile text ONLY — no images, no gallery context.
-async function determineNicheFromProfile(profileText: string, apiKey: string): Promise<string> {
-  try {
-    const controller = new AbortController();
-    const tid = setTimeout(() => controller.abort(), 15000);
-    const res = await fetch('https://api.anthropic.com/v1/messages', {
-      method: 'POST',
-      signal: controller.signal,
-      headers: {
-        'Content-Type': 'application/json',
-        'x-api-key': apiKey,
-        'anthropic-version': '2023-06-01',
-      },
-      body: JSON.stringify({
-        model: 'claude-haiku-4-5-20251001',
-        max_tokens: 120,
-        messages: [{
-          role: 'user',
-          content: `You are a social media content analyst. Based ONLY on what is EXPLICITLY shown in this Instagram profile, identify the creator's content category and target audience.
-
-${profileText}
-
-Rules:
-- Describe the CONTENT CATEGORY (what they post), not personal circumstances or life story
-- Only use information that is directly stated — do NOT infer emotions, backstory, trauma, mental health, or personal history from emotional language in captions
-- Emotional words like "journey", "growth", "healing", "hard days" in captions = motivational/lifestyle content style, NOT personal trauma
-  ✗ WRONG: "creator sharing their trauma healing journey"
-  ✗ WRONG: "person overcoming difficult childhood experiences"
-  ✓ RIGHT: "motivational lifestyle creator posting personal growth content for young women"
-  ✓ RIGHT: "fitness coach sharing home workout routines for busy South Asian moms"
-  ✓ RIGHT: "travel blogger documenting solo budget trips across Southeast Asia"
-- If there is not enough clear content signal, return: "lifestyle content creator"
-- Return ONLY the niche sentence, nothing else`,
-        }],
-      }),
-    });
-    clearTimeout(tid);
-    if (!res.ok) return '';
-    const data = await res.json();
-    return ((data.content?.[0]?.text as string) ?? '').trim();
-  } catch {
-    return '';
-  }
-}
-
-// Pre-screen: asks Haiku which images (by sequential position) contain a visible person.
-// Returns positions (0-based into the base64 array) that passed. Fails open on error.
-async function preScreenPeople(base64Images: string[], apiKey: string): Promise<Set<number>> {
-  if (base64Images.length === 0) return new Set();
-  const content: any[] = [
-    {
-      type: 'text',
-      text: `You are a photo classifier. I will show you ${base64Images.length} image(s) numbered 0 to ${base64Images.length - 1} in order.
-
-For each image answer: does it contain at least one clearly visible PERSON (face, body, or human silhouette)?
-- YES → include its number
-- NO  → exclude it (objects, food, landscapes, animals, buildings = NO)
-
-Return ONLY valid JSON, no markdown: {"people":[list of image numbers that are YES]}`,
-    },
-  ];
-  for (const b64 of base64Images) {
-    content.push({ type: 'image', source: { type: 'base64', media_type: 'image/jpeg', data: b64 } });
-  }
-  try {
-    const controller = new AbortController();
-    const tid = setTimeout(() => controller.abort(), 20000);
-    const res = await fetch('https://api.anthropic.com/v1/messages', {
-      method: 'POST',
-      signal: controller.signal,
-      headers: {
-        'Content-Type': 'application/json',
-        'x-api-key': apiKey,
-        'anthropic-version': '2023-06-01',
-      },
-      body: JSON.stringify({
-        model: 'claude-haiku-4-5-20251001',
-        max_tokens: 80,
-        messages: [{ role: 'user', content }],
-      }),
-    });
-    clearTimeout(tid);
-    if (!res.ok) return new Set(base64Images.map((_, i) => i)); // fail open
-    const data = await res.json();
-    const text = ((data.content?.[0]?.text as string) ?? '').trim();
-    const cleaned = text.replace(/```json?\n?/g, '').replace(/```/g, '').trim();
-    const parsed = JSON.parse(cleaned);
-    return new Set<number>((parsed.people ?? []).map(Number));
-  } catch {
-    return new Set(base64Images.map((_, i) => i)); // fail open
-  }
-}
 
 export default function SuggestScreen() {
   const router = useRouter();
@@ -317,13 +225,6 @@ export default function SuggestScreen() {
   ) => {
     if (!user?.id) return;
 
-    const apiKey = process.env.EXPO_PUBLIC_ANTHROPIC_API_KEY;
-    if (!apiKey) {
-      setError('Anthropic API key not configured. Add EXPO_PUBLIC_ANTHROPIC_API_KEY to your .env file.');
-      setLoading(false);
-      return;
-    }
-
     if (mode === 'replace') {
       setLoading(true);
       setError(null);
@@ -376,188 +277,66 @@ ${postLines || '  (no posts found)'}`;
       profileSection = '';
     }
 
-    // ── Steps 1 + 2 in parallel: niche determination & thumbnail generation ──────
-    // Niche uses only text (no images), thumbnails use only local files (no API).
-    // Both can run simultaneously; step 3 (people pre-screen) needs both results.
-    if (mode === 'replace') setLoadingStep('Analysing niche & scanning moments…');
+    if (mode === 'replace') setLoadingStep('Scanning your gallery moments…');
 
     type ThumbEntry = { origIdx: number; ev: EventCluster; base64: string };
 
-    const [determinedNiche, eventsWithThumbs] = await Promise.all([
-      // Step 1: text-only Haiku call — determines niche from Instagram profile
-      (igConnected && profileSection)
-        ? determineNicheFromProfile(profileSection, apiKey)
-        : Promise.resolve(''),
+    // Generate thumbnails for all batch events
+    const eventsWithThumbs: ThumbEntry[] = (await Promise.all(
+      topEvents.map(async (ev, i) => {
+        const b64 = ev.base64 ?? (await genThumb(ev));
+        return b64 ? { origIdx: i, ev, base64: b64 } as ThumbEntry : null;
+      }),
+    )).filter((x): x is ThumbEntry => x !== null);
 
-      // Step 2: parallel thumbnail generation for all batch events
-      Promise.all(
-        topEvents.map(async (ev, i) => {
-          const b64 = ev.base64 ?? (await genThumb(ev));
-          return b64 ? { origIdx: i, ev, base64: b64 } as ThumbEntry : null;
-        }),
-      ).then(results => results.filter((x): x is ThumbEntry => x !== null)),
-    ]);
+    if (mode === 'replace') setLoadingStep('Generating reel ideas… (~20 sec)');
 
-    // ── Step 3: Pre-screen for people (Haiku) — needs thumbnails from step 2 ──
-    if (mode === 'replace') setLoadingStep('Filtering for your best moments…');
-    const b64List = eventsWithThumbs.map(e => e.base64);
-    const peoplePositions = await preScreenPeople(b64List, apiKey);
-    const peopleEvents = eventsWithThumbs.filter((_, pos) => peoplePositions.has(pos));
-
-    if (peopleEvents.length === 0) {
-      if (mode === 'replace') {
-        setResult({ niche: determinedNiche, profile: { username: igStatus.username, followers: igStatus.followersCount }, batches: [] });
-        setError('No photos with visible people found in this batch. Tap refresh to try different moments.');
-      }
-      setLoading(false);
-      setLoadingMore(false);
-      return;
-    }
-
-    // ── Step 4: Build user content with ONLY people-filtered images ────────────
-    if (mode === 'replace') setLoadingStep('Generating reel ideas… (~15 sec)');
-
-    const eventLines = peopleEvents
-      .map((e, pos) => `  Image ${pos}: ${e.ev.label} (${e.ev.count} items)`)
-      .join('\n');
-
-    // Extract captions so the model can match the creator's writing voice
+    // Extract captions so the edge function can match the creator's writing voice
     const captions = (igProfileRef.current?.recentPosts ?? [])
       .map(p => p.caption).filter(Boolean) as string[];
     const captionsBlock = captions.length > 0
       ? `\nCREATOR'S ACTUAL INSTAGRAM CAPTIONS — study these to match their exact writing voice, tone, emoji usage, and phrasing style when writing hooks:\n${captions.map((c, i) => `${i + 1}. "${c}"`).join('\n')}`
       : '';
 
-    const userContent: any[] = [];
-    userContent.push({
-      type: 'text',
-      text: `${profileSection}${captionsBlock}`,
-    });
-
-    // Only images that passed the people pre-screen (positions 0..M-1)
-    for (const { base64 } of peopleEvents) {
-      userContent.push({ type: 'image', source: { type: 'base64', media_type: 'image/jpeg', data: base64 } });
-    }
-
-    userContent.push({
-      type: 'text',
-      text: `Camera roll: ${totalItems} total items across ${evList.length} detected events.
-These ${peopleEvents.length} thumbnail(s) (positions 0–${peopleEvents.length - 1}) contain visible people and are approved for reel creation:
-${eventLines}
-${determinedNiche ? `\nCreator niche (pre-determined from Instagram): "${determinedNiche}"` : ''}
-
-Generate one niche-focused Reel idea per image. Use galleryIndices values 0–${peopleEvents.length - 1}. Return JSON only.`,
-    });
-
-    const systemPrompt = `You are an expert Instagram Reels strategist who creates scroll-stopping, niche-specific content.
-
-${determinedNiche
-  ? `CREATOR NICHE (already determined from Instagram — do NOT change it): "${determinedNiche}"
-Use this exact niche for all suggestions. Echo it back in the "niche" JSON field unchanged.`
-  : `Infer the creator's niche from the gallery thumbnails. Write ONE specific niche sentence:
-  ✗ "lifestyle" ✗ "family" ✗ "travel"
-  ✓ "first-time mom documenting toddler milestones for Indian-American parents"
-  ✓ "solo budget traveller sharing hidden gems in Southeast Asia"
-  ✓ "fitness coach posting workout motivation and transformation content"`}
-
-═══ GENERATE REEL IDEAS ═══
-Every image has been verified to contain a visible person. Generate one niche-branded Reel idea per image.
-
-Transform each event through the niche lens — the event is raw material, not the topic:
-  ✗ Event: beach trip → "Fun beach day" / "We had so much fun!"
-  ✓ Event: beach trip, niche: mom content → "Beach day survival guide with a toddler" / "POV: packing for the beach with a toddler (15 bags later) 😅"
-
-For each suggestion:
-• TITLE (5–8 words): niche-branded, not a literal thumbnail description
-• HOOK (under 80 chars):
-    1. Read the creator's ACTUAL INSTAGRAM CAPTIONS provided in the user message
-    2. Identify their natural voice: tone (funny/serious/motivational/casual), vocabulary,
-       emoji style, how they open sentences, any recurring phrases or patterns
-    3. Write the hook IN THAT EXACT SAME VOICE — it must sound like THIS person wrote it,
-       not a generic social media template
-    4. Vary the hook type across suggestions (question, bold statement, relatable moment,
-       confession, challenge) but always in the creator's own voice
-    ✗ "POV: relatable mom moment" — generic template voice
-    ✓ Match their actual caption style: if they write "ok so i FINALLY did the thing 😭🙌"
-       then hook should sound like "ok so i actually survived this with my toddler 😭✨"
-    If no captions are available, write scroll-stopping hooks suited to the niche
-• REASON: explain why this resonates with the niche audience
-• galleryIndices: position(s) used (0-based, max ${peopleEvents.length - 1})
-• contentType: vary across photo_montage, video_clip, mixed
-
-Return ONLY valid JSON — no markdown, no code blocks:
-{
-  "niche": "Echo the pre-determined niche, or your inferred niche if not provided",
-  "suggestions": [
-    {
-      "id": "s1",
-      "title": "Niche-specific reel title",
-      "hook": "Scroll-stopping hook under 80 chars",
-      "reason": "Why this resonates with the niche audience",
-      "galleryIndices": [0],
-      "contentType": "photo_montage|video_clip|mixed"
-    }
-  ]
-}`;
-
     try {
-      const controller = new AbortController();
-      const timeoutId = setTimeout(() => controller.abort(), 90000);
-      const res = await fetch('https://api.anthropic.com/v1/messages', {
-        method: 'POST',
-        signal: controller.signal,
-        headers: {
-          'Content-Type': 'application/json',
-          'x-api-key': apiKey,
-          'anthropic-version': '2023-06-01',
+      const client = getSupabaseClient();
+      const { data, error: fnError } = await client.functions.invoke('analyze-gallery', {
+        body: {
+          profileSection,
+          captionsBlock,
+          thumbnails: eventsWithThumbs.map(e => ({
+            origIdx: e.origIdx,
+            label: e.ev.label,
+            count: e.ev.count,
+            base64: e.base64,
+          })),
+          totalItems,
+          evCount: evList.length,
+          igConnected,
         },
-        body: JSON.stringify({
-          model: 'claude-sonnet-4-6',
-          max_tokens: 4096,
-          system: systemPrompt,
-          messages: [{ role: 'user', content: userContent }],
-          temperature: 0.7,
-        }),
       });
 
-      clearTimeout(timeoutId);
-
-      if (!res.ok) {
-        const errText = await res.text();
-        if (mode === 'replace') setError(`AI error: ${errText}`);
-        else setLoadingMore(false);
-        setLoading(false);
-        return;
-      }
-
-      const aiData = await res.json();
-      const rawText = ((aiData.content?.[0]?.text as string) ?? '').trim();
-
-      let parsed: { niche?: string; suggestions?: Suggestion[] };
-      try {
-        const cleaned = rawText.replace(/```json?\n?/g, '').replace(/```/g, '').trim();
-        parsed = JSON.parse(cleaned);
-      } catch {
-        if (mode === 'replace') setError('AI returned invalid format. Please try again.');
+      if (fnError || data?.error) {
+        const msg = data?.error ?? fnError?.message ?? 'Unknown error';
+        if (mode === 'replace') setError(`Error: ${msg}`);
         setLoading(false);
         setLoadingMore(false);
         return;
       }
 
-      const allSuggestions: Suggestion[] = parsed.suggestions
-        ?? (Array.isArray(parsed) ? parsed as unknown as Suggestion[] : []);
+      if (data?.empty) {
+        if (mode === 'replace') {
+          setResult({ niche: data.niche ?? '', profile: { username: igStatus.username, followers: igStatus.followersCount }, batches: [] });
+          setError('No photos with visible people found in this batch. Tap refresh to try different moments.');
+        }
+        setLoading(false);
+        setLoadingMore(false);
+        return;
+      }
 
-      // Map model positions (0..M-1 within peopleEvents) back to original topEvents indices
-      const suggestions: Suggestion[] = allSuggestions.map(s => ({
-        ...s,
-        galleryIndices: (s.galleryIndices ?? [])
-          .map(pos => peopleEvents[pos]?.origIdx)
-          .filter((idx): idx is number => idx !== undefined),
-      }));
+      const suggestions: Suggestion[] = data?.suggestions ?? [];
       const newBatch: SuggestionBatch = { suggestions, analysisEvents: topEvents };
-
-      // Prefer the pre-determined niche (from Instagram text-only call) over AI's echo
-      const finalNiche = determinedNiche || parsed.niche || '';
+      const finalNiche = data?.niche ?? '';
 
       if (mode === 'replace') {
         setResult({
