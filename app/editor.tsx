@@ -24,6 +24,7 @@ import { getInstagramFullStatus } from '@/services/instagramService';
 import { uploadVideoToStorage } from '@/services/tiktokService';
 import { burnHookOverlay } from '@/services/videoOverlayService';
 import * as FileSystem from 'expo-file-system';
+import * as Sharing from 'expo-sharing';
 import Slider from '@react-native-community/slider';
 
 type Tab = 'hook' | 'caption' | 'audio' | 'platforms';
@@ -214,6 +215,7 @@ export default function EditorScreen() {
   const [uploadProgress, setUploadProgress] = useState(0);
   const [burningOverlay, setBurningOverlay] = useState(false);
   const [burnAudioLabel, setBurnAudioLabel] = useState<string | null>(null);
+  const [preparingShareToApp, setPreparingShareToApp] = useState(false);
   const [generatingThumbnail, setGeneratingThumbnail] = useState(false);
   const [thumbnailUri, setThumbnailUri] = useState<string | null>(video?.thumbnail ?? null);
 
@@ -621,12 +623,13 @@ export default function EditorScreen() {
     ]);
   };
 
-  const prepareVideoForPublish = async (
+  // Burn hook text + background audio onto the video; returns a local file URI.
+  // Used by both the API publish path and the share-to-app path.
+  const prepareVideoLocally = async (
     videoUri: string,
     hookText: string,
-  ): Promise<{ videoUrl?: string; error?: string }> => {
+  ): Promise<{ localUri?: string; error?: string }> => {
     try {
-      setUploadingToStorage(true);
       setBurningOverlay(true);
       setBurnAudioLabel('searching…');
 
@@ -634,38 +637,27 @@ export default function EditorScreen() {
         ? `ph://${video.videoAssetId}`
         : videoUri;
 
-      // Determine which song to use: AI pick > user selection > first MOCK track.
       const snap2 = snapshotEditorState();
       const audioSong = snap2.audio ?? {
         title: MOCK_TRENDING_AUDIO[0].title,
         artist: MOCK_TRENDING_AUDIO[0].artist,
       };
 
-      // 1. Await any in-flight prefetch so we don't race with it.
-      //    audioFetchPromise.current is always set to the latest prefetch, resolved or pending.
-      setBurnAudioLabel(`Finding music…`);
+      setBurnAudioLabel('Finding music…');
       const prefetchedUri = await audioFetchPromise.current;
-
-      // 2. Prefer in-flight result → ref (latest state, avoids stale closure) → state.
       let backgroundAudioUri: string | undefined =
         prefetchedUri ?? cachedAudioUriRef.current ?? cachedAudioUri ?? undefined;
 
-      // 3. If still nothing, do a fresh search. Try the AI/selected song first,
-      //    then fall back through MOCK_TRENDING_AUDIO to guarantee we always have music.
       if (!backgroundAudioUri) {
         const fallbackSongs = [
           { title: audioSong.title, artist: audioSong.artist },
           ...MOCK_TRENDING_AUDIO.map(s => ({ title: s.title, artist: s.artist })),
         ];
-
         for (const song of fallbackSongs) {
           setBurnAudioLabel(`Searching: ${song.title}…`);
           try {
             const previewUrl = await fetchItunesPreviewUrl(song.title, song.artist);
-            if (!previewUrl) {
-              console.warn('[burn] no iTunes preview for:', song.title, song.artist);
-              continue;
-            }
+            if (!previewUrl) { console.warn('[burn] no preview for:', song.title); continue; }
             setBurnAudioLabel(`Downloading: ${song.title}…`);
             const dest = `${FileSystem.cacheDirectory}bgburn_${Date.now()}.m4a`;
             const dl = await FileSystem.downloadAsync(previewUrl, dest);
@@ -673,34 +665,76 @@ export default function EditorScreen() {
               backgroundAudioUri = dl.uri;
               cachedAudioUriRef.current = dl.uri;
               setCachedAudioUri(dl.uri);
-              console.log('[burn] fallback audio ready:', song.title, dl.uri);
               break;
             }
-            console.warn('[burn] download status', dl.status, 'for', song.title);
           } catch (audioErr) {
             console.warn('[burn] fetch error for', song.title, audioErr);
           }
         }
       }
 
-      const label = backgroundAudioUri
+      setBurnAudioLabel(backgroundAudioUri
         ? `${audioSong.title} – ${audioSong.artist}`
-        : 'no music (preview unavailable)';
-      setBurnAudioLabel(label);
-      console.log('[burn] backgroundAudioUri going to native:', backgroundAudioUri ?? 'NONE');
+        : 'no music (preview unavailable)');
 
       const { outputUri: burnedUri } = await burnHookOverlay(burnUri, hookText, backgroundAudioUri, originalVolume, bgVolume);
       setBurningOverlay(false);
-      const resolvedUri = await resolveVideoUri(burnedUri);
-      const { publicUrl, error } = await uploadVideoToStorage(resolvedUri, user!.id, video.id, (p) => setUploadProgress(p));
+      const localUri = await resolveVideoUri(burnedUri);
+      return { localUri };
+    } catch (e: any) {
+      setBurningOverlay(false);
+      return { error: String(e?.message ?? e) };
+    }
+  };
+
+  const prepareVideoForPublish = async (
+    videoUri: string,
+    hookText: string,
+  ): Promise<{ videoUrl?: string; error?: string }> => {
+    setUploadingToStorage(true);
+    const { localUri, error: burnError } = await prepareVideoLocally(videoUri, hookText);
+    if (burnError || !localUri) {
+      setUploadingToStorage(false);
+      return { error: burnError ?? 'Processing failed' };
+    }
+    try {
+      const { publicUrl, error } = await uploadVideoToStorage(localUri, user!.id, video.id, (p) => setUploadProgress(p));
       setUploadingToStorage(false);
       if (error || !publicUrl) return { error: error ?? 'Upload failed' };
       return { videoUrl: publicUrl };
     } catch (e: any) {
-      setBurningOverlay(false);
       setUploadingToStorage(false);
       return { error: String(e?.message ?? e) };
     }
+  };
+
+  const handleShareToInstagramApp = async () => {
+    const snap = snapshotEditorState();
+    if (!video?.videoUri) { showAlert('No Video', 'No video file to share.'); return; }
+
+    const isAvailable = await Sharing.isAvailableAsync();
+    if (!isAvailable) {
+      showAlert('Unavailable', 'Sharing is not available on this device.');
+      return;
+    }
+
+    setPreparingShareToApp(true);
+    const { localUri, error } = await prepareVideoLocally(video.videoUri, snap.hook?.text ?? '');
+    if (error || !localUri) {
+      setPreparingShareToApp(false);
+      showAlert('Error', error ?? 'Could not prepare video for sharing.');
+      return;
+    }
+
+    try {
+      await Sharing.shareAsync(localUri, { mimeType: 'video/mp4', UTI: 'public.movie' });
+      updateVideo(video.id, { ...snap, title: videoTitle, status: 'published', publishedAt: new Date().toISOString() });
+      setShowInstagramSheet(false);
+      router.push('/(tabs)/library');
+    } catch (e) {
+      console.warn('[shareToApp]', e);
+    }
+    setPreparingShareToApp(false);
   };
 
   const handlePublish = () => {
@@ -1226,7 +1260,7 @@ export default function EditorScreen() {
           <Pressable
             style={StyleSheet.absoluteFillObject}
             onPress={() => {
-              if (instagram.publishState.phase === 'idle' && !uploadingToStorage)
+              if (instagram.publishState.phase === 'idle' && !uploadingToStorage && !preparingShareToApp)
                 setShowInstagramSheet(false);
             }}
           />
@@ -1243,29 +1277,59 @@ export default function EditorScreen() {
                   {instagram.status.username ? `@${instagram.status.username}` : 'your account'}
                 </Text>
               </View>
-              {instagram.publishState.phase === 'idle' && !uploadingToStorage ? (
+              {instagram.publishState.phase === 'idle' && !uploadingToStorage && !preparingShareToApp ? (
                 <Pressable onPress={() => setShowInstagramSheet(false)} hitSlop={8}>
                   <MaterialIcons name="close" size={20} color={Colors.textMuted} />
                 </Pressable>
               ) : null}
             </View>
 
-            {instagram.publishState.phase === 'idle' && !uploadingToStorage ? (
+            {instagram.publishState.phase === 'idle' && !uploadingToStorage && !preparingShareToApp ? (
               <>
-                <View style={styles.sheetNote}>
-                  <MaterialIcons name="info-outline" size={13} color={Colors.textMuted} />
-                  <Text style={styles.sheetNoteText}>
-                    The video will be posted as an Instagram Reel. Your caption and hashtags will be included.
-                  </Text>
+                {/* Option 1: Open in Instagram App (recommended — native reach) */}
+                <View style={styles.reachTip}>
+                  <MaterialIcons name="trending-up" size={14} color={Colors.emerald} />
+                  <Text style={styles.reachTipText}>Gets more reach — posts as native content</Text>
                 </View>
                 <Pressable
                   style={({ pressed }) => [styles.tiktokPublishBtn, { backgroundColor: '#e1306c' }, pressed && { opacity: 0.85 }]}
-                  onPress={handleInstagramPublish}
+                  onPress={handleShareToInstagramApp}
                 >
                   <MaterialCommunityIcons name="instagram" size={18} color="#fff" />
-                  <Text style={styles.tiktokPublishBtnText}>Post as Reel</Text>
+                  <Text style={styles.tiktokPublishBtnText}>Open in Instagram App</Text>
                 </Pressable>
+
+                <View style={styles.orDivider}>
+                  <View style={styles.orLine} />
+                  <Text style={styles.orText}>or</Text>
+                  <View style={styles.orLine} />
+                </View>
+
+                {/* Option 2: API publish (fully automated) */}
+                <Pressable
+                  style={({ pressed }) => [styles.apiPublishBtn, pressed && { opacity: 0.85 }]}
+                  onPress={handleInstagramPublish}
+                >
+                  <MaterialIcons name="cloud-upload" size={16} color={Colors.textSecondary} />
+                  <Text style={styles.apiPublishBtnText}>Post via API (automated)</Text>
+                </Pressable>
+                <View style={styles.sheetNote}>
+                  <MaterialIcons name="info-outline" size={13} color={Colors.textMuted} />
+                  <Text style={styles.sheetNoteText}>
+                    API posts may get less reach. Caption and hashtags will be included automatically.
+                  </Text>
+                </View>
               </>
+            ) : null}
+
+            {preparingShareToApp ? (
+              <View style={styles.sheetPhase}>
+                <ActivityIndicator size="large" color="#e1306c" />
+                <Text style={styles.sheetPhaseTitle}>Preparing video…</Text>
+                <Text style={styles.sheetPhaseSub}>
+                  {burnAudioLabel ? `🎵 ${burnAudioLabel}` : 'Burning hook overlay…'}
+                </Text>
+              </View>
             ) : null}
 
             {uploadingToStorage ? (
@@ -1876,4 +1940,22 @@ const styles = StyleSheet.create({
   },
   noVideoText: { fontSize: FontSize.lg, fontWeight: FontWeight.bold, color: '#fff', includeFontPadding: false },
   noVideoSub: { fontSize: FontSize.sm, color: 'rgba(255,255,255,0.7)', textAlign: 'center', paddingHorizontal: 32, includeFontPadding: false },
+
+  reachTip: {
+    flexDirection: 'row', alignItems: 'center', gap: 5,
+    backgroundColor: Colors.emerald + '15', borderRadius: Radius.sm,
+    paddingHorizontal: 10, paddingVertical: 6,
+    borderWidth: 1, borderColor: Colors.emerald + '33',
+  },
+  reachTipText: { fontSize: FontSize.xs, color: Colors.emerald, fontWeight: FontWeight.semibold, includeFontPadding: false },
+  orDivider: { flexDirection: 'row', alignItems: 'center', gap: Spacing.sm, marginVertical: 2 },
+  orLine: { flex: 1, height: 1, backgroundColor: Colors.surfaceBorder },
+  orText: { fontSize: FontSize.xs, color: Colors.textMuted, includeFontPadding: false },
+  apiPublishBtn: {
+    flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8,
+    borderRadius: Radius.full, paddingVertical: 12,
+    borderWidth: 1.5, borderColor: Colors.surfaceBorder,
+    backgroundColor: Colors.surface,
+  },
+  apiPublishBtnText: { fontSize: FontSize.sm, fontWeight: FontWeight.semibold, color: Colors.textSecondary, includeFontPadding: false },
 });
