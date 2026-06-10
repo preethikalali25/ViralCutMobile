@@ -737,21 +737,23 @@ RCT_EXPORT_METHOD(combineMediaToVideo:(NSArray<NSDictionary *> *)mediaItems
                 gen.requestedTimeToleranceAfter  = CMTimeMake(1, fps);
 
                 for (int f = 0; f < nf && !aborted; f++) {
-                    CMTime vt = CMTimeMakeWithSeconds((double)f / fps, 600);
-                    NSError *iErr = nil;
-                    CGImageRef cg = [gen copyCGImageAtTime:vt actualTime:nil error:&iErr];
-                    if (!cg) continue;
-                    UIImage *frameImg = [UIImage imageWithCGImage:cg];
-                    CGImageRelease(cg);
+                    @autoreleasepool {
+                        CMTime vt = CMTimeMakeWithSeconds((double)f / fps, 600);
+                        NSError *iErr = nil;
+                        CGImageRef cg = [gen copyCGImageAtTime:vt actualTime:nil error:&iErr];
+                        if (!cg) continue;
+                        UIImage *frameImg = [UIImage imageWithCGImage:cg];
+                        CGImageRelease(cg);
 
-                    CVPixelBufferRef pb = [self createPixelBufferFromImage:frameImg targetSize:sz];
-                    if (!pb) continue;
+                        CVPixelBufferRef pb = [self createPixelBufferFromImage:frameImg targetSize:sz];
+                        if (!pb) continue;
 
-                    CMTime t = CMTimeMake(totalFrames + f, fps);
-                    NSUInteger w = 0;
-                    while (!vIn.isReadyForMoreMediaData && !aborted) { [NSThread sleepForTimeInterval:0.01]; if (++w>500){aborted=YES;break;} }
-                    if (!aborted && ![adaptor appendPixelBuffer:pb withPresentationTime:t]) aborted = YES;
-                    CVPixelBufferRelease(pb);
+                        CMTime t = CMTimeMake(totalFrames + f, fps);
+                        NSUInteger w = 0;
+                        while (!vIn.isReadyForMoreMediaData && !aborted) { [NSThread sleepForTimeInterval:0.01]; if (++w>500){aborted=YES;break;} }
+                        if (!aborted && ![adaptor appendPixelBuffer:pb withPresentationTime:t]) aborted = YES;
+                        CVPixelBufferRelease(pb);
+                    }
                 }
                 totalFrames += nf;
             }
