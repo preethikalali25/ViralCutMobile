@@ -94,7 +94,7 @@ function cleanTitle(raw: string): string {
     .replace(/[_\-]+/g, ' ')
     .replace(/\b\d{4,}\b/g, '')
     .replace(/\s{2,}/g, ' ')
-    .trim() || 'my video';
+    .trim();
 }
 
 async function fetchItunesPreviewUrl(title: string, artist: string): Promise<string | null> {
