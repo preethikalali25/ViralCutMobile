@@ -118,18 +118,20 @@ async function determineNicheFromProfile(profileText: string, apiKey: string): P
         max_tokens: 120,
         messages: [{
           role: 'user',
-          content: `Analyse this Instagram profile and write ONE specific sentence describing the creator's exact niche and target audience.
+          content: `You are a social media content analyst. Based ONLY on what is EXPLICITLY shown in this Instagram profile, identify the creator's content category and target audience.
 
 ${profileText}
 
 Rules:
-- Use ONLY the profile data above — do not guess from names or generic patterns
-- Be specific, not generic
-  ✗ "lifestyle" ✗ "fitness" ✗ "family" ✗ "travel"
-  ✓ "fitness coach posting home workout motivation for busy South Asian moms"
-  ✓ "first-time mom documenting toddler milestones for Indian-American parents"
-  ✓ "solo budget traveller sharing hidden gems in Southeast Asia"
-- If bio is empty, infer from post captions and engagement patterns
+- Describe the CONTENT CATEGORY (what they post), not personal circumstances or life story
+- Only use information that is directly stated — do NOT infer emotions, backstory, trauma, mental health, or personal history from emotional language in captions
+- Emotional words like "journey", "growth", "healing", "hard days" in captions = motivational/lifestyle content style, NOT personal trauma
+  ✗ WRONG: "creator sharing their trauma healing journey"
+  ✗ WRONG: "person overcoming difficult childhood experiences"
+  ✓ RIGHT: "motivational lifestyle creator posting personal growth content for young women"
+  ✓ RIGHT: "fitness coach sharing home workout routines for busy South Asian moms"
+  ✓ RIGHT: "travel blogger documenting solo budget trips across Southeast Asia"
+- If there is not enough clear content signal, return: "lifestyle content creator"
 - Return ONLY the niche sentence, nothing else`,
         }],
       }),
