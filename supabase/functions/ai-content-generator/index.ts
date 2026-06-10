@@ -22,23 +22,20 @@ IMPORTANT RULES:
 
 function buildUserContent(
   userPrompt: string,
-  videoFrameBase64?: string,
-  videoFrameMime = 'image/jpeg',
+  frames: Array<{ base64: string; mime: string }>,
 ) {
-  if (videoFrameBase64) {
-    return [
-      {
-        type: 'image',
-        source: {
-          type: 'base64',
-          media_type: videoFrameMime,
-          data: videoFrameBase64,
-        },
+  if (frames.length === 0) return userPrompt;
+  return [
+    ...frames.map(f => ({
+      type: 'image',
+      source: {
+        type: 'base64',
+        media_type: f.mime,
+        data: f.base64,
       },
-      { type: 'text', text: userPrompt },
-    ];
-  }
-  return userPrompt;
+    })),
+    { type: 'text', text: userPrompt },
+  ];
 }
 
 Deno.serve(async (req) => {
@@ -61,19 +58,34 @@ Deno.serve(async (req) => {
       videoTitle: rawTitle,
       hookType,
       platforms,
+      videoFrames,
       videoFrameBase64,
       videoFrameMime = 'image/jpeg',
+      creatorCaptions,
     } = body;
 
     const videoTitle = sanitizeTitle(rawTitle ?? '');
-    // Reject frames larger than 200KB base64 (~150KB image) to avoid timeouts
-    const hasFrame = typeof videoFrameBase64 === 'string'
-      && videoFrameBase64.length > 100
-      && videoFrameBase64.length < 200_000;
-    console.log(`[ai-content-generator] type=${type} hasFrame=${hasFrame} title="${videoTitle}"`);
+
+    // Build unified frames array — prefer new videoFrames array, fall back to legacy single-frame fields
+    const rawFrames: Array<{ base64: string; mime: string }> = (() => {
+      if (Array.isArray(videoFrames) && videoFrames.length > 0) {
+        return (videoFrames as Array<{ base64: string; mime: string }>)
+          .filter(f => typeof f.base64 === 'string' && f.base64.length > 100 && f.base64.length < 200_000)
+          .slice(0, 3);
+      }
+      if (typeof videoFrameBase64 === 'string' && videoFrameBase64.length > 100 && videoFrameBase64.length < 200_000) {
+        return [{ base64: videoFrameBase64, mime: videoFrameMime ?? 'image/jpeg' }];
+      }
+      return [];
+    })();
+
+    const hasFrame = rawFrames.length > 0;
+    console.log(`[ai-content-generator] type=${type} hasFrame=${hasFrame} frames=${rawFrames.length} title="${videoTitle}"`);
 
     const visualContext = hasFrame
-      ? 'You are given a screenshot/frame captured directly from the video. Analyse the visual scene — subject, setting, action, emotion, colours, mood — and use this as the PRIMARY source of inspiration.'
+      ? rawFrames.length > 1
+        ? `You are given ${rawFrames.length} frames captured at different points in the video (beginning, middle, and near end). Analyse all frames — subject, setting, action, emotion, colours, mood across the timeline — and use this as the PRIMARY source of inspiration.`
+        : 'You are given a screenshot/frame captured directly from the video. Analyse the visual scene — subject, setting, action, emotion, colours, mood — and use this as the PRIMARY source of inspiration.'
       : videoTitle
       ? 'No video frame is available. Base your response on the video title and general short-form video best practices.'
       : 'No video frame or title is available. Write based on general short-form video best practices for lifestyle, creativity, and everyday moments.';
@@ -89,15 +101,20 @@ Deno.serve(async (req) => {
       };
       const hookStyle = hookStyleMap[hookType] ?? 'a compelling hook';
 
+      const captionsBlock = Array.isArray(creatorCaptions) && creatorCaptions.length > 0
+        ? `\nCREATOR'S INSTAGRAM CAPTIONS — study these to match their exact writing voice, tone, emoji usage, and phrasing style:\n${(creatorCaptions as string[]).map((c, i) => `${i + 1}. "${c}"`).join('\n')}\nWrite the hook IN THIS EXACT VOICE — it must sound like this creator wrote it, not a generic template.`
+        : '';
+
       systemPrompt = `You are an expert viral short-form video hook writer for TikTok, Instagram Reels, and YouTube Shorts.
 Your hooks are punchy, positive, and under 80 characters.
 ${visualContext}
+${captionsBlock}
 ${SAFETY_RULES}
 Return ONLY the hook text — no quotes, no labels, no explanation.`;
 
       userPrompt = hasFrame
-        ? `Look at this video frame and identify the specific subject (person, child, pet, object, scene, etc.) and action.
-Write ${hookStyle} that references the ACTUAL content visible in the frame.
+        ? `Look at ${rawFrames.length > 1 ? 'these video frames' : 'this video frame'} and identify the specific subject (person, child, pet, object, scene, etc.) and action.
+Write ${hookStyle} that references the ACTUAL content visible in the ${rawFrames.length > 1 ? 'frames' : 'frame'}.
 Video title for context: "${videoTitle || 'unknown'}". Hook style: ${hookType}.
 Under 80 characters. No offensive content.`
         : videoTitle
@@ -120,7 +137,7 @@ Return a JSON object with exactly two fields:
 Return ONLY valid JSON — no markdown, no code blocks, no extra text.`;
 
       userPrompt = hasFrame
-        ? `Write an optimised caption and hashtags based on what you see in this video frame.
+        ? `Write an optimised caption and hashtags based on what you see in ${rawFrames.length > 1 ? 'these video frames' : 'this video frame'}.
 Video title: "${videoTitle || 'unknown'}". Target platforms: ${platformList}.
 Analyse the visual scene — mood, subject, action — and write authentic, engaging copy that drives comments and shares.`
         : videoTitle
@@ -145,7 +162,7 @@ Return ONLY valid JSON — no markdown, no code blocks, no extra text.`;
       userPrompt = hasFrame
         ? `Pick the single BEST trending song for this short-form video.
 Video title: "${videoTitle || 'unknown'}". Target platforms: ${platformList}.
-Consider the visual mood, energy, subject, and setting shown in the frame when choosing.`
+Consider the visual mood, energy, subject, and setting shown in ${rawFrames.length > 1 ? 'the frames' : 'the frame'} when choosing.`
         : videoTitle
         ? `Pick the single BEST trending song for a short-form video titled: "${videoTitle}".
 Target platforms: ${platformList}.
@@ -185,11 +202,7 @@ Return ONLY the title, 4–10 words.`;
       );
     }
 
-    const userContent = buildUserContent(
-      userPrompt,
-      hasFrame ? videoFrameBase64 : undefined,
-      videoFrameMime,
-    );
+    const userContent = buildUserContent(userPrompt, rawFrames);
 
     const aiResponse = await fetch(ANTHROPIC_API_URL, {
       method: 'POST',

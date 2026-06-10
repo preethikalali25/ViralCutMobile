@@ -20,6 +20,7 @@ import { formatDuration } from '@/services/formatters';
 import { FunctionsHttpError } from '@supabase/supabase-js';
 import { useTikTok } from '@/hooks/useTikTok';
 import { useInstagram } from '@/hooks/useInstagram';
+import { getInstagramFullStatus } from '@/services/instagramService';
 import { uploadVideoToStorage } from '@/services/tiktokService';
 import { burnHookOverlay } from '@/services/videoOverlayService';
 import * as FileSystem from 'expo-file-system';
@@ -67,24 +68,39 @@ async function resolveVideoUri(uri: string): Promise<string> {
   return uri;
 }
 
-async function extractVideoFrame(videoUri: string): Promise<{ base64: string; mime: string } | null> {
+async function extractVideoFrames(
+  videoUri: string,
+  durationSec: number,
+): Promise<Array<{ base64: string; mime: string }>> {
   try {
     const VideoThumbnails = await import('expo-video-thumbnails');
-    const FileSystem = await import('expo-file-system');
+    const FS = await import('expo-file-system');
     const resolvedUri = await resolveVideoUri(videoUri);
-    let frameUri: string | null = null;
-    for (const seekMs of [2000, 1000, 500, 0]) {
+    const dur = Math.max(durationSec ?? 0, 1);
+    const seekPoints = [
+      Math.floor(dur * 0.10 * 1000),
+      Math.floor(dur * 0.50 * 1000),
+      Math.floor(dur * 0.80 * 1000),
+    ];
+    const frames: Array<{ base64: string; mime: string }> = [];
+    for (const seekMs of seekPoints) {
       try {
-        const { uri } = await VideoThumbnails.getThumbnailAsync(resolvedUri, { time: seekMs, quality: 0.4, maxWidth: 512 });
-        if (uri) { frameUri = uri; break; }
-      } catch { /* try next */ }
+        const { uri } = await VideoThumbnails.getThumbnailAsync(resolvedUri, {
+          time: seekMs,
+          quality: 0.35,
+          maxWidth: 480,
+        });
+        if (!uri) continue;
+        const base64 = await FS.readAsStringAsync(uri, { encoding: FS.EncodingType.Base64 });
+        if (base64.length > 100 && base64.length < 200_000) {
+          frames.push({ base64, mime: 'image/jpeg' });
+        }
+      } catch { /* try next seek point */ }
     }
-    if (!frameUri) return null;
-    const base64 = await FileSystem.readAsStringAsync(frameUri, { encoding: FileSystem.EncodingType.Base64 });
-    return { base64, mime: 'image/jpeg' };
+    return frames;
   } catch (e) {
     console.warn('Frame extraction failed:', e);
-    return null;
+    return [];
   }
 }
 
@@ -146,11 +162,11 @@ async function callAIGenerator(type: string, payload: Record<string, unknown>) {
   const first = await attempt({ type, ...payload });
   if (!first.error) return first;
 
-  // If it timed out and we sent a frame, retry without the frame
-  const hasFrame = 'videoFrameBase64' in payload;
-  if (hasFrame && (first.error.includes('504') || first.error.includes('timeout') || first.error.includes('Gateway'))) {
-    console.warn('[AI] frame attempt timed out, retrying without frame');
-    const { videoFrameBase64: _f, videoFrameMime: _m, ...payloadWithoutFrame } = payload as any;
+  // If it timed out and we sent frames, retry without them
+  const hasFrames = 'videoFrames' in payload || 'videoFrameBase64' in payload;
+  if (hasFrames && (first.error.includes('504') || first.error.includes('timeout') || first.error.includes('Gateway'))) {
+    console.warn('[AI] frame attempt timed out, retrying without frames');
+    const { videoFrames: _vf, videoFrameBase64: _f, videoFrameMime: _m, ...payloadWithoutFrame } = payload as any;
     return attempt({ type, ...payloadWithoutFrame });
   }
 
@@ -333,7 +349,8 @@ export default function EditorScreen() {
     setTestLoading(prev => ({ ...prev, [fn]: false }));
   };
 
-  const frameCache = useRef<{ base64: string; mime: string } | null | 'pending'>('pending');
+  const frameCache = useRef<Array<{ base64: string; mime: string }> | 'pending'>('pending');
+  const igCaptionsRef = useRef<string[]>([]);
   const tiktok = useTikTok();
   const instagram = useInstagram();
 
@@ -375,14 +392,29 @@ export default function EditorScreen() {
     setAutoGenDone(true);
 
     const runAll = async () => {
-      const frame = video.videoUri ? await extractVideoFrame(video.videoUri) : null;
-      frameCache.current = frame;
-      const framePayload = frame ? { videoFrameBase64: frame.base64, videoFrameMime: frame.mime } : {};
+      const frames = video.videoUri
+        ? await extractVideoFrames(video.videoUri, video.duration ?? 0)
+        : [];
+      frameCache.current = frames;
+      const framePayload = frames.length > 0 ? { videoFrames: frames } : {};
+
+      // Load Instagram captions for voice-matching in hook generation
+      if (instagram.status.connected && user?.id) {
+        try {
+          const igFull = await getInstagramFullStatus(user.id);
+          igCaptionsRef.current = (igFull.recentPosts ?? [])
+            .map(p => p.caption)
+            .filter((c): c is string => Boolean(c))
+            .slice(0, 6);
+        } catch { /* non-fatal */ }
+      }
 
       if (needsHook) {
         const { data } = await callAIGenerator('hook', {
           videoTitle: cleanTitle(video.title), hookType: 'question',
-          platforms: video.platforms ?? ['tiktok'], ...framePayload,
+          platforms: video.platforms ?? ['tiktok'],
+          ...framePayload,
+          ...(igCaptionsRef.current.length > 0 ? { creatorCaptions: igCaptionsRef.current } : {}),
         });
         if (data?.result) {
           setHookText(data.result);
@@ -392,7 +424,8 @@ export default function EditorScreen() {
 
       if (needsCaption) {
         const { data } = await callAIGenerator('caption', {
-          videoTitle: cleanTitle(video.title), platforms: video.platforms ?? ['tiktok'], ...framePayload,
+          videoTitle: cleanTitle(video.title), platforms: video.platforms ?? ['tiktok'],
+          ...framePayload,
         });
         if (data?.result?.caption) {
           setCaption(data.result.caption);
@@ -403,7 +436,8 @@ export default function EditorScreen() {
       if (needsAudio) {
         setGeneratingAudio(true);
         const { data } = await callAIGenerator('audio', {
-          videoTitle: cleanTitle(video.title), platforms: video.platforms ?? ['tiktok'], ...framePayload,
+          videoTitle: cleanTitle(video.title), platforms: video.platforms ?? ['tiktok'],
+          ...framePayload,
         });
         setGeneratingAudio(false);
         if (data?.result?.id) {
@@ -418,7 +452,8 @@ export default function EditorScreen() {
         audioSuggestionsLoadedRef.current = true;
         setFetchingSuggestions(true);
         const { data } = await callAIGenerator('audio_suggestions', {
-          videoTitle: cleanTitle(video.title), platforms: video.platforms ?? ['tiktok'], ...framePayload,
+          videoTitle: cleanTitle(video.title), platforms: video.platforms ?? ['tiktok'],
+          ...framePayload,
         });
         setFetchingSuggestions(false);
         const songs = data?.result;
@@ -445,17 +480,21 @@ export default function EditorScreen() {
 
   const ensureFrame = async () => {
     if (frameCache.current === 'pending') {
-      frameCache.current = video.videoUri ? await extractVideoFrame(video.videoUri) : null;
+      frameCache.current = video.videoUri
+        ? await extractVideoFrames(video.videoUri, video.duration ?? 0)
+        : [];
     }
-    const frame = frameCache.current !== 'pending' ? frameCache.current : null;
-    return frame ? { videoFrameBase64: frame.base64, videoFrameMime: frame.mime } : {};
+    const frames = frameCache.current !== 'pending' ? frameCache.current : [];
+    return frames.length > 0 ? { videoFrames: frames } : {};
   };
 
   const handleGenerateHook = async () => {
     setGeneratingHook(true);
     const framePayload = await ensureFrame();
     const { data, error } = await callAIGenerator('hook', {
-      videoTitle: cleanTitle(video.title), hookType, platforms, ...framePayload,
+      videoTitle: cleanTitle(video.title), hookType, platforms,
+      ...framePayload,
+      ...(igCaptionsRef.current.length > 0 ? { creatorCaptions: igCaptionsRef.current } : {}),
     });
     setGeneratingHook(false);
     if (error) { showAlert('AI Error', error); return; }
