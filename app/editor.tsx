@@ -541,7 +541,7 @@ export default function EditorScreen() {
       setSelectedAudioId(song.id);
       prefetchAudioForSong(song.id, song.title, song.artist);
     }
-  }, [video.title, platforms, showAlert, prefetchAudioForSong]);
+  }, [video.title, platforms, videoContext, showAlert, prefetchAudioForSong]);
 
   const fetchAudioSuggestions = useCallback(async () => {
     setFetchingSuggestions(true);

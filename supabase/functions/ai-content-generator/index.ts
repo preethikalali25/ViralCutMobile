@@ -94,6 +94,8 @@ Deno.serve(async (req) => {
     let systemPrompt = '';
     let userPrompt = '';
 
+    const contextNote = userContext ? `\nCREATOR CONTEXT: "${userContext}" — use this as the primary description of what the video is about.` : '';
+
     if (type === 'hook') {
       const hookStyleMap: Record<string, string> = {
         question: 'a curiosity-driven question that makes viewers desperate to keep watching',
@@ -105,7 +107,6 @@ Deno.serve(async (req) => {
       const captionsBlock = Array.isArray(creatorCaptions) && creatorCaptions.length > 0
         ? `\nCREATOR'S INSTAGRAM CAPTIONS — study these to match their exact writing voice, tone, emoji usage, and phrasing style:\n${(creatorCaptions as string[]).map((c, i) => `${i + 1}. "${c}"`).join('\n')}\nWrite the hook IN THIS EXACT VOICE — it must sound like this creator wrote it, not a generic template.`
         : '';
-      const contextNote = userContext ? `\nCREATOR CONTEXT: "${userContext}" — use this as the primary description of what the video is about.` : '';
 
       systemPrompt = `You are an expert viral short-form video hook writer for TikTok, Instagram Reels, and YouTube Shorts.
 Your hooks are punchy, positive, and under 80 characters.
