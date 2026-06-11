@@ -191,6 +191,7 @@ export default function EditorScreen() {
   const [selectedAudioId, setSelectedAudioId] = useState('');
   const [platforms, setPlatforms] = useState<PlatformType[]>(['tiktok']);
   const hookSaveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const captionSaveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const [generatingHook, setGeneratingHook] = useState(false);
   const [generatingCaption, setGeneratingCaption] = useState(false);
@@ -435,6 +436,10 @@ export default function EditorScreen() {
         if (data?.result?.caption) {
           setCaption(data.result.caption);
           if (data.result.hashtags) setHashtags(data.result.hashtags);
+          updateVideo(video.id, {
+            caption: data.result.caption,
+            hashtags: data.result.hashtags ? data.result.hashtags.split(/\s+/).filter(Boolean) : [],
+          });
         }
       }
 
@@ -523,8 +528,14 @@ export default function EditorScreen() {
     setGeneratingCaption(false);
     if (error) { showAlert('AI Error', 'Could not generate caption. Please try again.'); return; }
     const result = data?.result;
-    if (result?.caption) setCaption(result.caption);
-    if (result?.hashtags) setHashtags(result.hashtags);
+    if (result?.caption) {
+      setCaption(result.caption);
+      if (result.hashtags) setHashtags(result.hashtags);
+      updateVideo(video.id, {
+        caption: result.caption,
+        hashtags: result.hashtags ? result.hashtags.split(/\s+/).filter(Boolean) : [],
+      });
+    }
   };
 
   const handleGenerateAudio = useCallback(async () => {
@@ -1011,7 +1022,13 @@ export default function EditorScreen() {
                 <TextInput
                   style={[styles.textInput, { minHeight: 100 }]}
                   value={caption}
-                  onChangeText={setCaption}
+                  onChangeText={(text) => {
+                    setCaption(text);
+                    if (captionSaveTimer.current) clearTimeout(captionSaveTimer.current);
+                    captionSaveTimer.current = setTimeout(() => {
+                      updateVideo(video.id, { caption: text });
+                    }, 800);
+                  }}
                   placeholder="AI will write your caption..."
                   placeholderTextColor={Colors.textMuted}
                   multiline
@@ -1020,7 +1037,13 @@ export default function EditorScreen() {
                 <TextInput
                   style={styles.textInput}
                   value={hashtags}
-                  onChangeText={setHashtags}
+                  onChangeText={(text) => {
+                    setHashtags(text);
+                    if (captionSaveTimer.current) clearTimeout(captionSaveTimer.current);
+                    captionSaveTimer.current = setTimeout(() => {
+                      updateVideo(video.id, { hashtags: text.split(/\s+/).filter(Boolean) });
+                    }, 800);
+                  }}
                   placeholder="#viral #trending #fyp"
                   placeholderTextColor={Colors.textMuted}
                   multiline
