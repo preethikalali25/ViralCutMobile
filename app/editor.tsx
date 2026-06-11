@@ -105,13 +105,13 @@ async function extractVideoFrames(
   }
 }
 
-function cleanTitle(raw: string): string {
-  return raw
+function cleanTitle(raw: string, fallback = ''): string {
+  return (raw
     .replace(/\.[a-zA-Z0-9]{2,5}$/, '')
     .replace(/[_\-]+/g, ' ')
     .replace(/\b\d{4,}\b/g, '')
     .replace(/\s{2,}/g, ' ')
-    .trim();
+    .trim()) || fallback;
 }
 
 async function fetchItunesPreviewUrl(title: string, artist: string): Promise<string | null> {
@@ -413,7 +413,7 @@ export default function EditorScreen() {
 
       if (needsHook) {
         const { data } = await callAIGenerator('hook', {
-          videoTitle: cleanTitle(video.title), hookType: 'question',
+          videoTitle: cleanTitle(video.title, 'short video'), hookType: 'question',
           platforms: video.platforms ?? ['tiktok'],
           ...framePayload,
           ...(igCaptionsRef.current.length > 0 ? { creatorCaptions: igCaptionsRef.current } : {}),
@@ -426,7 +426,7 @@ export default function EditorScreen() {
 
       if (needsCaption) {
         const { data } = await callAIGenerator('caption', {
-          videoTitle: cleanTitle(video.title), platforms: video.platforms ?? ['tiktok'],
+          videoTitle: cleanTitle(video.title, 'short video'), platforms: video.platforms ?? ['tiktok'],
           ...framePayload,
         });
         if (data?.result?.caption) {
@@ -438,7 +438,7 @@ export default function EditorScreen() {
       if (needsAudio) {
         setGeneratingAudio(true);
         const { data } = await callAIGenerator('audio', {
-          videoTitle: cleanTitle(video.title), platforms: video.platforms ?? ['tiktok'],
+          videoTitle: cleanTitle(video.title, 'short video'), platforms: video.platforms ?? ['tiktok'],
           ...framePayload,
         });
         setGeneratingAudio(false);
@@ -494,7 +494,7 @@ export default function EditorScreen() {
     setGeneratingHook(true);
     const framePayload = await ensureFrame();
     const { data, error } = await callAIGenerator('hook', {
-      videoTitle: cleanTitle(video.title), hookType, platforms,
+      videoTitle: cleanTitle(video.title, 'short video'), hookType, platforms,
       ...framePayload,
       ...(igCaptionsRef.current.length > 0 ? { creatorCaptions: igCaptionsRef.current } : {}),
     });
@@ -510,7 +510,7 @@ export default function EditorScreen() {
     setGeneratingCaption(true);
     const framePayload = await ensureFrame();
     const { data, error } = await callAIGenerator('caption', {
-      videoTitle: cleanTitle(video.title), platforms, ...framePayload,
+      videoTitle: cleanTitle(video.title, 'short video'), platforms, ...framePayload,
     });
     setGeneratingCaption(false);
     if (error) { showAlert('AI Error', 'Could not generate caption. Please try again.'); return; }
@@ -523,7 +523,7 @@ export default function EditorScreen() {
     setGeneratingAudio(true);
     const framePayload = await ensureFrame();
     const { data, error } = await callAIGenerator('audio', {
-      videoTitle: cleanTitle(video.title), platforms, ...framePayload,
+      videoTitle: cleanTitle(video.title, 'short video'), platforms, ...framePayload,
     });
     setGeneratingAudio(false);
     if (error) { showAlert('AI Error', error); return; }
