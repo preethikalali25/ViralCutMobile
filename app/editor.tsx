@@ -207,6 +207,7 @@ export default function EditorScreen() {
 
   const [showPlayer, setShowPlayer] = useState(false);
   const [videoTitle, setVideoTitle] = useState('');
+  const [videoContext, setVideoContext] = useState('');
   const [generatingTitle, setGeneratingTitle] = useState(false);
   const [showTikTokSheet, setShowTikTokSheet] = useState(false);
   const [showInstagramSheet, setShowInstagramSheet] = useState(false);
@@ -416,6 +417,7 @@ export default function EditorScreen() {
           videoTitle: cleanTitle(video.title, 'short video'), hookType: 'question',
           platforms: video.platforms ?? ['tiktok'],
           ...framePayload,
+          ...contextPayload(),
           ...(igCaptionsRef.current.length > 0 ? { creatorCaptions: igCaptionsRef.current } : {}),
         });
         if (data?.result) {
@@ -428,6 +430,7 @@ export default function EditorScreen() {
         const { data } = await callAIGenerator('caption', {
           videoTitle: cleanTitle(video.title, 'short video'), platforms: video.platforms ?? ['tiktok'],
           ...framePayload,
+          ...contextPayload(),
         });
         if (data?.result?.caption) {
           setCaption(data.result.caption);
@@ -440,6 +443,7 @@ export default function EditorScreen() {
         const { data } = await callAIGenerator('audio', {
           videoTitle: cleanTitle(video.title, 'short video'), platforms: video.platforms ?? ['tiktok'],
           ...framePayload,
+          ...contextPayload(),
         });
         setGeneratingAudio(false);
         if (data?.result?.id) {
@@ -490,12 +494,16 @@ export default function EditorScreen() {
     return frames.length > 0 ? { videoFrames: frames } : {};
   };
 
+  const contextPayload = () =>
+    videoContext.trim() ? { userContext: videoContext.trim() } : {};
+
   const handleGenerateHook = async () => {
     setGeneratingHook(true);
     const framePayload = await ensureFrame();
     const { data, error } = await callAIGenerator('hook', {
       videoTitle: cleanTitle(video.title, 'short video'), hookType, platforms,
       ...framePayload,
+      ...contextPayload(),
       ...(igCaptionsRef.current.length > 0 ? { creatorCaptions: igCaptionsRef.current } : {}),
     });
     setGeneratingHook(false);
@@ -510,7 +518,7 @@ export default function EditorScreen() {
     setGeneratingCaption(true);
     const framePayload = await ensureFrame();
     const { data, error } = await callAIGenerator('caption', {
-      videoTitle: cleanTitle(video.title, 'short video'), platforms, ...framePayload,
+      videoTitle: cleanTitle(video.title, 'short video'), platforms, ...framePayload, ...contextPayload(),
     });
     setGeneratingCaption(false);
     if (error) { showAlert('AI Error', 'Could not generate caption. Please try again.'); return; }
@@ -523,7 +531,7 @@ export default function EditorScreen() {
     setGeneratingAudio(true);
     const framePayload = await ensureFrame();
     const { data, error } = await callAIGenerator('audio', {
-      videoTitle: cleanTitle(video.title, 'short video'), platforms, ...framePayload,
+      videoTitle: cleanTitle(video.title, 'short video'), platforms, ...framePayload, ...contextPayload(),
     });
     setGeneratingAudio(false);
     if (error) { showAlert('AI Error', error); return; }
@@ -903,6 +911,20 @@ export default function EditorScreen() {
                   : <MaterialIcons name="photo-camera" size={15} color="#fff" />}
               </Pressable>
             </View>
+          </View>
+
+          {/* Context box */}
+          <View style={styles.contextBox}>
+            <MaterialIcons name="lightbulb-outline" size={14} color={Colors.amber} style={{ marginTop: 3 }} />
+            <TextInput
+              style={styles.contextInput}
+              value={videoContext}
+              onChangeText={setVideoContext}
+              placeholder="Describe your video for better AI results… (e.g. morning skincare routine, toddler's first steps)"
+              placeholderTextColor={Colors.textMuted}
+              multiline
+              maxLength={300}
+            />
           </View>
 
           {/* Tabs */}
@@ -1693,6 +1715,17 @@ const styles = StyleSheet.create({
     position: 'absolute', bottom: 6, right: 6,
     backgroundColor: 'rgba(0,0,0,0.55)', borderRadius: Radius.full,
     width: 28, height: 28, alignItems: 'center', justifyContent: 'center',
+  },
+  contextBox: {
+    flexDirection: 'row', alignItems: 'flex-start', gap: 8,
+    marginHorizontal: Spacing.md, marginBottom: Spacing.sm,
+    backgroundColor: Colors.amber + '12', borderRadius: Radius.md,
+    paddingHorizontal: Spacing.sm + 2, paddingVertical: Spacing.sm,
+    borderWidth: 1, borderColor: Colors.amber + '33',
+  },
+  contextInput: {
+    flex: 1, fontSize: FontSize.sm, color: Colors.textPrimary,
+    includeFontPadding: false, lineHeight: 20,
   },
   tabBar: {
     flexDirection: 'row', marginHorizontal: Spacing.md,

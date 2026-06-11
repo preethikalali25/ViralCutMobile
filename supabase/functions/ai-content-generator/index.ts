@@ -62,6 +62,7 @@ Deno.serve(async (req) => {
       videoFrameBase64,
       videoFrameMime = 'image/jpeg',
       creatorCaptions,
+      userContext = '',
     } = body;
 
     const videoTitle = sanitizeTitle(rawTitle ?? '');
@@ -104,6 +105,7 @@ Deno.serve(async (req) => {
       const captionsBlock = Array.isArray(creatorCaptions) && creatorCaptions.length > 0
         ? `\nCREATOR'S INSTAGRAM CAPTIONS — study these to match their exact writing voice, tone, emoji usage, and phrasing style:\n${(creatorCaptions as string[]).map((c, i) => `${i + 1}. "${c}"`).join('\n')}\nWrite the hook IN THIS EXACT VOICE — it must sound like this creator wrote it, not a generic template.`
         : '';
+      const contextNote = userContext ? `\nCREATOR CONTEXT: "${userContext}" — use this as the primary description of what the video is about.` : '';
 
       systemPrompt = `You are an expert viral short-form video hook writer for TikTok, Instagram Reels, and YouTube Shorts.
 Your hooks are punchy, positive, and under 80 characters.
@@ -115,13 +117,13 @@ Return ONLY the hook text — no quotes, no labels, no explanation.`;
       userPrompt = hasFrame
         ? `Look at ${rawFrames.length > 1 ? 'these video frames' : 'this video frame'} and identify the specific subject (person, child, pet, object, scene, etc.) and action.
 Write ${hookStyle} that references the ACTUAL content visible in the ${rawFrames.length > 1 ? 'frames' : 'frame'}.
-Video title for context: "${videoTitle || 'unknown'}". Hook style: ${hookType}.
+Video title for context: "${videoTitle || 'unknown'}". Hook style: ${hookType}.${contextNote}
 Under 80 characters. No offensive content.`
         : videoTitle
-        ? `Write ${hookStyle} for a short-form video titled: "${videoTitle}".
+        ? `Write ${hookStyle} for a short-form video titled: "${videoTitle}".${contextNote}
 Hook style: ${hookType}. Keep it under 80 characters.
 Be specific to the title's subject — avoid generic filler phrases. Make it curious, bold, and scroll-stopping.`
-        : `Write ${hookStyle} for a short-form video. No title or preview is available.
+        : `Write ${hookStyle} for a short-form video.${contextNote || ' No title or preview is available.'}
 Hook style: ${hookType}. Keep it under 80 characters.
 Focus on a broadly appealing lifestyle or everyday moment angle. Make it curious, bold, and scroll-stopping.`;
 
@@ -138,13 +140,13 @@ Return ONLY valid JSON — no markdown, no code blocks, no extra text.`;
 
       userPrompt = hasFrame
         ? `Write an optimised caption and hashtags based on what you see in ${rawFrames.length > 1 ? 'these video frames' : 'this video frame'}.
-Video title: "${videoTitle || 'unknown'}". Target platforms: ${platformList}.
+Video title: "${videoTitle || 'unknown'}". Target platforms: ${platformList}.${contextNote}
 Analyse the visual scene — mood, subject, action — and write authentic, engaging copy that drives comments and shares.`
         : videoTitle
-        ? `Write an optimised caption and hashtags for a video titled: "${videoTitle}".
+        ? `Write an optimised caption and hashtags for a video titled: "${videoTitle}".${contextNote}
 Target platforms: ${platformList}.
 Make it authentic, relatable, and engagement-driven. Match the tone to each platform style.`
-        : `Write an optimised caption and hashtags for a short-form video. No title is available.
+        : `Write an optimised caption and hashtags for a short-form video.${contextNote || ' No title is available.'}
 Target platforms: ${platformList}.
 Use a broadly appealing lifestyle or everyday moment angle. Make it authentic, relatable, and engagement-driven.`;
 
@@ -161,13 +163,13 @@ Return ONLY valid JSON — no markdown, no code blocks, no extra text.`;
 
       userPrompt = hasFrame
         ? `Pick the single BEST trending song for this short-form video.
-Video title: "${videoTitle || 'unknown'}". Target platforms: ${platformList}.
+Video title: "${videoTitle || 'unknown'}". Target platforms: ${platformList}.${contextNote}
 Consider the visual mood, energy, subject, and setting shown in ${rawFrames.length > 1 ? 'the frames' : 'the frame'} when choosing.`
         : videoTitle
-        ? `Pick the single BEST trending song for a short-form video titled: "${videoTitle}".
+        ? `Pick the single BEST trending song for a short-form video titled: "${videoTitle}".${contextNote}
 Target platforms: ${platformList}.
 Choose a well-known, currently popular song that fits the video's likely mood and maximises viral potential.`
-        : `Pick the single BEST trending song for a short-form video. No title is available.
+        : `Pick the single BEST trending song for a short-form video.${contextNote || ' No title is available.'}
 Target platforms: ${platformList}.
 Choose a well-known, currently popular upbeat or lifestyle song that maximises viral potential.`;
 
