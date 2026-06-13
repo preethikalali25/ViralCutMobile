@@ -46,17 +46,27 @@
 		<true/>
 	</dict>
 	<key>NSCalendarsFullAccessUsageDescription</key>
-	<string>This app needs access to your calendar.</string>
+	<string>ViralCut uses your calendar to schedule video posts at the best times.</string>
 	<key>NSCalendarsUsageDescription</key>
-	<string>This app needs access to your calendar.</string>
+	<string>ViralCut uses your calendar to schedule video posts at the best times.</string>
 	<key>NSCameraUsageDescription</key>
 	<string>ViralCut needs access to your camera to record videos directly.</string>
+	<key>NSContactsUsageDescription</key>
+	<string>ViralCut uses your contacts to help you find and tag people when scheduling and publishing content.</string>
+	<key>NSFaceIDUsageDescription</key>
+	<string>ViralCut uses Face ID to keep your account secure.</string>
+	<key>NSLocationWhenInUseUsageDescription</key>
+	<string>ViralCut uses your location to suggest trending content and optimal posting times for your region.</string>
 	<key>NSMicrophoneUsageDescription</key>
-	<string>Allow $(PRODUCT_NAME) to access your microphone</string>
+	<string>ViralCut uses the microphone to record audio for your videos.</string>
+	<key>NSPhotoLibraryAddUsageDescription</key>
+	<string>ViralCut saves edited videos to your photo library.</string>
 	<key>NSPhotoLibraryUsageDescription</key>
 	<string>ViralCut needs access to your photo library to select videos for editing and publishing.</string>
 	<key>NSRemindersFullAccessUsageDescription</key>
-	<string>This app needs access to your reminders.</string>
+	<string>ViralCut uses reminders to notify you when your scheduled posts are ready to publish.</string>
+	<key>NSRemindersUsageDescription</key>
+	<string>ViralCut uses reminders to notify you when your scheduled posts are ready to publish.</string>
 	<key>NSUserActivityTypes</key>
 	<array>
 		<string>$(PRODUCT_BUNDLE_IDENTIFIER).expo.index_route</string>
