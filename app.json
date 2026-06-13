@@ -76,6 +76,27 @@
           "backgroundColor": "#080a14"
         }
       ],
+      [
+        "expo-contacts",
+        {
+          "contactsPermission": "ViralCut uses your contacts to help you find and tag people when scheduling and publishing content."
+        }
+      ],
+      [
+        "expo-camera",
+        {
+          "cameraPermission": "ViralCut needs access to your camera to record videos directly.",
+          "microphonePermission": "ViralCut uses the microphone to record audio for your videos."
+        }
+      ],
+      [
+        "expo-media-library",
+        {
+          "photosPermission": "ViralCut needs access to your photo library to select videos for editing and publishing.",
+          "savePhotosPermission": "ViralCut saves edited videos to your photo library.",
+          "isAccessMediaLocationEnabled": true
+        }
+      ],
       "@react-native-community/datetimepicker",
       "expo-font",
       "expo-localization",
