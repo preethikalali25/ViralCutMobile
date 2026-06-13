@@ -1,12 +1,18 @@
 const fs = require('fs');
 const path = require('path');
 
-const pkgPath = path.join(__dirname, '..', 'node_modules', 'expo-image', 'package.json');
-if (!fs.existsSync(pkgPath)) process.exit(0);
+const patches = [
+  { pkg: 'expo-image', from: 'src/index.ts', to: 'build/index.js' },
+  { pkg: 'expo-modules-core', from: 'src/index.ts', to: 'build/index.js' },
+];
 
-const pkg = JSON.parse(fs.readFileSync(pkgPath, 'utf8'));
-if (pkg.main === 'src/index.ts') {
-  pkg.main = 'build/index.js';
-  fs.writeFileSync(pkgPath, JSON.stringify(pkg, null, 2));
-  console.log('[patch] expo-image: main patched to build/index.js');
+for (const { pkg, from, to } of patches) {
+  const pkgPath = path.join(__dirname, '..', 'node_modules', pkg, 'package.json');
+  if (!fs.existsSync(pkgPath)) continue;
+  const pkgJson = JSON.parse(fs.readFileSync(pkgPath, 'utf8'));
+  if (pkgJson.main === from) {
+    pkgJson.main = to;
+    fs.writeFileSync(pkgPath, JSON.stringify(pkgJson, null, 2));
+    console.log(`[patch] ${pkg}: main patched to ${to}`);
+  }
 }
