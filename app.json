@@ -68,16 +68,11 @@
         }
       ],
       "@react-native-community/datetimepicker",
-      "expo-audio",
       "expo-font",
       "expo-localization",
-      "expo-mail-composer",
       "expo-secure-store",
-      "expo-sharing",
       "expo-sqlite",
-      "expo-status-bar",
-      "expo-video",
-      "expo-web-browser"
+      "expo-video"
     ],
     "experiments": {
       "typedRoutes": true
