@@ -10,7 +10,16 @@
     "newArchEnabled": false,
     "ios": {
       "supportsTablet": true,
-      "bundleIdentifier": "com.kalel.KalelViralCut"
+      "bundleIdentifier": "com.kalel.KalelViralCut",
+      "infoPlist": {
+        "NSContactsUsageDescription": "ViralCut uses your contacts to help you find and tag people when scheduling and publishing content.",
+        "NSCalendarsUsageDescription": "ViralCut uses your calendar to schedule video posts at the best times.",
+        "NSRemindersUsageDescription": "ViralCut uses reminders to notify you when your scheduled posts are ready to publish.",
+        "NSMicrophoneUsageDescription": "ViralCut uses the microphone to record audio for your videos.",
+        "NSLocationWhenInUseUsageDescription": "ViralCut uses your location to suggest trending content and optimal posting times for your region.",
+        "NSFaceIDUsageDescription": "ViralCut uses Face ID to keep your account secure.",
+        "NSPhotoLibraryAddUsageDescription": "ViralCut saves edited videos to your photo library."
+      }
     },
     "android": {
       "package": "com.kalel.KalelViralCut",
