@@ -10,7 +10,10 @@
     "newArchEnabled": true,
     "ios": {
       "supportsTablet": true,
-      "bundleIdentifier": "com.kalel.KalelViralCut"
+      "bundleIdentifier": "com.kalel.KalelViralCut",
+      "infoPlist": {
+        "LSApplicationQueriesSchemes": ["instagram-reels", "instagram"]
+      }
     },
     "android": {
       "package": "com.kalel.KalelViralCut",
@@ -51,6 +54,14 @@
     },
     "plugins": [
       "expo-router",
+      [
+        "expo-media-library",
+        {
+          "photosPermission": "ViralCut needs access to your photo library to save your edited video.",
+          "savePhotosPermission": "ViralCut needs permission to save your edited video before opening Instagram.",
+          "isAccessMediaLocationEnabled": false
+        }
+      ],
       [
         "expo-image-picker",
         {

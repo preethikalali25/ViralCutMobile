@@ -2,7 +2,7 @@
 import React, { useState, useCallback, useRef, useEffect } from 'react';
 import {
   View, Text, ScrollView, StyleSheet, Pressable, TextInput,
-  KeyboardAvoidingView, Platform, ActivityIndicator, Modal,
+  KeyboardAvoidingView, Platform, ActivityIndicator, Modal, Linking,
 } from 'react-native';
 import { useVideoPlayer, VideoView } from 'expo-video';
 import { SafeAreaView } from 'react-native-safe-area-context';
@@ -159,6 +159,7 @@ export default function EditorScreen() {
   const [uploadingToStorage, setUploadingToStorage] = useState(false);
   const [uploadProgress, setUploadProgress] = useState(0);
   const [burningOverlay, setBurningOverlay] = useState(false);
+  const [savingToPhotos, setSavingToPhotos] = useState(false);
   const [generatingThumbnail, setGeneratingThumbnail] = useState(false);
   const [thumbnailUri, setThumbnailUri] = useState<string | null>(video?.thumbnail ?? null);
 
@@ -465,6 +466,38 @@ export default function EditorScreen() {
     updateVideo(video.id, { ...snap, title: videoTitle });
     const { error } = await instagram.publish(videoUrl, captionText);
     if (error) showAlert('Instagram Error', error);
+  };
+
+  const handleOpenInInstagram = async () => {
+    const snap = snapshotEditorState();
+    if (!video?.videoUri) { showAlert('No Video File', 'Select a video first.'); return; }
+
+    const canOpen = await Linking.canOpenURL('instagram-reels://');
+    if (!canOpen) {
+      showAlert('Instagram Not Installed', 'Please install Instagram to use this feature.');
+      return;
+    }
+
+    const resolved = await resolveVideoUri(video.videoUri);
+
+    setBurningOverlay(true);
+    const { outputUri } = await burnHookOverlay(resolved, snap.hook?.text ?? '');
+    setBurningOverlay(false);
+
+    setSavingToPhotos(true);
+    const MediaLibrary = await import('expo-media-library');
+    const { status } = await MediaLibrary.requestPermissionsAsync();
+    if (status !== 'granted') {
+      setSavingToPhotos(false);
+      showAlert('Permission Required', 'Please allow photo library access so ViralCut can save the video before opening Instagram.');
+      return;
+    }
+    const asset = await MediaLibrary.createAssetAsync(outputUri);
+    setSavingToPhotos(false);
+
+    updateVideo(video.id, { ...snap, title: videoTitle });
+    setShowInstagramSheet(false);
+    await Linking.openURL(`instagram-reels://share?localIdentifier=${asset.id}`);
   };
 
   const togglePlatform = (p: PlatformType) => {
@@ -837,22 +870,40 @@ export default function EditorScreen() {
               ) : null}
             </View>
 
-            {instagram.publishState.phase === 'idle' && !uploadingToStorage ? (
+            {instagram.publishState.phase === 'idle' && !uploadingToStorage && !burningOverlay && !savingToPhotos ? (
               <>
                 <View style={styles.sheetNote}>
                   <MaterialIcons name="info-outline" size={13} color={Colors.textMuted} />
                   <Text style={styles.sheetNoteText}>
-                    The video will be posted as an Instagram Reel. Your caption and hashtags will be included.
+                    Finish in the Instagram app for full editing tools, music, and better engagement.
                   </Text>
                 </View>
                 <Pressable
                   style={({ pressed }) => [styles.tiktokPublishBtn, { backgroundColor: '#e1306c' }, pressed && { opacity: 0.85 }]}
-                  onPress={handleInstagramPublish}
+                  onPress={handleOpenInInstagram}
                 >
                   <MaterialCommunityIcons name="instagram" size={18} color="#fff" />
-                  <Text style={styles.tiktokPublishBtnText}>Post as Reel</Text>
+                  <Text style={styles.tiktokPublishBtnText}>Finish in Instagram</Text>
+                </Pressable>
+                <Pressable
+                  style={({ pressed }) => [styles.tiktokPublishBtn, { backgroundColor: 'transparent', borderWidth: 1, borderColor: '#e1306c', marginTop: Spacing.sm }, pressed && { opacity: 0.7 }]}
+                  onPress={handleInstagramPublish}
+                >
+                  <Text style={[styles.tiktokPublishBtnText, { color: '#e1306c' }]}>Post directly via API</Text>
                 </Pressable>
               </>
+            ) : null}
+
+            {(burningOverlay || savingToPhotos) ? (
+              <View style={styles.sheetPhase}>
+                <ActivityIndicator size="large" color="#e1306c" />
+                <Text style={styles.sheetPhaseTitle}>
+                  {burningOverlay ? 'Applying hook text...' : 'Saving to your library...'}
+                </Text>
+                <Text style={styles.sheetPhaseSub}>
+                  {savingToPhotos ? 'Instagram will open once saved.' : 'Almost ready...'}
+                </Text>
+              </View>
             ) : null}
 
             {uploadingToStorage ? (
