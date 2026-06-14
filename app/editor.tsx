@@ -399,6 +399,9 @@ export default function EditorScreen() {
     setAutoGenDone(true);
 
     const runAll = async () => {
+      if (!video.videoUri) {
+        console.warn('[editor] No videoUri — this is a mock/demo video. AI will use title only. Upload a real video for vision-based hooks.');
+      }
       const frames = video.videoUri
         ? await extractVideoFrames(video.videoUri, video.duration ?? 0)
         : [];
