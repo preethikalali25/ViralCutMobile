@@ -112,10 +112,10 @@ Deno.serve(async (req) => {
     const rawFrames: Array<{ base64: string; mime: string }> = (() => {
       if (Array.isArray(videoFrames) && videoFrames.length > 0) {
         return (videoFrames as Array<{ base64: string; mime: string }>)
-          .filter(f => typeof f.base64 === 'string' && f.base64.length > 100 && f.base64.length < 200_000)
+          .filter(f => typeof f.base64 === 'string' && f.base64.length > 100 && f.base64.length < 600_000)
           .slice(0, 5);
       }
-      if (typeof videoFrameBase64 === 'string' && videoFrameBase64.length > 100 && videoFrameBase64.length < 200_000) {
+      if (typeof videoFrameBase64 === 'string' && videoFrameBase64.length > 100 && videoFrameBase64.length < 600_000) {
         return [{ base64: videoFrameBase64, mime: videoFrameMime ?? 'image/jpeg' }];
       }
       return [];
@@ -198,9 +198,10 @@ HOOK3: [vivid sensory description]`;
         .filter(v => v.length > 5);
 
       console.log(`[ai-content-generator] hook raw:\n${rawHooks}`);
+      console.log(`[ai-content-generator] hook frameCount=${rawFrames.length} validVariations=${validVariations.length}`);
 
       return new Response(
-        JSON.stringify({ result: validVariations }),
+        JSON.stringify({ result: validVariations, frameCount: rawFrames.length }),
         { headers: { ...corsHeaders, 'Content-Type': 'application/json' } },
       );
 

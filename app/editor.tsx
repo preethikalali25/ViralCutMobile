@@ -90,8 +90,8 @@ async function extractVideoFrames(
       try {
         const { uri } = await VideoThumbnails.getThumbnailAsync(resolvedUri, {
           time: seekMs,
-          quality: 0.6,
-          maxWidth: 640,
+          quality: 0.5,
+          maxWidth: 480,
         });
         if (!uri) continue;
         const base64 = await FS.readAsStringAsync(uri, { encoding: FS.EncodingType.Base64 });
@@ -525,6 +525,10 @@ export default function EditorScreen() {
       const first = vars[0] ?? '';
       setHookText(first);
       updateVideo(video.id, { hook: { type: hookType, text: first } });
+      console.log(`[editor] hook frameCount from server: ${data.frameCount ?? 'unknown'}`);
+      if ((data.frameCount ?? 0) === 0) {
+        console.warn('[editor] No frames reached the server — hooks are title-only. Check video URI and frame extraction.');
+      }
     }
   };
 
