@@ -112,10 +112,10 @@ Deno.serve(async (req) => {
     const rawFrames: Array<{ base64: string; mime: string }> = (() => {
       if (Array.isArray(videoFrames) && videoFrames.length > 0) {
         return (videoFrames as Array<{ base64: string; mime: string }>)
-          .filter(f => typeof f.base64 === 'string' && f.base64.length > 100 && f.base64.length < 200_000)
+          .filter(f => typeof f.base64 === 'string' && f.base64.length > 100 && f.base64.length < 600_000)
           .slice(0, 5);
       }
-      if (typeof videoFrameBase64 === 'string' && videoFrameBase64.length > 100 && videoFrameBase64.length < 200_000) {
+      if (typeof videoFrameBase64 === 'string' && videoFrameBase64.length > 100 && videoFrameBase64.length < 600_000) {
         return [{ base64: videoFrameBase64, mime: videoFrameMime ?? 'image/jpeg' }];
       }
       return [];
@@ -140,54 +140,68 @@ Deno.serve(async (req) => {
     let userPrompt = '';
 
     if (type === 'hook') {
-      const hookStyleMap: Record<string, string> = {
-        question: 'a curiosity-driven question that names the SPECIFIC subject and makes viewers desperate to keep watching',
-        stat: 'a surprising specific fact or number directly related to what is shown in the video',
-        visual: 'a vivid sensory description of the exact scene that sparks immediate imagination',
-      };
-
       const captionsBlock = Array.isArray(creatorCaptions) && creatorCaptions.length > 0
-        ? `\nCREATOR'S INSTAGRAM CAPTIONS — study these to match their exact writing voice, tone, emoji usage, and phrasing style:\n${(creatorCaptions as string[]).map((c, i) => `${i + 1}. "${c}"`).join('\n')}\nWrite EACH hook IN THIS EXACT VOICE — it must sound like this creator wrote it, not a generic template.`
+        ? `\nCREATOR'S VOICE — study these real captions to copy this person's exact tone, style, emoji usage, and phrasing:\n${(creatorCaptions as string[]).map((c, i) => `${i + 1}. "${c}"`).join('\n')}\nEvery hook must sound exactly like this creator wrote it — not AI, not generic.`
         : '';
 
-      const sharedSystem = `You are an expert viral short-form video hook writer for TikTok, Instagram Reels, and YouTube Shorts.
-Your hooks are hyper-specific, punchy, and under 80 characters.
-${visualContext}
+      const sharedSystem = `You are a viral hook writer who writes hyper-specific, scroll-stopping hooks for TikTok, Instagram Reels, and YouTube Shorts.
 ${captionsBlock}
 ${SAFETY_RULES}
 ${GENERIC_HOOK_BAN}`;
 
-      // Build one prompt per style and run all 3 in parallel
-      const styles = ['question', 'stat', 'visual'] as const;
+      // Single call: one prompt that chains observation → 3 hooks
+      const uPrompt = hasFrame
+        ? `${rawFrames.length > 1 ? `You are looking at ${rawFrames.length} frames from different moments in the video.` : 'You are looking at a frame from the video.'}
 
-      const hookPromises = styles.map(style => {
-        const hookStyle = hookStyleMap[style];
-        const uPrompt = hasFrame
-          ? `Look at ${rawFrames.length > 1 ? 'these video frames' : 'this video frame'} carefully.
-Identify with precision: WHO is in the video (their age/type if visible), WHAT exact action they are doing, WHERE this is happening, and any notable emotion or detail.
-Now write ${hookStyle} based on what you ACTUALLY SEE.
-Name the specific subject — do NOT say "this", "it", or vague words. Use the creator's own words if captions are provided.
-Video title for extra context: "${videoTitle || 'unknown'}".${contextNote}
-Style: ${style}. Under 80 characters. Return ONLY the hook text — no quotes, no labels.`
-          : videoTitle
-          ? `Write ${hookStyle} for a short-form video titled: "${videoTitle}".${contextNote}
-Style: ${style}. Under 80 characters.
-Be specific to the title's subject. No generic filler. Return ONLY the hook text.`
-          : `Write ${hookStyle} for a short-form video.${contextNote || ' No title or frame available.'}
-Style: ${style}. Under 80 characters.
-Return ONLY the hook text.`;
+STEP 1 — Inventory what you actually see (be brutally specific):
+- SUBJECT: Who/what exactly? (e.g. "a ~10-month-old baby girl in a yellow onesie", "a golden retriever puppy", "a woman in her 30s making pasta")
+- ACTION: What are they doing precisely? (e.g. "tasting lemon for the first time and recoiling", "failing to climb stairs", "crying while cutting onions")
+- SETTING: Where is this? (e.g. "a kitchen", "a backyard", "a living room floor")
+- NOTABLE DETAIL: Any standout reaction, object, or emotion? (e.g. "looks horrified", "tail wagging furiously", "laughing uncontrollably")
 
-        const uContent = buildUserContent(uPrompt, rawFrames);
-        return callAnthropic(ANTHROPIC_MODEL_SONNET, sharedSystem, uContent, 150, 0.9)
-          .then(text => text.replace(/^["']|["']$/g, '').trim())
-          .catch(() => '');
-      });
+STEP 2 — Using ONLY the specific details from Step 1, write exactly 3 hooks.
+Every hook must contain at least one concrete noun or specific detail from your inventory. Never use "this", "it", or pronouns without a named subject.
+Each hook under 80 characters.${contextNote ? `\nAdditional context from creator: ${contextNote}` : ''}
+Video filename for extra context: "${videoTitle || 'unknown'}"
 
-      const variations = await Promise.all(hookPromises);
-      const validVariations = variations.filter(v => v.length > 5);
+Return in EXACTLY this format, nothing else:
+HOOK1: [question that names the specific subject and action]
+HOOK2: [bold statement or surprising angle about the exact thing you saw]
+HOOK3: [vivid sensory description of what's happening]`
+        : videoTitle
+        ? `Write 3 viral hooks for a short-form video titled: "${videoTitle}".${contextNote}
+Infer the specific subject from the title. Each hook must name the actual subject — no vague "this" or "it".
+Each under 80 characters.
+
+Return in EXACTLY this format:
+HOOK1: [question style]
+HOOK2: [bold statement or surprising angle]
+HOOK3: [vivid sensory description]`
+        : `Write 3 viral hooks for a short-form video.${contextNote || ''}
+Each under 80 characters. Each hook must describe a specific relatable moment.
+
+Return in EXACTLY this format:
+HOOK1: [question style]
+HOOK2: [bold statement or surprising angle]
+HOOK3: [vivid sensory description]`;
+
+      const uContent = buildUserContent(uPrompt, rawFrames);
+      const rawHooks = await callAnthropic(ANTHROPIC_MODEL_SONNET, sharedSystem, uContent, 400, 0.9);
+
+      // Parse HOOK1:/HOOK2:/HOOK3: lines
+      const extract = (label: string) => {
+        const match = rawHooks.match(new RegExp(`${label}:\\s*(.+)`));
+        return match ? match[1].trim().replace(/^["']|["']$/g, '') : '';
+      };
+      const variations = ['HOOK1', 'HOOK2', 'HOOK3']
+        .map(extract)
+        .filter(v => v.length > 5);
+
+      console.log(`[ai-content-generator] hook raw:\n${rawHooks}`);
+      console.log(`[ai-content-generator] hook frameCount=${rawFrames.length} validVariations=${variations.length}`);
 
       return new Response(
-        JSON.stringify({ result: validVariations }),
+        JSON.stringify({ result: variations, frameCount: rawFrames.length }),
         { headers: { ...corsHeaders, 'Content-Type': 'application/json' } },
       );
 
