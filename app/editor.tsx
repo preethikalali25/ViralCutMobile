@@ -368,7 +368,7 @@ export default function EditorScreen() {
   const handleSave = () => {
     const snap = snapshotEditorState();
     updateVideo(video.id, { ...snap, title: videoTitle });
-    showAlert('Saved', 'Your changes have been saved.');
+    router.push('/(tabs)/library');
   };
 
   const handleSchedule = () => {
@@ -415,6 +415,29 @@ export default function EditorScreen() {
       },
       { text: 'Cancel', style: 'cancel' },
     ]);
+  };
+
+  const prepareVideoForPublish = async (
+    videoUri: string,
+    hookText: string,
+  ): Promise<{ videoUrl: string; error?: string }> => {
+    if (!user?.id || !video?.id) return { videoUrl: '', error: 'Not authenticated.' };
+
+    const resolved = await resolveVideoUri(videoUri);
+
+    setBurningOverlay(true);
+    const { outputUri } = await burnHookOverlay(resolved, hookText);
+    setBurningOverlay(false);
+
+    setUploadingToStorage(true);
+    const { publicUrl, error } = await uploadVideoToStorage(
+      outputUri, user.id, video.id, setUploadProgress,
+    );
+    setUploadingToStorage(false);
+    setUploadProgress(0);
+
+    if (error || !publicUrl) return { videoUrl: '', error: error ?? 'Upload failed.' };
+    return { videoUrl: publicUrl };
   };
 
   const handleTikTokPublish = async () => {
