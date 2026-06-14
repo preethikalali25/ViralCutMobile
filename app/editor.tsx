@@ -80,16 +80,18 @@ async function extractVideoFrames(
     const dur = Math.max(durationSec ?? 0, 1);
     const seekPoints = [
       Math.floor(dur * 0.10 * 1000),
+      Math.floor(dur * 0.25 * 1000),
       Math.floor(dur * 0.50 * 1000),
-      Math.floor(dur * 0.80 * 1000),
+      Math.floor(dur * 0.70 * 1000),
+      Math.floor(dur * 0.90 * 1000),
     ];
     const frames: Array<{ base64: string; mime: string }> = [];
     for (const seekMs of seekPoints) {
       try {
         const { uri } = await VideoThumbnails.getThumbnailAsync(resolvedUri, {
           time: seekMs,
-          quality: 0.35,
-          maxWidth: 480,
+          quality: 0.6,
+          maxWidth: 640,
         });
         if (!uri) continue;
         const base64 = await FS.readAsStringAsync(uri, { encoding: FS.EncodingType.Base64 });
@@ -186,6 +188,7 @@ export default function EditorScreen() {
   const [tab, setTab] = useState<Tab>('hook');
   const [hookType, setHookType] = useState<HookType>('question');
   const [hookText, setHookText] = useState('');
+  const [hookVariations, setHookVariations] = useState<string[]>([]);
   const [caption, setCaption] = useState('');
   const [hashtags, setHashtags] = useState('');
   const [selectedAudioId, setSelectedAudioId] = useState('');
@@ -422,8 +425,11 @@ export default function EditorScreen() {
           ...(igCaptionsRef.current.length > 0 ? { creatorCaptions: igCaptionsRef.current } : {}),
         });
         if (data?.result) {
-          setHookText(data.result);
-          updateVideo(video.id, { hook: { type: 'question', text: data.result } });
+          const vars = Array.isArray(data.result) ? data.result : [String(data.result)];
+          setHookVariations(vars);
+          const first = vars[0] ?? '';
+          setHookText(first);
+          updateVideo(video.id, { hook: { type: 'question', text: first } });
         }
       }
 
@@ -514,8 +520,11 @@ export default function EditorScreen() {
     setGeneratingHook(false);
     if (error) { showAlert('AI Error', error); return; }
     if (data?.result) {
-      setHookText(data.result);
-      updateVideo(video.id, { hook: { type: hookType, text: data.result } });
+      const vars = Array.isArray(data.result) ? data.result : [String(data.result)];
+      setHookVariations(vars);
+      const first = vars[0] ?? '';
+      setHookText(first);
+      updateVideo(video.id, { hook: { type: hookType, text: first } });
     }
   };
 
@@ -1000,6 +1009,28 @@ export default function EditorScreen() {
                   numberOfLines={3}
                 />
                 <Text style={styles.charCount}>{hookText.length}/100</Text>
+
+                {hookVariations.length > 1 && (
+                  <View style={{ marginTop: Spacing.sm }}>
+                    <Text style={[styles.sectionLabel, { marginBottom: Spacing.xs }]}>
+                      Tap a variation to use it
+                    </Text>
+                    {hookVariations.map((v, i) => (
+                      <Pressable
+                        key={i}
+                        style={[styles.hookVariationCard, hookText === v && styles.hookVariationCardActive]}
+                        onPress={() => {
+                          setHookText(v);
+                          updateVideo(video.id, { hook: { type: hookType, text: v } });
+                        }}
+                      >
+                        <Text style={[styles.hookVariationText, hookText === v && styles.hookVariationTextActive]}>
+                          {v}
+                        </Text>
+                      </Pressable>
+                    ))}
+                  </View>
+                )}
               </View>
             ) : null}
 
@@ -1803,6 +1834,13 @@ const styles = StyleSheet.create({
     color: Colors.textPrimary, textAlignVertical: 'top', minHeight: 80, includeFontPadding: false,
   },
   charCount: { fontSize: FontSize.xs, color: Colors.textMuted, textAlign: 'right', includeFontPadding: false },
+  hookVariationCard: {
+    backgroundColor: Colors.surfaceElevated, borderRadius: Radius.md, borderWidth: 1.5,
+    borderColor: Colors.surfaceBorder, padding: Spacing.sm + 2, marginBottom: Spacing.xs,
+  },
+  hookVariationCardActive: { borderColor: Colors.primary, backgroundColor: Colors.primaryGlow },
+  hookVariationText: { fontSize: FontSize.sm, color: Colors.textSecondary, includeFontPadding: false },
+  hookVariationTextActive: { color: Colors.primaryLight, fontWeight: FontWeight.semibold },
   suggestedTags: { flexDirection: 'row', flexWrap: 'wrap', gap: Spacing.sm, marginTop: 4 },
   tagChip: {
     backgroundColor: Colors.primaryGlow, borderRadius: Radius.full,

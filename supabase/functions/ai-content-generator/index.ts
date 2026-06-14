@@ -1,6 +1,7 @@
 import { corsHeaders } from '../_shared/cors.ts';
 
 const ANTHROPIC_MODEL = 'claude-haiku-4-5-20251001';
+const ANTHROPIC_MODEL_SONNET = 'claude-sonnet-4-6';
 const ANTHROPIC_API_URL = 'https://api.anthropic.com/v1/messages';
 
 function sanitizeTitle(raw: string): string {
@@ -20,6 +21,15 @@ IMPORTANT RULES:
 - If the video title or frame content is unclear or generic, focus on a broadly appealing lifestyle, creativity, or inspiration angle.
 `;
 
+const GENERIC_HOOK_BAN = `
+BANNED PHRASES — never use these or anything like them:
+"You won't believe", "Wait until you see", "I can't stop watching", "This is amazing", "Check this out",
+"Wait for it", "Mind blown", "Game changer", "The best thing ever", "You need to see this",
+"I had no idea", "This changed my life", "POV: you discovered", "Nobody talks about this",
+any phrase that could apply to ANY video and gives the viewer no specific reason to watch.
+Every word of the hook must be SPECIFIC to this exact video's content.
+`;
+
 function buildUserContent(
   userPrompt: string,
   frames: Array<{ base64: string; mime: string }>,
@@ -36,6 +46,38 @@ function buildUserContent(
     })),
     { type: 'text', text: userPrompt },
   ];
+}
+
+async function callAnthropic(
+  model: string,
+  system: string,
+  userContent: unknown,
+  maxTokens = 512,
+  temperature = 0.85,
+): Promise<string> {
+  const apiKey = Deno.env.get('ANTHROPIC_API_KEY')!;
+  const res = await fetch(ANTHROPIC_API_URL, {
+    method: 'POST',
+    signal: AbortSignal.timeout(28000),
+    headers: {
+      'Content-Type': 'application/json',
+      'x-api-key': apiKey,
+      'anthropic-version': '2023-06-01',
+    },
+    body: JSON.stringify({
+      model,
+      max_tokens: maxTokens,
+      system,
+      messages: [{ role: 'user', content: userContent }],
+      temperature,
+    }),
+  });
+  if (!res.ok) {
+    const err = await res.text();
+    throw new Error(`Anthropic API error: ${err}`);
+  }
+  const data = await res.json();
+  return (data.content?.[0]?.text ?? '').trim();
 }
 
 Deno.serve(async (req) => {
@@ -67,12 +109,11 @@ Deno.serve(async (req) => {
 
     const videoTitle = sanitizeTitle(rawTitle ?? '');
 
-    // Build unified frames array — prefer new videoFrames array, fall back to legacy single-frame fields
     const rawFrames: Array<{ base64: string; mime: string }> = (() => {
       if (Array.isArray(videoFrames) && videoFrames.length > 0) {
         return (videoFrames as Array<{ base64: string; mime: string }>)
           .filter(f => typeof f.base64 === 'string' && f.base64.length > 100 && f.base64.length < 200_000)
-          .slice(0, 3);
+          .slice(0, 5);
       }
       if (typeof videoFrameBase64 === 'string' && videoFrameBase64.length > 100 && videoFrameBase64.length < 200_000) {
         return [{ base64: videoFrameBase64, mime: videoFrameMime ?? 'image/jpeg' }];
@@ -85,48 +126,70 @@ Deno.serve(async (req) => {
 
     const visualContext = hasFrame
       ? rawFrames.length > 1
-        ? `You are given ${rawFrames.length} frames captured at different points in the video (beginning, middle, and near end). Analyse all frames — subject, setting, action, emotion, colours, mood across the timeline — and use this as the PRIMARY source of inspiration.`
-        : 'You are given a screenshot/frame captured directly from the video. Analyse the visual scene — subject, setting, action, emotion, colours, mood — and use this as the PRIMARY source of inspiration.'
+        ? `You are given ${rawFrames.length} frames captured at different points in the video (beginning, quarter, middle, three-quarters, near end). Analyse ALL frames — who is in the video, what they are doing, the exact setting, actions, emotions, objects, colours, and mood across the timeline — and use this as the PRIMARY source of truth about the video content.`
+        : 'You are given a screenshot/frame captured directly from the video. Analyse the visual scene — who is present, what they are doing, exact setting, action, emotion, colours, mood — and use this as the PRIMARY source of truth.'
       : videoTitle
       ? 'No video frame is available. Base your response on the video title and general short-form video best practices.'
       : 'No video frame or title is available. Write based on general short-form video best practices for lifestyle, creativity, and everyday moments.';
 
+    const contextNote = userContext
+      ? `\nCREATOR CONTEXT: "${userContext}" — this is the creator's own description of what the video is about. Treat it as ground truth.`
+      : '';
+
     let systemPrompt = '';
     let userPrompt = '';
 
-    const contextNote = userContext ? `\nCREATOR CONTEXT: "${userContext}" — use this as the primary description of what the video is about.` : '';
-
     if (type === 'hook') {
       const hookStyleMap: Record<string, string> = {
-        question: 'a curiosity-driven question that makes viewers desperate to keep watching',
-        stat: 'a surprising fact or number that stops the scroll',
-        visual: 'a vivid sensory description that sparks imagination',
+        question: 'a curiosity-driven question that names the SPECIFIC subject and makes viewers desperate to keep watching',
+        stat: 'a surprising specific fact or number directly related to what is shown in the video',
+        visual: 'a vivid sensory description of the exact scene that sparks immediate imagination',
       };
-      const hookStyle = hookStyleMap[hookType] ?? 'a compelling hook';
 
       const captionsBlock = Array.isArray(creatorCaptions) && creatorCaptions.length > 0
-        ? `\nCREATOR'S INSTAGRAM CAPTIONS — study these to match their exact writing voice, tone, emoji usage, and phrasing style:\n${(creatorCaptions as string[]).map((c, i) => `${i + 1}. "${c}"`).join('\n')}\nWrite the hook IN THIS EXACT VOICE — it must sound like this creator wrote it, not a generic template.`
+        ? `\nCREATOR'S INSTAGRAM CAPTIONS — study these to match their exact writing voice, tone, emoji usage, and phrasing style:\n${(creatorCaptions as string[]).map((c, i) => `${i + 1}. "${c}"`).join('\n')}\nWrite EACH hook IN THIS EXACT VOICE — it must sound like this creator wrote it, not a generic template.`
         : '';
 
-      systemPrompt = `You are an expert viral short-form video hook writer for TikTok, Instagram Reels, and YouTube Shorts.
-Your hooks are punchy, positive, and under 80 characters.
+      const sharedSystem = `You are an expert viral short-form video hook writer for TikTok, Instagram Reels, and YouTube Shorts.
+Your hooks are hyper-specific, punchy, and under 80 characters.
 ${visualContext}
 ${captionsBlock}
 ${SAFETY_RULES}
-Return ONLY the hook text — no quotes, no labels, no explanation.`;
+${GENERIC_HOOK_BAN}`;
 
-      userPrompt = hasFrame
-        ? `Look at ${rawFrames.length > 1 ? 'these video frames' : 'this video frame'} and identify the specific subject (person, child, pet, object, scene, etc.) and action.
-Write ${hookStyle} that references the ACTUAL content visible in the ${rawFrames.length > 1 ? 'frames' : 'frame'}.
-Video title for context: "${videoTitle || 'unknown'}". Hook style: ${hookType}.${contextNote}
-Under 80 characters. No offensive content.`
-        : videoTitle
-        ? `Write ${hookStyle} for a short-form video titled: "${videoTitle}".${contextNote}
-Hook style: ${hookType}. Keep it under 80 characters.
-Be specific to the title's subject — avoid generic filler phrases. Make it curious, bold, and scroll-stopping.`
-        : `Write ${hookStyle} for a short-form video.${contextNote || ' No title or preview is available.'}
-Hook style: ${hookType}. Keep it under 80 characters.
-Focus on a broadly appealing lifestyle or everyday moment angle. Make it curious, bold, and scroll-stopping.`;
+      // Build one prompt per style and run all 3 in parallel
+      const styles = ['question', 'stat', 'visual'] as const;
+
+      const hookPromises = styles.map(style => {
+        const hookStyle = hookStyleMap[style];
+        const uPrompt = hasFrame
+          ? `Look at ${rawFrames.length > 1 ? 'these video frames' : 'this video frame'} carefully.
+Identify with precision: WHO is in the video (their age/type if visible), WHAT exact action they are doing, WHERE this is happening, and any notable emotion or detail.
+Now write ${hookStyle} based on what you ACTUALLY SEE.
+Name the specific subject — do NOT say "this", "it", or vague words. Use the creator's own words if captions are provided.
+Video title for extra context: "${videoTitle || 'unknown'}".${contextNote}
+Style: ${style}. Under 80 characters. Return ONLY the hook text — no quotes, no labels.`
+          : videoTitle
+          ? `Write ${hookStyle} for a short-form video titled: "${videoTitle}".${contextNote}
+Style: ${style}. Under 80 characters.
+Be specific to the title's subject. No generic filler. Return ONLY the hook text.`
+          : `Write ${hookStyle} for a short-form video.${contextNote || ' No title or frame available.'}
+Style: ${style}. Under 80 characters.
+Return ONLY the hook text.`;
+
+        const uContent = buildUserContent(uPrompt, rawFrames);
+        return callAnthropic(ANTHROPIC_MODEL_SONNET, sharedSystem, uContent, 150, 0.9)
+          .then(text => text.replace(/^["']|["']$/g, '').trim())
+          .catch(() => '');
+      });
+
+      const variations = await Promise.all(hookPromises);
+      const validVariations = variations.filter(v => v.length > 5);
+
+      return new Response(
+        JSON.stringify({ result: validVariations }),
+        { headers: { ...corsHeaders, 'Content-Type': 'application/json' } },
+      );
 
     } else if (type === 'caption') {
       const platformList = (platforms as string[]).join(', ');
@@ -207,37 +270,10 @@ Return ONLY the title, 4–10 words.`;
 
     const userContent = buildUserContent(userPrompt, rawFrames);
 
-    const aiResponse = await fetch(ANTHROPIC_API_URL, {
-      method: 'POST',
-      signal: AbortSignal.timeout(25000),
-      headers: {
-        'Content-Type': 'application/json',
-        'x-api-key': apiKey,
-        'anthropic-version': '2023-06-01',
-      },
-      body: JSON.stringify({
-        model: ANTHROPIC_MODEL,
-        max_tokens: 512,
-        system: systemPrompt,
-        messages: [{ role: 'user', content: userContent }],
-        temperature: 0.75,
-      }),
-    });
-
-    if (!aiResponse.ok) {
-      const errText = await aiResponse.text();
-      console.error('Anthropic API error:', errText);
-      return new Response(
-        JSON.stringify({ error: `AI service error: ${errText}` }),
-        { status: 502, headers: { ...corsHeaders, 'Content-Type': 'application/json' } },
-      );
-    }
-
-    const aiData = await aiResponse.json();
-    const rawContent = (aiData.content?.[0]?.text ?? '').trim();
+    const rawContent = await callAnthropic(ANTHROPIC_MODEL, systemPrompt, userContent, 512, 0.75);
     console.log(`[ai-content-generator] raw response (first 200 chars): ${rawContent.slice(0, 200)}`);
 
-    if (type === 'hook' || type === 'title') {
+    if (type === 'title') {
       const text = rawContent.replace(/^["']|["']$/g, '').trim();
       return new Response(
         JSON.stringify({ result: text }),
