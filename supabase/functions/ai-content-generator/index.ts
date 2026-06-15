@@ -161,7 +161,7 @@ STEP 1 — Inventory what you actually see (be brutally specific):
 
 STEP 2 — Using ONLY the specific details from Step 1, write exactly 3 hooks.
 Every hook must contain at least one concrete noun or specific detail from your inventory. Never use "this", "it", or pronouns without a named subject.
-Each hook under 80 characters.${contextNote ? `\nAdditional context from creator: ${contextNote}` : ''}
+Each hook: 5–7 words MAX, under 50 characters. Short, punchy, scroll-stopping — reads instantly on screen.${contextNote ? `\nAdditional context from creator: ${contextNote}` : ''}
 Video filename for extra context: "${videoTitle || 'unknown'}"
 
 Return in EXACTLY this format, nothing else:
@@ -171,14 +171,14 @@ HOOK3: [vivid sensory description of what's happening]`
         : videoTitle
         ? `Write 3 viral hooks for a short-form video titled: "${videoTitle}".${contextNote}
 Infer the specific subject from the title. Each hook must name the actual subject — no vague "this" or "it".
-Each under 80 characters.
+Each hook: 5–7 words MAX, under 50 characters. Short, punchy, reads instantly on screen.
 
 Return in EXACTLY this format:
 HOOK1: [question style]
 HOOK2: [bold statement or surprising angle]
 HOOK3: [vivid sensory description]`
         : `Write 3 viral hooks for a short-form video.${contextNote || ''}
-Each under 80 characters. Each hook must describe a specific relatable moment.
+Each hook: 5–7 words MAX, under 50 characters. Specific, punchy, scroll-stopping.
 
 Return in EXACTLY this format:
 HOOK1: [question style]

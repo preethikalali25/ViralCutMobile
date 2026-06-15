@@ -472,12 +472,6 @@ export default function EditorScreen() {
     const snap = snapshotEditorState();
     if (!video?.videoUri) { showAlert('No Video File', 'Select a video first.'); return; }
 
-    const canOpen = await Linking.canOpenURL('instagram-reels://');
-    if (!canOpen) {
-      showAlert('Instagram Not Installed', 'Please install Instagram to use this feature.');
-      return;
-    }
-
     const resolved = await resolveVideoUri(video.videoUri);
 
     setBurningOverlay(true);
@@ -497,7 +491,12 @@ export default function EditorScreen() {
 
     updateVideo(video.id, { ...snap, title: videoTitle });
     setShowInstagramSheet(false);
-    await Linking.openURL(`instagram-reels://share?localIdentifier=${asset.id}`);
+
+    try {
+      await Linking.openURL(`instagram-reels://share?localIdentifier=${asset.id}`);
+    } catch {
+      showAlert('Could not open Instagram', 'Make sure Instagram is installed and try again.');
+    }
   };
 
   const togglePlatform = (p: PlatformType) => {
