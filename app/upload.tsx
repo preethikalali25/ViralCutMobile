@@ -23,6 +23,17 @@ async function requestPermission(): Promise<boolean> {
 
 type MediaPreviewItem = MediaItem & { previewUri: string; durationSec?: number };
 
+async function getVideoPreviewUri(uri: string): Promise<string> {
+  try {
+    const VideoThumbnails = await import('expo-video-thumbnails');
+    const { uri: thumbUri } = await VideoThumbnails.getThumbnailAsync(uri, { time: 0, quality: 0.7 });
+    return thumbUri;
+  } catch (e) {
+    console.warn('[upload] thumbnail generation failed:', e);
+    return uri;
+  }
+}
+
 export default function UploadScreen() {
   const router = useRouter();
   const { addVideo } = useVideos();
@@ -51,15 +62,16 @@ export default function UploadScreen() {
       quality: 1,
     });
     if (!result.canceled) {
-      const newItems: MediaPreviewItem[] = result.assets.map(a => {
+      const newItems: MediaPreviewItem[] = await Promise.all(result.assets.map(async a => {
         const isVideo = a.type === 'video';
+        const previewUri = isVideo ? await getVideoPreviewUri(a.uri) : a.uri;
         return {
           uri: a.uri,
           type: isVideo ? 'video' : 'photo',
-          previewUri: a.uri,
+          previewUri,
           ...(isVideo ? { durationSec: a.duration ? Math.round(a.duration / 1000) : undefined } : {}),
         };
-      });
+      }));
       setMediaItems(prev => [...prev, ...newItems].slice(0, 15));
     }
   };

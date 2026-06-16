@@ -256,12 +256,13 @@ export default function EditorScreen() {
       const framePayload = frame ? { videoFrameBase64: frame.base64, videoFrameMime: frame.mime } : {};
 
       if (needsHook) {
-        const { data } = await callAIGenerator('hook', {
+        const { data, error } = await callAIGenerator('hook', {
           videoTitle: cleanTitle(video.title), hookType: 'question',
           platforms: video.platforms ?? ['tiktok'], ...framePayload,
         });
-        if (data?.result) {
-          const variations: string[] = Array.isArray(data.result) ? data.result : [String(data.result)];
+        if (error) console.warn('[autoGenHook] failed:', error);
+        if (data?.result?.length) {
+          const variations: string[] = data.result;
           const best = variations[0] ?? '';
           setHookVariations(variations);
           setHookText(best);
@@ -344,12 +345,14 @@ export default function EditorScreen() {
     });
     setGeneratingHook(false);
     if (error) { showAlert('AI Error', error); return; }
-    if (data?.result) {
-      const variations: string[] = Array.isArray(data.result) ? data.result : [String(data.result)];
+    if (data?.result?.length) {
+      const variations: string[] = data.result;
       const best = variations[0] ?? '';
       setHookVariations(variations);
       setHookText(best);
       updateVideo(video.id, { hook: { type: hookType, text: best } });
+    } else {
+      showAlert('AI Error', "Couldn't write a hook this time — try again.");
     }
   };
 
