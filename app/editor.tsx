@@ -474,10 +474,6 @@ export default function EditorScreen() {
 
     const resolved = await resolveVideoUri(video.videoUri);
 
-    setBurningOverlay(true);
-    const { outputUri } = await burnHookOverlay(resolved, snap.hook?.text ?? '');
-    setBurningOverlay(false);
-
     setSavingToPhotos(true);
     const MediaLibrary = await import('expo-media-library');
     const { status } = await MediaLibrary.requestPermissionsAsync();
@@ -486,7 +482,7 @@ export default function EditorScreen() {
       showAlert('Permission Required', 'Please allow photo library access so ViralCut can save the video before opening Instagram.');
       return;
     }
-    const asset = await MediaLibrary.createAssetAsync(outputUri);
+    const asset = await MediaLibrary.createAssetAsync(resolved);
     setSavingToPhotos(false);
 
     updateVideo(video.id, { ...snap, title: videoTitle });
