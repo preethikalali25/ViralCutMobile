@@ -27,6 +27,11 @@ BANNED PHRASES — never use these or anything like them:
 "Wait for it", "Mind blown", "Game changer", "The best thing ever", "You need to see this",
 "I had no idea", "This changed my life", "POV: you discovered", "Nobody talks about this",
 any phrase that could apply to ANY video and gives the viewer no specific reason to watch.
+Also never write META/PLACEHOLDER text describing what a hook should contain, e.g.
+"A brief description of what happens in the video", "The topic, skill, or moment being shown",
+"A few key details about the content" — these are NOT hooks, they are instructions, and must
+never appear in your output. If you are unsure of the exact content, still invent a concrete,
+specific-sounding hook rather than describing what a hook would need.
 Every word of the hook must be SPECIFIC to this exact video's content.
 `;
 
@@ -149,17 +154,19 @@ ${captionsBlock}
 ${SAFETY_RULES}
 ${GENERIC_HOOK_BAN}`;
 
+      const noClarifyingNote = `\nDo not ask for more information and do not describe what a hook should contain — always commit to 3 concrete, specific-sounding hooks even if you have to guess plausible details.`;
+
       const framelessHookPrompt = videoTitle
         ? `Write 3 viral hooks for a short-form video titled: "${videoTitle}".${contextNote}
 Infer the specific subject from the title. Each hook must name the actual subject — no vague "this" or "it".
-Each hook: 5–7 words MAX, under 50 characters. Short, punchy, reads instantly on screen.
+Each hook: 5–7 words MAX, under 50 characters. Short, punchy, reads instantly on screen.${noClarifyingNote}
 
 Return in EXACTLY this format:
 HOOK1: [question style]
 HOOK2: [bold statement or surprising angle]
 HOOK3: [vivid sensory description]`
         : `Write 3 viral hooks for a short-form video.${contextNote || ''}
-Each hook: 5–7 words MAX, under 50 characters. Specific, punchy, scroll-stopping.
+Each hook: 5–7 words MAX, under 50 characters. Specific, punchy, scroll-stopping.${noClarifyingNote}
 
 Return in EXACTLY this format:
 HOOK1: [question style]
@@ -179,13 +186,21 @@ STEP 1 — Inventory what you actually see (be brutally specific):
 STEP 2 — Using ONLY the specific details from Step 1, write exactly 3 hooks.
 Every hook must contain at least one concrete noun or specific detail from your inventory. Never use "this", "it", or pronouns without a named subject.
 Each hook: 5–7 words MAX, under 50 characters. Short, punchy, scroll-stopping — reads instantly on screen.${contextNote ? `\nAdditional context from creator: ${contextNote}` : ''}
-Video filename for extra context: "${videoTitle || 'unknown'}"
+Video filename for extra context: "${videoTitle || 'unknown'}"${noClarifyingNote}
 
 Return in EXACTLY this format, nothing else:
 HOOK1: [question that names the specific subject and action]
 HOOK2: [bold statement or surprising angle about the exact thing you saw]
 HOOK3: [vivid sensory description of what's happening]`
         : framelessHookPrompt;
+
+      // Reject meta/placeholder text the model sometimes writes when it lacks
+      // enough specific information instead of inventing a concrete hook —
+      // these describe what a hook should contain rather than being one.
+      const isGenericPlaceholder = (text: string) => {
+        const t = text.toLowerCase();
+        return /brief description|topic, skill|moment being shown|key details about|what happens in the video|what('s| is) happening in/.test(t);
+      };
 
       // Parse HOOK1:/HOOK2:/HOOK3: lines, tolerating formatting the model adds
       // despite instructions (bold markers, leading dashes/bullets, quotes,
@@ -201,17 +216,9 @@ HOOK3: [vivid sensory description of what's happening]`
             .replace(/^["']|["']$/g, '')
             .trim();
         };
-        let found = [1, 2, 3].map(extract).filter(v => v.length > 5);
-        if (found.length > 0) return found;
-
-        // Heuristic fallback: the model ignored the HOOK1/2/3 labels entirely.
-        // Take the last few short, non-empty lines (the actual hooks tend to
-        // come after any inventory/reasoning the model included).
-        const candidateLines = raw
-          .split('\n')
-          .map(l => l.trim().replace(/^[*_\-\d.)\s]+|[*_\-\s]+$/g, '').replace(/^["']|["']$/g, '').trim())
-          .filter(l => l.length > 5 && l.length < 80 && !/^(STEP|SUBJECT|ACTION|SETTING|NOTABLE)/i.test(l));
-        return candidateLines.slice(-3);
+        return [1, 2, 3]
+          .map(extract)
+          .filter(v => v.length > 5 && !isGenericPlaceholder(v));
       };
 
       const uContent = buildUserContent(uPrompt, rawFrames);
