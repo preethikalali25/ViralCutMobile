@@ -22,8 +22,10 @@ import { useTikTok } from '@/hooks/useTikTok';
 import { useInstagram } from '@/hooks/useInstagram';
 import { uploadVideoToStorage } from '@/services/tiktokService';
 import { burnHookOverlay, openVideoInApp } from '@/services/videoOverlayService';
+import { searchViralAudio, AudioSearchResult } from '@/services/audioSearchService';
 import * as FileSystem from 'expo-file-system';
 import * as Sharing from 'expo-sharing';
+import Slider from '@react-native-community/slider';
 
 type Tab = 'hook' | 'caption' | 'audio' | 'platforms';
 
@@ -36,6 +38,7 @@ interface AISuggestedAudio {
   platform: string[];
   mood: string;
   reason?: string;
+  previewUrl?: string;
 }
 
 const HOOK_TYPES: { type: HookType; label: string; desc: string; icon: string }[] = [
@@ -151,6 +154,12 @@ export default function EditorScreen() {
   const [generatingAudio, setGeneratingAudio] = useState(false);
   const [aiPickedSong, setAiPickedSong] = useState<AISuggestedAudio | null>(null);
   const [autoGenDone, setAutoGenDone] = useState(false);
+  const [audioQuery, setAudioQuery] = useState('');
+  const [searchingAudio, setSearchingAudio] = useState(false);
+  const [searchResults, setSearchResults] = useState<AudioSearchResult[]>([]);
+  const [previewCache, setPreviewCache] = useState<Record<string, string>>({});
+  const [originalVolume, setOriginalVolume] = useState(0.6);
+  const [bgVolume, setBgVolume] = useState(0.8);
 
   const [showPlayer, setShowPlayer] = useState(false);
   const [videoTitle, setVideoTitle] = useState('');
@@ -225,6 +234,9 @@ export default function EditorScreen() {
     setCaption(video.caption ?? '');
     setHashtags(video.hashtags?.join(' ') ?? '');
     setSelectedAudioId(video.audio?.id ?? '');
+    if (video.audio?.id && video.audio.previewUrl) {
+      setPreviewCache(prev => ({ ...prev, [video.audio!.id]: video.audio!.previewUrl! }));
+    }
     setPlatforms(video.platforms ?? ['tiktok']);
     setThumbnailUri(video.thumbnail ?? null);
   }, [video?.id]);
@@ -282,6 +294,27 @@ export default function EditorScreen() {
 
     runAll();
   }, [video?.id]);
+
+  // Best-effort: resolve a real ~30s preview clip for whichever song is
+  // currently selected (AI pick or trending list), so the volume mixer
+  // below has actual audio to mix instead of just a title/artist label.
+  useEffect(() => {
+    if (!selectedAudioId || previewCache[selectedAudioId]) return;
+    const source: { title: string; artist: string } | undefined =
+      aiPickedSong?.id === selectedAudioId
+        ? aiPickedSong
+        : searchResults.find(r => r.id === selectedAudioId) ??
+          MOCK_TRENDING_AUDIO.find(a => a.id === selectedAudioId);
+    if (!source) return;
+    let cancelled = false;
+    (async () => {
+      const { results } = await searchViralAudio(`${source.title} ${source.artist}`);
+      if (!cancelled && results[0]?.previewUrl) {
+        setPreviewCache(prev => ({ ...prev, [selectedAudioId]: results[0].previewUrl! }));
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [selectedAudioId, aiPickedSong?.id]);
 
   if (!video) {
     return (
@@ -345,6 +378,21 @@ export default function EditorScreen() {
     if (song?.id) { setAiPickedSong(song); setSelectedAudioId(song.id); }
   }, [video.title, platforms, showAlert]);
 
+  const handleSearchAudio = async () => {
+    if (!audioQuery.trim()) return;
+    setSearchingAudio(true);
+    const { results, error } = await searchViralAudio(audioQuery.trim());
+    setSearchingAudio(false);
+    if (error) { showAlert('Search Error', error); return; }
+    setSearchResults(results);
+  };
+
+  const selectSearchResult = (r: AudioSearchResult) => {
+    setSelectedAudioId(r.id);
+    setAiPickedSong(null);
+    if (r.previewUrl) setPreviewCache(prev => ({ ...prev, [r.id]: r.previewUrl! }));
+  };
+
   const handleGenerateTitle = useCallback(async () => {
     setGeneratingTitle(true);
     const framePayload = await ensureFrame();
@@ -362,14 +410,18 @@ export default function EditorScreen() {
   const snapshotEditorState = () => {
     const audioSource = aiPickedSong && selectedAudioId === aiPickedSong.id
       ? aiPickedSong
-      : MOCK_TRENDING_AUDIO.find(a => a.id === selectedAudioId);
+      : searchResults.find(a => a.id === selectedAudioId) ?? MOCK_TRENDING_AUDIO.find(a => a.id === selectedAudioId);
     return {
       hook: { type: hookType, text: hookText },
       caption,
       hashtags: hashtags.split(/\s+/).filter(Boolean),
       platforms,
       audio: audioSource
-        ? { id: audioSource.id, title: audioSource.title, artist: audioSource.artist, uses: audioSource.uses, trending: audioSource.trending }
+        ? {
+            id: audioSource.id, title: audioSource.title, artist: audioSource.artist,
+            uses: 'uses' in audioSource ? audioSource.uses : '', trending: 'trending' in audioSource ? audioSource.trending : false,
+            previewUrl: previewCache[audioSource.id],
+          }
         : undefined,
     };
   };
@@ -434,8 +486,20 @@ export default function EditorScreen() {
 
     const resolved = await resolveVideoUri(videoUri);
 
+    let bgLocalPath: string | undefined;
+    const previewUrl = previewCache[selectedAudioId];
+    if (previewUrl) {
+      try {
+        const dest = FileSystem.cacheDirectory + `bg_audio_${Date.now()}.m4a`;
+        const dl = await FileSystem.downloadAsync(previewUrl, dest);
+        bgLocalPath = dl.uri;
+      } catch (e) {
+        console.warn('[prepareVideoForPublish] bg audio download failed:', e);
+      }
+    }
+
     setBurningOverlay(true);
-    const { outputUri } = await burnHookOverlay(resolved, hookText);
+    const { outputUri } = await burnHookOverlay(resolved, hookText, bgLocalPath, originalVolume, bgVolume);
     setBurningOverlay(false);
 
     setUploadingToStorage(true);
@@ -729,6 +793,66 @@ export default function EditorScreen() {
             {/* ── Audio Tab ── */}
             {tab === 'audio' ? (
               <View style={styles.section}>
+                <View style={styles.searchRow}>
+                  <View style={styles.searchInputWrap}>
+                    <MaterialIcons name="search" size={18} color={Colors.textMuted} />
+                    <TextInput
+                      style={styles.searchInput}
+                      value={audioQuery}
+                      onChangeText={setAudioQuery}
+                      onSubmitEditing={handleSearchAudio}
+                      placeholder="Search any viral song or artist..."
+                      placeholderTextColor={Colors.textMuted}
+                      returnKeyType="search"
+                    />
+                  </View>
+                  <Pressable
+                    style={({ pressed }) => [styles.searchBtn, pressed && { opacity: 0.85 }]}
+                    onPress={handleSearchAudio}
+                    disabled={searchingAudio}
+                  >
+                    {searchingAudio ? (
+                      <ActivityIndicator size="small" color="#fff" />
+                    ) : (
+                      <MaterialIcons name="search" size={18} color="#fff" />
+                    )}
+                  </Pressable>
+                </View>
+
+                {searchResults.length > 0 ? (
+                  <View style={{ gap: Spacing.sm }}>
+                    <View style={styles.audioHeader}>
+                      <Text style={styles.sectionLabel}>Search Results</Text>
+                      <Pressable onPress={() => setSearchResults([])}>
+                        <Text style={styles.orPickText}>Clear</Text>
+                      </Pressable>
+                    </View>
+                    {searchResults.map(r => {
+                      const isSelected = selectedAudioId === r.id;
+                      return (
+                        <Pressable
+                          key={r.id}
+                          style={[styles.audioRow, isSelected && styles.audioRowActive]}
+                          onPress={() => selectSearchResult(r)}
+                        >
+                          {r.artworkUrl ? (
+                            <Image source={{ uri: r.artworkUrl }} style={styles.audioArtwork} />
+                          ) : (
+                            <View style={[styles.audioIcon, isSelected && { backgroundColor: Colors.primary }]}>
+                              <MaterialIcons name="music-note" size={18} color={isSelected ? '#fff' : Colors.textSecondary} />
+                            </View>
+                          )}
+                          <View style={{ flex: 1 }}>
+                            <Text style={styles.audioTitle}>{r.title}</Text>
+                            <Text style={styles.audioArtist}>{r.artist}</Text>
+                          </View>
+                          {isSelected ? <MaterialIcons name="check-circle" size={20} color={Colors.primary} /> : null}
+                        </Pressable>
+                      );
+                    })}
+                  </View>
+                ) : null}
+
                 <Pressable
                   style={({ pressed }) => [styles.aiBtn, pressed && { opacity: 0.85 }, generatingAudio && styles.aiBtnLoading]}
                   onPress={handleGenerateAudio}
@@ -805,6 +929,45 @@ export default function EditorScreen() {
                     </Pressable>
                   );
                 })}
+
+                {selectedAudioId ? (
+                  <View style={styles.volumeSection}>
+                    <Text style={styles.sectionLabel}>Audio Mix</Text>
+                    <View style={styles.volumeRow}>
+                      <Text style={styles.volumeLabel}>Your Video Audio</Text>
+                      <Text style={styles.volumeValue}>{Math.round(originalVolume * 100)}%</Text>
+                    </View>
+                    <Slider
+                      style={styles.slider}
+                      minimumValue={0}
+                      maximumValue={1}
+                      value={originalVolume}
+                      onValueChange={setOriginalVolume}
+                      minimumTrackTintColor={Colors.primary}
+                      maximumTrackTintColor={Colors.surfaceBorder}
+                      thumbTintColor={Colors.primary}
+                    />
+                    <View style={styles.volumeRow}>
+                      <Text style={styles.volumeLabel}>Background Song</Text>
+                      <Text style={styles.volumeValue}>{Math.round(bgVolume * 100)}%</Text>
+                    </View>
+                    <Slider
+                      style={styles.slider}
+                      minimumValue={0}
+                      maximumValue={1}
+                      value={bgVolume}
+                      onValueChange={setBgVolume}
+                      minimumTrackTintColor={Colors.primary}
+                      maximumTrackTintColor={Colors.surfaceBorder}
+                      thumbTintColor={Colors.primary}
+                    />
+                    <Text style={styles.volumeHint}>
+                      {previewCache[selectedAudioId]
+                        ? 'A short preview clip of this song will be mixed in at these levels.'
+                        : 'Looking for a real preview clip to mix in...'}
+                    </Text>
+                  </View>
+                ) : null}
               </View>
             ) : null}
 
@@ -1348,6 +1511,24 @@ const styles = StyleSheet.create({
   },
   trendingText: { fontSize: 9, color: Colors.primary, fontWeight: FontWeight.bold, includeFontPadding: false },
   audioUses: { fontSize: FontSize.xs, color: Colors.textMuted, includeFontPadding: false },
+  audioArtwork: { width: 36, height: 36, borderRadius: Radius.md },
+  searchRow: { flexDirection: 'row', gap: Spacing.sm },
+  searchInputWrap: {
+    flex: 1, flexDirection: 'row', alignItems: 'center', gap: 6,
+    backgroundColor: Colors.surfaceElevated, borderRadius: Radius.md, borderWidth: 1,
+    borderColor: Colors.surfaceBorder, paddingHorizontal: Spacing.sm,
+  },
+  searchInput: { flex: 1, fontSize: FontSize.sm, color: Colors.textPrimary, paddingVertical: 11, includeFontPadding: false },
+  searchBtn: {
+    width: 44, alignItems: 'center', justifyContent: 'center',
+    backgroundColor: Colors.primary, borderRadius: Radius.md,
+  },
+  volumeSection: { gap: Spacing.xs, marginTop: Spacing.sm },
+  volumeRow: { flexDirection: 'row', justifyContent: 'space-between', marginTop: Spacing.xs },
+  volumeLabel: { fontSize: FontSize.sm, color: Colors.textSecondary, includeFontPadding: false },
+  volumeValue: { fontSize: FontSize.sm, fontWeight: FontWeight.semibold, color: Colors.textPrimary, includeFontPadding: false },
+  slider: { width: '100%', height: 32 },
+  volumeHint: { fontSize: FontSize.xs, color: Colors.textMuted, includeFontPadding: false, marginTop: 2 },
   platformRow: {
     flexDirection: 'row', alignItems: 'center', gap: Spacing.sm,
     backgroundColor: Colors.surfaceElevated, borderRadius: Radius.md,
