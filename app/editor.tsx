@@ -25,6 +25,7 @@ import { burnHookOverlay, shareToInstagramReels } from '@/services/videoOverlayS
 import { INSTAGRAM_APP_ID } from '@/constants/instagram';
 import { searchViralAudio, AudioSearchResult } from '@/services/audioSearchService';
 import * as FileSystem from 'expo-file-system';
+import * as Clipboard from 'expo-clipboard';
 import Slider from '@react-native-community/slider';
 
 type Tab = 'hook' | 'caption' | 'audio' | 'platforms';
@@ -160,6 +161,11 @@ export default function EditorScreen() {
   const [previewCache, setPreviewCache] = useState<Record<string, string>>({});
   const [originalVolume, setOriginalVolume] = useState(0.6);
   const [bgVolume, setBgVolume] = useState(0.8);
+
+  const resolveAudioSource = (id: string) =>
+    aiPickedSong?.id === id
+      ? aiPickedSong
+      : searchResults.find(r => r.id === id) ?? MOCK_TRENDING_AUDIO.find(a => a.id === id);
 
   const [showPlayer, setShowPlayer] = useState(false);
   const [videoTitle, setVideoTitle] = useState('');
@@ -301,11 +307,7 @@ export default function EditorScreen() {
   // below has actual audio to mix instead of just a title/artist label.
   useEffect(() => {
     if (!selectedAudioId || previewCache[selectedAudioId]) return;
-    const source: { title: string; artist: string } | undefined =
-      aiPickedSong?.id === selectedAudioId
-        ? aiPickedSong
-        : searchResults.find(r => r.id === selectedAudioId) ??
-          MOCK_TRENDING_AUDIO.find(a => a.id === selectedAudioId);
+    const source = resolveAudioSource(selectedAudioId);
     if (!source) return;
     let cancelled = false;
     (async () => {
@@ -335,6 +337,21 @@ export default function EditorScreen() {
     }
     const frame = frameCache.current !== 'pending' ? frameCache.current : null;
     return frame ? { videoFrameBase64: frame.base64, videoFrameMime: frame.mime } : {};
+  };
+
+  // The background-audio `useEffect` resolves the preview clip lazily and may
+  // not have finished by the time the user taps a burn/share action — so the
+  // burn step can't just read `previewCache` synchronously, it has to await
+  // the same lookup itself or the selected song silently gets dropped.
+  const ensureAudioPreviewUrl = async (): Promise<string | undefined> => {
+    if (!selectedAudioId) return undefined;
+    if (previewCache[selectedAudioId]) return previewCache[selectedAudioId];
+    const source = resolveAudioSource(selectedAudioId);
+    if (!source) return undefined;
+    const { results } = await searchViralAudio(`${source.title} ${source.artist}`);
+    const previewUrl = results[0]?.previewUrl;
+    if (previewUrl) setPreviewCache(prev => ({ ...prev, [selectedAudioId]: previewUrl }));
+    return previewUrl;
   };
 
   const handleGenerateHook = async () => {
@@ -411,9 +428,7 @@ export default function EditorScreen() {
   }, [video, showAlert, updateVideo]);
 
   const snapshotEditorState = () => {
-    const audioSource = aiPickedSong && selectedAudioId === aiPickedSong.id
-      ? aiPickedSong
-      : searchResults.find(a => a.id === selectedAudioId) ?? MOCK_TRENDING_AUDIO.find(a => a.id === selectedAudioId);
+    const audioSource = resolveAudioSource(selectedAudioId);
     return {
       hook: { type: hookType, text: hookText },
       caption,
@@ -490,7 +505,7 @@ export default function EditorScreen() {
     setBurningOverlay(true);
 
     let bgLocalPath: string | undefined;
-    const previewUrl = previewCache[selectedAudioId];
+    const previewUrl = await ensureAudioPreviewUrl();
     if (previewUrl) {
       try {
         const dest = FileSystem.cacheDirectory + `bg_audio_${Date.now()}.m4a`;
@@ -563,6 +578,14 @@ export default function EditorScreen() {
     const { outputUri } = await burnOverlayLocally(video.videoUri, snap.hook?.text ?? '');
     updateVideo(video.id, { ...snap, title: videoTitle });
 
+    // Instagram's Reels sharing-to-stories pasteboard handoff has no field
+    // for a pre-filled caption (Meta blocks this on purpose to stop spam),
+    // so the closest we can do is put it on the clipboard for a quick paste.
+    const captionText = [snap.hook?.text, snap.caption, snap.hashtags.join(' ')].filter(Boolean).join('\n\n');
+    if (captionText) {
+      await Clipboard.setStringAsync(captionText);
+    }
+
     // Meta's documented Sharing-to-Reels handoff: the video goes on the
     // pasteboard (not the Photos library), then instagram-reels://share
     // opens Instagram straight into the Reels composer with it loaded.
@@ -578,6 +601,13 @@ export default function EditorScreen() {
     const opened = await Linking.openURL('instagram-reels://share').then(() => true).catch(() => false);
     if (!opened) {
       showAlert('Instagram Not Installed', 'Please install Instagram to use this feature.');
+      return;
+    }
+    if (captionText) {
+      showAlert(
+        'Caption Copied',
+        "Instagram doesn't let apps pre-fill the caption on Reels drafts, so we copied your caption and hashtags to the clipboard — just paste them into the caption field.",
+      );
     }
   };
 
