@@ -470,9 +470,10 @@ export default function EditorScreen() {
     const { videoUrl, error: prepError } = await prepareVideoForPublish(video.videoUri, snap.hook?.text ?? '');
     if (prepError || !videoUrl) { showAlert('Upload Failed', prepError ?? 'Could not upload video.'); return; }
 
-    const captionText = [snap.caption, snap.hashtags.join(' ')].filter(Boolean).join('\n\n');
+    const captionText = [snap.hook?.text, snap.caption, snap.hashtags.join(' ')].filter(Boolean).join('\n\n');
+    const audioName = snap.audio ? `${snap.audio.title} by ${snap.audio.artist}` : undefined;
     updateVideo(video.id, { ...snap, title: videoTitle });
-    const { error } = await instagram.publish(videoUrl, captionText);
+    const { error } = await instagram.publish(videoUrl, captionText, undefined, audioName);
     if (error) showAlert('Instagram Error', error);
   };
 

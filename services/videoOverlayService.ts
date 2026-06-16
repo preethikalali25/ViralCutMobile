@@ -39,7 +39,7 @@ export async function burnHookOverlay(
   }
 
   const timeout = new Promise<string>((_, reject) =>
-    setTimeout(() => reject(new Error('timeout')), 15000),
+    setTimeout(() => reject(new Error('timeout')), 120000),
   );
   try {
     const outputUri: string = await Promise.race([

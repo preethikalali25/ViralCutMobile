@@ -59,8 +59,9 @@ export async function createInstagramContainer(
   videoUrl: string,
   caption: string,
   coverUrl?: string,
+  audioName?: string,
 ): Promise<{ containerId?: string; error?: string }> {
-  const { data, error } = await invoke('publish', { userId, videoUrl, caption, coverUrl });
+  const { data, error } = await invoke('publish', { userId, videoUrl, caption, coverUrl, audioName });
   if (error) return { error };
   return { containerId: data.containerId };
 }
