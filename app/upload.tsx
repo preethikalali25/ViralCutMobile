@@ -23,14 +23,22 @@ async function requestPermission(): Promise<boolean> {
 
 type MediaPreviewItem = MediaItem & { previewUri: string; durationSec?: number };
 
+const THUMBNAIL_TIMEOUT_MS = 8000;
+
+// '' means "no thumbnail yet" (still loading or failed) — never the raw video
+// URI, since <Image> can't render a video file and would show a broken tile.
 async function getVideoPreviewUri(uri: string): Promise<string> {
   try {
     const VideoThumbnails = await import('expo-video-thumbnails');
-    const { uri: thumbUri } = await VideoThumbnails.getThumbnailAsync(uri, { time: 0, quality: 0.7 });
-    return thumbUri;
+    const result = await Promise.race([
+      VideoThumbnails.getThumbnailAsync(uri, { time: 0, quality: 0.7 }),
+      new Promise<never>((_, reject) =>
+        setTimeout(() => reject(new Error('thumbnail timed out')), THUMBNAIL_TIMEOUT_MS)),
+    ]);
+    return result.uri;
   } catch (e) {
     console.warn('[upload] thumbnail generation failed:', e);
-    return uri;
+    return '';
   }
 }
 
@@ -62,17 +70,32 @@ export default function UploadScreen() {
       quality: 1,
     });
     if (!result.canceled) {
-      const newItems: MediaPreviewItem[] = await Promise.all(result.assets.map(async a => {
+      // Add items immediately so the picker doesn't sit blank while thumbnails
+      // generate — each video's frame is grabbed in the background and patched
+      // into state as it resolves, so one slow/stuck item can't hold up the rest.
+      const newItems: MediaPreviewItem[] = result.assets.map(a => {
         const isVideo = a.type === 'video';
-        const previewUri = isVideo ? await getVideoPreviewUri(a.uri) : a.uri;
         return {
           uri: a.uri,
           type: isVideo ? 'video' : 'photo',
-          previewUri,
+          previewUri: isVideo ? '' : a.uri,
           ...(isVideo ? { durationSec: a.duration ? Math.round(a.duration / 1000) : undefined } : {}),
         };
-      }));
+      });
       setMediaItems(prev => [...prev, ...newItems].slice(0, 15));
+
+      newItems.filter(item => item.type === 'video').forEach(item => {
+        getVideoPreviewUri(item.uri).then(previewUri => {
+          if (!previewUri) return;
+          setMediaItems(prev => {
+            const idx = prev.findIndex(m => m.uri === item.uri && !m.previewUri);
+            if (idx === -1) return prev;
+            const next = [...prev];
+            next[idx] = { ...next[idx], previewUri };
+            return next;
+          });
+        });
+      });
     }
   };
 
@@ -96,7 +119,10 @@ export default function UploadScreen() {
 
     try {
       let videoUri: string;
-      const thumbnail = mediaItems[0].previewUri;
+      let thumbnail = mediaItems[0].previewUri;
+      if (!thumbnail && mediaItems[0].type === 'video') {
+        thumbnail = await getVideoPreviewUri(mediaItems[0].uri);
+      }
 
       if (mediaItems.length === 1 && mediaItems[0].type === 'video') {
         // Single video — pass through directly, no conversion needed
@@ -165,7 +191,13 @@ export default function UploadScreen() {
                 contentContainerStyle={styles.strip}
                 renderItem={({ item, index }) => (
                   <View style={styles.stripItem}>
-                    <Image source={{ uri: item.previewUri }} style={styles.stripThumb} contentFit="cover" />
+                    {item.previewUri ? (
+                      <Image source={{ uri: item.previewUri }} style={styles.stripThumb} contentFit="cover" />
+                    ) : (
+                      <View style={[styles.stripThumb, styles.stripThumbPlaceholder]}>
+                        <ActivityIndicator size="small" color={Colors.primary} />
+                      </View>
+                    )}
                     {item.type === 'video' && (
                       <View style={styles.videoTag}>
                         <MaterialIcons name="videocam" size={10} color="#fff" />
@@ -313,6 +345,7 @@ const styles = StyleSheet.create({
     overflow: 'hidden', position: 'relative',
   },
   stripThumb: { width: '100%', height: '100%' },
+  stripThumbPlaceholder: { alignItems: 'center', justifyContent: 'center', backgroundColor: Colors.surfaceElevated },
   videoTag: {
     position: 'absolute', bottom: 4, left: 4,
     flexDirection: 'row', alignItems: 'center', gap: 2,

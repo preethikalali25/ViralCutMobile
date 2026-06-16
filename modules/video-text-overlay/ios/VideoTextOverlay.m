@@ -785,7 +785,86 @@ RCT_EXPORT_METHOD(combineMediaToVideo:(NSArray<NSDictionary *> *)mediaItems
         iOpts.deliveryMode   = PHImageRequestOptionsDeliveryModeHighQualityFormat;
         iOpts.resizeMode     = PHImageRequestOptionsResizeModeExact;
 
-        // ── Phase 1: Collect segments ─────────────────────────────────────────
+        NSUInteger n = mediaItems.count;
+
+        // ── Phase 0: Load every photo/video concurrently ───────────────────────
+        // Each item's load (PHImageManager / AVAsset fetch, possibly from iCloud)
+        // is independent I/O — loading them one at a time was the main cost for
+        // multi-item reels. Fan them out across a concurrent queue instead, then
+        // re-assemble in original order below.
+        NSMutableArray *loaded = [NSMutableArray arrayWithCapacity:n];
+        for (NSUInteger i = 0; i < n; i++) [loaded addObject:[NSNull null]];
+        NSLock *loadedLock = [[NSLock alloc] init];
+
+        dispatch_group_t loadGroup = dispatch_group_create();
+        dispatch_queue_t loadQueue = dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0);
+
+        for (NSUInteger i = 0; i < n; i++) {
+            NSDictionary *item = mediaItems[i];
+            dispatch_group_async(loadGroup, loadQueue, ^{
+                NSString *uri  = item[@"uri"]  ?: @"";
+                NSString *type = item[@"type"] ?: @"photo";
+                id result = nil;
+
+                if ([type isEqualToString:@"photo"]) {
+                    __block UIImage *img = nil;
+                    if ([uri hasPrefix:@"ph://"]) {
+                        NSString *aid = [[uri substringFromIndex:5] componentsSeparatedByString:@"/"].firstObject;
+                        PHFetchResult *fr = [PHAsset fetchAssetsWithLocalIdentifiers:@[aid] options:nil];
+                        PHAsset *pa = fr.firstObject;
+                        if (pa) {
+                            dispatch_semaphore_t s = dispatch_semaphore_create(0);
+                            [mgr requestImageForAsset:pa
+                                           targetSize:CGSizeMake(outputSize.width, outputSize.height)
+                                          contentMode:PHImageContentModeAspectFill
+                                              options:iOpts
+                                        resultHandler:^(UIImage *i, NSDictionary *info) {
+                                img = i; dispatch_semaphore_signal(s);
+                            }];
+                            dispatch_semaphore_wait(s, dispatch_time(DISPATCH_TIME_NOW, 15 * NSEC_PER_SEC));
+                        }
+                    } else {
+                        NSString *path = [uri hasPrefix:@"file://"] ? [[NSURL URLWithString:uri] path] : uri;
+                        img = [UIImage imageWithContentsOfFile:path];
+                    }
+                    if (img) result = img;
+                    else NSLog(@"[combineMedia] photo load failed: %@", uri);
+
+                } else {
+                    __block AVAsset *asset = nil;
+                    if ([uri hasPrefix:@"ph://"]) {
+                        NSString *lid = [[uri substringFromIndex:5] componentsSeparatedByString:@"?"].firstObject;
+                        PHFetchResult *r = [PHAsset fetchAssetsWithLocalIdentifiers:@[lid] options:nil];
+                        PHAsset *pa = r.firstObject;
+                        if (pa) {
+                            PHVideoRequestOptions *vOpts = [[PHVideoRequestOptions alloc] init];
+                            vOpts.version             = PHVideoRequestOptionsVersionCurrent;
+                            vOpts.networkAccessAllowed = NO;
+                            dispatch_semaphore_t s = dispatch_semaphore_create(0);
+                            [mgr requestAVAssetForVideo:pa options:vOpts
+                                         resultHandler:^(AVAsset *av, AVAudioMix *mx, NSDictionary *info) {
+                                asset = av; dispatch_semaphore_signal(s);
+                            }];
+                            dispatch_semaphore_wait(s, dispatch_time(DISPATCH_TIME_NOW, 30 * NSEC_PER_SEC));
+                        }
+                    } else {
+                        NSURL *u = [uri hasPrefix:@"file://"] ? [NSURL URLWithString:uri] : [NSURL fileURLWithPath:uri];
+                        if (u) asset = [AVURLAsset URLAssetWithURL:u options:nil];
+                    }
+                    if (asset) result = asset;
+                    else NSLog(@"[combineMedia] video load failed: %@", uri);
+                }
+
+                if (result) {
+                    [loadedLock lock];
+                    loaded[i] = result;
+                    [loadedLock unlock];
+                }
+            });
+        }
+        dispatch_group_wait(loadGroup, DISPATCH_TIME_FOREVER);
+
+        // ── Phase 1: Group into segments (fast, in-order, no I/O) ──────────────
         // Each segment is an AVAsset (either a temp photo-batch MP4 or an actual video).
         NSMutableArray<AVAsset *> *segments    = [NSMutableArray array];
         NSMutableArray<NSURL *>   *tempFiles   = [NSMutableArray array];
@@ -804,60 +883,18 @@ RCT_EXPORT_METHOD(combineMediaToVideo:(NSArray<NSDictionary *> *)mediaItems
             }
         };
 
-        for (NSDictionary *item in mediaItems) {
-            NSString *uri  = item[@"uri"]  ?: @"";
+        for (NSUInteger i = 0; i < n; i++) {
+            NSDictionary *item = mediaItems[i];
             NSString *type = item[@"type"] ?: @"photo";
+            id loadedItem = loaded[i];
+            if (loadedItem == [NSNull null]) continue;
 
             if ([type isEqualToString:@"photo"]) {
-                __block UIImage *img = nil;
-                if ([uri hasPrefix:@"ph://"]) {
-                    NSString *aid = [[uri substringFromIndex:5] componentsSeparatedByString:@"/"].firstObject;
-                    PHFetchResult *fr = [PHAsset fetchAssetsWithLocalIdentifiers:@[aid] options:nil];
-                    PHAsset *pa = fr.firstObject;
-                    if (pa) {
-                        dispatch_semaphore_t s = dispatch_semaphore_create(0);
-                        [mgr requestImageForAsset:pa
-                                       targetSize:CGSizeMake(outputSize.width, outputSize.height)
-                                      contentMode:PHImageContentModeAspectFill
-                                          options:iOpts
-                                    resultHandler:^(UIImage *i, NSDictionary *info) {
-                            img = i; dispatch_semaphore_signal(s);
-                        }];
-                        dispatch_semaphore_wait(s, dispatch_time(DISPATCH_TIME_NOW, 15 * NSEC_PER_SEC));
-                    }
-                } else {
-                    NSString *path = [uri hasPrefix:@"file://"] ? [[NSURL URLWithString:uri] path] : uri;
-                    img = [UIImage imageWithContentsOfFile:path];
-                }
-                if (img) [pendingPhotos addObject:img];
-                else NSLog(@"[combineMedia] photo load failed: %@", uri);
-
+                [pendingPhotos addObject:(UIImage *)loadedItem];
             } else {
                 // Flush accumulated photos before adding the video segment
                 flushPhotos();
-
-                __block AVAsset *asset = nil;
-                if ([uri hasPrefix:@"ph://"]) {
-                    NSString *lid = [[uri substringFromIndex:5] componentsSeparatedByString:@"?"].firstObject;
-                    PHFetchResult *r = [PHAsset fetchAssetsWithLocalIdentifiers:@[lid] options:nil];
-                    PHAsset *pa = r.firstObject;
-                    if (pa) {
-                        PHVideoRequestOptions *vOpts = [[PHVideoRequestOptions alloc] init];
-                        vOpts.version             = PHVideoRequestOptionsVersionCurrent;
-                        vOpts.networkAccessAllowed = NO;
-                        dispatch_semaphore_t s = dispatch_semaphore_create(0);
-                        [mgr requestAVAssetForVideo:pa options:vOpts
-                                     resultHandler:^(AVAsset *av, AVAudioMix *mx, NSDictionary *info) {
-                            asset = av; dispatch_semaphore_signal(s);
-                        }];
-                        dispatch_semaphore_wait(s, dispatch_time(DISPATCH_TIME_NOW, 30 * NSEC_PER_SEC));
-                    }
-                } else {
-                    NSURL *u = [uri hasPrefix:@"file://"] ? [NSURL URLWithString:uri] : [NSURL fileURLWithPath:uri];
-                    if (u) asset = [AVURLAsset URLAssetWithURL:u options:nil];
-                }
-                if (asset) [segments addObject:asset];
-                else NSLog(@"[combineMedia] video load failed: %@", uri);
+                [segments addObject:(AVAsset *)loadedItem];
             }
         }
         flushPhotos(); // flush any trailing photos
