@@ -21,10 +21,9 @@ import { FunctionsHttpError } from '@supabase/supabase-js';
 import { useTikTok } from '@/hooks/useTikTok';
 import { useInstagram } from '@/hooks/useInstagram';
 import { uploadVideoToStorage } from '@/services/tiktokService';
-import { burnHookOverlay, openVideoInApp } from '@/services/videoOverlayService';
+import { burnHookOverlay } from '@/services/videoOverlayService';
 import { searchViralAudio, AudioSearchResult } from '@/services/audioSearchService';
 import * as FileSystem from 'expo-file-system';
-import * as Sharing from 'expo-sharing';
 import Slider from '@react-native-community/slider';
 
 type Tab = 'hook' | 'caption' | 'audio' | 'platforms';
@@ -478,29 +477,41 @@ export default function EditorScreen() {
     ]);
   };
 
-  const prepareVideoForPublish = async (
+  const burnOverlayLocally = async (
     videoUri: string,
     hookText: string,
-  ): Promise<{ videoUrl: string; error?: string }> => {
-    if (!user?.id || !video?.id) return { videoUrl: '', error: 'Not authenticated.' };
-
+  ): Promise<{ outputUri: string }> => {
     const resolved = await resolveVideoUri(videoUri);
+
+    setBurningOverlay(true);
 
     let bgLocalPath: string | undefined;
     const previewUrl = previewCache[selectedAudioId];
     if (previewUrl) {
       try {
         const dest = FileSystem.cacheDirectory + `bg_audio_${Date.now()}.m4a`;
-        const dl = await FileSystem.downloadAsync(previewUrl, dest);
+        const downloadTimeout = new Promise<never>((_, reject) =>
+          setTimeout(() => reject(new Error('bg audio download timeout')), 10000),
+        );
+        const dl = await Promise.race([FileSystem.downloadAsync(previewUrl, dest), downloadTimeout]);
         bgLocalPath = dl.uri;
       } catch (e) {
-        console.warn('[prepareVideoForPublish] bg audio download failed:', e);
+        console.warn('[burnOverlayLocally] bg audio download failed or timed out, continuing without it:', e);
       }
     }
 
-    setBurningOverlay(true);
     const { outputUri } = await burnHookOverlay(resolved, hookText, bgLocalPath, originalVolume, bgVolume);
     setBurningOverlay(false);
+    return { outputUri };
+  };
+
+  const prepareVideoForPublish = async (
+    videoUri: string,
+    hookText: string,
+  ): Promise<{ videoUrl: string; error?: string }> => {
+    if (!user?.id || !video?.id) return { videoUrl: '', error: 'Not authenticated.' };
+
+    const { outputUri } = await burnOverlayLocally(videoUri, hookText);
 
     setUploadingToStorage(true);
     const { publicUrl, error } = await uploadVideoToStorage(
@@ -545,17 +556,38 @@ export default function EditorScreen() {
     const snap = snapshotEditorState();
     if (!video?.videoUri) { showAlert('No Video File', 'Select a video first.'); return; }
 
-    setSavingToPhotos(true);
-    const resolved = await resolveVideoUri(video.videoUri);
-    setSavingToPhotos(false);
-
+    const { outputUri } = await burnOverlayLocally(video.videoUri, snap.hook?.text ?? '');
     updateVideo(video.id, { ...snap, title: videoTitle });
+
+    setSavingToPhotos(true);
+    try {
+      const MediaLibrary = await import('expo-media-library');
+      const perm = await MediaLibrary.requestPermissionsAsync();
+      if (!perm.granted) {
+        setSavingToPhotos(false);
+        showAlert('Permission Needed', 'Allow Photos access so the finished video can be saved before opening Instagram.');
+        return;
+      }
+      await MediaLibrary.saveToLibraryAsync(outputUri);
+    } catch (e: any) {
+      setSavingToPhotos(false);
+      showAlert('Could Not Save Video', e?.message ?? 'Please try again.');
+      return;
+    }
+    setSavingToPhotos(false);
     setShowInstagramSheet(false);
 
-    const { error } = await openVideoInApp(resolved);
-    if (error) {
-      showAlert('Could not Open Share Sheet', error);
-    }
+    // Instagram has no public API to preload a video into the Reels editor —
+    // the most reliable hand-off is: save to Photos, then open the app so
+    // the video is the top item when the user picks it from their camera roll.
+    showAlert(
+      'Saved to Photos!',
+      "In Instagram, tap Reels then pick this video from your camera roll — it's the most recent one. If you back out before posting, Instagram will offer to save it as a draft.",
+      [
+        { text: 'Open Instagram', onPress: () => { Linking.openURL('instagram://app').catch(() => {}); } },
+        { text: 'Later', style: 'cancel' },
+      ],
+    );
   };
 
   const togglePlatform = (p: PlatformType) => {
@@ -1050,7 +1082,7 @@ export default function EditorScreen() {
                 <View style={styles.sheetNote}>
                   <MaterialIcons name="info-outline" size={13} color={Colors.textMuted} />
                   <Text style={styles.sheetNoteText}>
-                    Finish in the Instagram app for full editing tools, music, and better engagement.
+                    Saves your hook-burned video to Photos and opens Instagram so you can pick it for a Reel — full editing tools, music, and better engagement than the API publish.
                   </Text>
                 </View>
                 <Pressable
@@ -1073,10 +1105,10 @@ export default function EditorScreen() {
               <View style={styles.sheetPhase}>
                 <ActivityIndicator size="large" color="#e1306c" />
                 <Text style={styles.sheetPhaseTitle}>
-                  {burningOverlay ? 'Applying hook text...' : 'Saving to your library...'}
+                  {burningOverlay ? 'Applying hook & audio...' : 'Saving to your Photos library...'}
                 </Text>
                 <Text style={styles.sheetPhaseSub}>
-                  {savingToPhotos ? 'Instagram will open once saved.' : 'Almost ready...'}
+                  {savingToPhotos ? 'Almost ready to open Instagram.' : 'Almost ready...'}
                 </Text>
               </View>
             ) : null}
