@@ -348,10 +348,20 @@ export default function EditorScreen() {
     if (previewCache[selectedAudioId]) return previewCache[selectedAudioId];
     const source = resolveAudioSource(selectedAudioId);
     if (!source) return undefined;
-    const { results } = await searchViralAudio(`${source.title} ${source.artist}`);
-    const previewUrl = results[0]?.previewUrl;
-    if (previewUrl) setPreviewCache(prev => ({ ...prev, [selectedAudioId]: previewUrl }));
-    return previewUrl;
+
+    // The AI's "best song" pick is a free-text guess, not a verified catalog
+    // entry — an exact "title artist" search often misses, so fall back to
+    // looser queries before giving up on finding a real preview clip.
+    const queries = [`${source.title} ${source.artist}`, source.title, source.artist].filter(Boolean);
+    for (const q of queries) {
+      const { results } = await searchViralAudio(q);
+      const previewUrl = results.find(r => r.previewUrl)?.previewUrl;
+      if (previewUrl) {
+        setPreviewCache(prev => ({ ...prev, [selectedAudioId]: previewUrl }));
+        return previewUrl;
+      }
+    }
+    return undefined;
   };
 
   const handleGenerateHook = async () => {
@@ -499,7 +509,7 @@ export default function EditorScreen() {
   const burnOverlayLocally = async (
     videoUri: string,
     hookText: string,
-  ): Promise<{ outputUri: string }> => {
+  ): Promise<{ outputUri: string; audioMixed: boolean }> => {
     const resolved = await resolveVideoUri(videoUri);
 
     setBurningOverlay(true);
@@ -521,7 +531,7 @@ export default function EditorScreen() {
 
     const { outputUri } = await burnHookOverlay(resolved, hookText, bgLocalPath, originalVolume, bgVolume);
     setBurningOverlay(false);
-    return { outputUri };
+    return { outputUri, audioMixed: !!bgLocalPath };
   };
 
   const prepareVideoForPublish = async (
@@ -575,7 +585,7 @@ export default function EditorScreen() {
     const snap = snapshotEditorState();
     if (!video?.videoUri) { showAlert('No Video File', 'Select a video first.'); return; }
 
-    const { outputUri } = await burnOverlayLocally(video.videoUri, snap.hook?.text ?? '');
+    const { outputUri, audioMixed } = await burnOverlayLocally(video.videoUri, snap.hook?.text ?? '');
     updateVideo(video.id, { ...snap, title: videoTitle });
 
     // Instagram's Reels sharing-to-stories pasteboard handoff has no field
@@ -598,16 +608,27 @@ export default function EditorScreen() {
     }
     setShowInstagramSheet(false);
 
-    const opened = await Linking.openURL('instagram-reels://share').then(() => true).catch(() => false);
-    if (!opened) {
-      showAlert('Instagram Not Installed', 'Please install Instagram to use this feature.');
-      return;
-    }
+    const openInstagram = async () => {
+      const opened = await Linking.openURL('instagram-reels://share').then(() => true).catch(() => false);
+      if (!opened) {
+        showAlert('Instagram Not Installed', 'Please install Instagram to use this feature.');
+      }
+    };
+
+    // Show this BEFORE switching to Instagram — once the app backgrounds,
+    // an alert fired after the fact is easy to miss entirely.
+    const notes: string[] = [];
     if (captionText) {
-      showAlert(
-        'Caption Copied',
-        "Instagram doesn't let apps pre-fill the caption on Reels drafts, so we copied your caption and hashtags to the clipboard — just paste them into the caption field.",
-      );
+      notes.push("Instagram doesn't let apps pre-fill the caption on Reels drafts, so we copied your caption and hashtags to the clipboard — paste them into the caption field once Instagram opens.");
+    }
+    if (snap.audio && !audioMixed) {
+      notes.push(`We couldn't find a matching preview clip for "${snap.audio.title}", so the original clip audio was kept instead of that song.`);
+    }
+
+    if (notes.length) {
+      showAlert('Before You Continue', notes.join('\n\n'), [{ text: 'Open Instagram', onPress: openInstagram }]);
+    } else {
+      await openInstagram();
     }
   };
 
