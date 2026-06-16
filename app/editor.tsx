@@ -560,6 +560,7 @@ export default function EditorScreen() {
     updateVideo(video.id, { ...snap, title: videoTitle });
 
     setSavingToPhotos(true);
+    let assetId: string | undefined;
     try {
       const MediaLibrary = await import('expo-media-library');
       const perm = await MediaLibrary.requestPermissionsAsync();
@@ -568,7 +569,10 @@ export default function EditorScreen() {
         showAlert('Permission Needed', 'Allow Photos access so the finished video can be saved before opening Instagram.');
         return;
       }
-      await MediaLibrary.saveToLibraryAsync(outputUri);
+      const asset = await MediaLibrary.createAssetAsync(outputUri);
+      assetId = asset.id;
+      // Give Photos a moment to index the asset before Instagram reads it
+      await new Promise(resolve => setTimeout(resolve, 800));
     } catch (e: any) {
       setSavingToPhotos(false);
       showAlert('Could Not Save Video', e?.message ?? 'Please try again.');
@@ -577,17 +581,15 @@ export default function EditorScreen() {
     setSavingToPhotos(false);
     setShowInstagramSheet(false);
 
-    // Instagram has no public API to preload a video into the Reels editor —
-    // the most reliable hand-off is: save to Photos, then open the app so
-    // the video is the top item when the user picks it from their camera roll.
-    showAlert(
-      'Saved to Photos!',
-      "In Instagram, tap Reels then pick this video from your camera roll — it's the most recent one. If you back out before posting, Instagram will offer to save it as a draft.",
-      [
-        { text: 'Open Instagram', onPress: () => { Linking.openURL('instagram://app').catch(() => {}); } },
-        { text: 'Later', style: 'cancel' },
-      ],
-    );
+    // instagram-reels:// deep-links straight into the Reels camera/editor
+    // with the saved clip pre-selected (localIdentifier must stay unencoded —
+    // it contains '/'). Falls back to a plain app-open if that scheme can't
+    // be resolved (e.g. older Instagram build).
+    const reelsUrl = `instagram-reels://share?localIdentifier=${assetId}`;
+    const opened = await Linking.openURL(reelsUrl).then(() => true).catch(() => false);
+    if (!opened) {
+      await Linking.openURL('instagram://app').catch(() => {});
+    }
   };
 
   const togglePlatform = (p: PlatformType) => {
