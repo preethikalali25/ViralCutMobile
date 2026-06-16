@@ -38,17 +38,23 @@ export async function burnHookOverlay(
     return { outputUri: videoUri };
   }
 
+  const timeout = new Promise<string>((_, reject) =>
+    setTimeout(() => reject(new Error('timeout')), 15000),
+  );
   try {
-    const outputUri: string = await VideoTextOverlay.burnText(
-      videoUri,
-      hookText.trim(),
-      backgroundAudioUri ?? '',
-      originalVolume ?? 0.6,
-      bgVolume ?? 0.8,
-    );
+    const outputUri: string = await Promise.race([
+      VideoTextOverlay.burnText(
+        videoUri,
+        hookText.trim(),
+        backgroundAudioUri ?? '',
+        originalVolume ?? 0.6,
+        bgVolume ?? 0.8,
+      ),
+      timeout,
+    ]);
     return { outputUri };
   } catch (e: any) {
-    console.warn('[burnHookOverlay] Native overlay failed, using original:', e?.message);
+    console.warn('[burnHookOverlay] Native overlay failed or timed out, using original:', e?.message);
     return { outputUri: videoUri };
   }
 }
