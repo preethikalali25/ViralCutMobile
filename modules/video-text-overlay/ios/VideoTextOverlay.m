@@ -1092,4 +1092,30 @@ RCT_EXPORT_METHOD(photosToVideo:(NSArray<NSString *> *)photoUris
     });
 }
 
+// Meta's documented Sharing-to-Reels mechanism: the video goes on the
+// pasteboard under Instagram's sticker keys (not the Photos library), then
+// Instagram reads it from there when opened via instagram-reels://share.
+RCT_EXPORT_METHOD(shareToInstagramReels:(NSString *)videoPath
+                                  appID:(NSString *)appID
+                                resolve:(RCTPromiseResolveBlock)resolve
+                                 reject:(RCTPromiseRejectBlock)reject)
+{
+    NSString *path = [videoPath hasPrefix:@"file://"] ? [videoPath substringFromIndex:7] : videoPath;
+    NSData *videoData = [NSData dataWithContentsOfFile:path];
+    if (!videoData) {
+        reject(@"no_file", @"Could not read video file", nil);
+        return;
+    }
+
+    NSDictionary *pasteboardItem = @{
+        @"com.instagram.sharedSticker.backgroundVideo": videoData,
+        @"com.instagram.sharedSticker.appID": appID,
+    };
+    NSDictionary *options = @{
+        UIPasteboardOptionExpirationDate: [NSDate dateWithTimeIntervalSinceNow:60 * 5],
+    };
+    [[UIPasteboard generalPasteboard] setItems:@[pasteboardItem] options:options];
+    resolve(@YES);
+}
+
 @end

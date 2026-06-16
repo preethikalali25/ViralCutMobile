@@ -21,7 +21,8 @@ import { FunctionsHttpError } from '@supabase/supabase-js';
 import { useTikTok } from '@/hooks/useTikTok';
 import { useInstagram } from '@/hooks/useInstagram';
 import { uploadVideoToStorage } from '@/services/tiktokService';
-import { burnHookOverlay } from '@/services/videoOverlayService';
+import { burnHookOverlay, shareToInstagramReels } from '@/services/videoOverlayService';
+import { INSTAGRAM_APP_ID } from '@/constants/instagram';
 import { searchViralAudio, AudioSearchResult } from '@/services/audioSearchService';
 import * as FileSystem from 'expo-file-system';
 import Slider from '@react-native-community/slider';
@@ -559,36 +560,21 @@ export default function EditorScreen() {
     const { outputUri } = await burnOverlayLocally(video.videoUri, snap.hook?.text ?? '');
     updateVideo(video.id, { ...snap, title: videoTitle });
 
+    // Meta's documented Sharing-to-Reels handoff: the video goes on the
+    // pasteboard (not the Photos library), then instagram-reels://share
+    // opens Instagram straight into the Reels composer with it loaded.
     setSavingToPhotos(true);
-    let assetId: string | undefined;
-    try {
-      const MediaLibrary = await import('expo-media-library');
-      const perm = await MediaLibrary.requestPermissionsAsync();
-      if (!perm.granted) {
-        setSavingToPhotos(false);
-        showAlert('Permission Needed', 'Allow Photos access so the finished video can be saved before opening Instagram.');
-        return;
-      }
-      const asset = await MediaLibrary.createAssetAsync(outputUri);
-      assetId = asset.id;
-      // Give Photos a moment to index the asset before Instagram reads it
-      await new Promise(resolve => setTimeout(resolve, 800));
-    } catch (e: any) {
-      setSavingToPhotos(false);
-      showAlert('Could Not Save Video', e?.message ?? 'Please try again.');
+    const { error: shareError } = await shareToInstagramReels(outputUri, INSTAGRAM_APP_ID);
+    setSavingToPhotos(false);
+    if (shareError) {
+      showAlert('Could Not Open Instagram', shareError);
       return;
     }
-    setSavingToPhotos(false);
     setShowInstagramSheet(false);
 
-    // instagram-reels:// deep-links straight into the Reels camera/editor
-    // with the saved clip pre-selected (localIdentifier must stay unencoded —
-    // it contains '/'). Falls back to a plain app-open if that scheme can't
-    // be resolved (e.g. older Instagram build).
-    const reelsUrl = `instagram-reels://share?localIdentifier=${assetId}`;
-    const opened = await Linking.openURL(reelsUrl).then(() => true).catch(() => false);
+    const opened = await Linking.openURL('instagram-reels://share').then(() => true).catch(() => false);
     if (!opened) {
-      await Linking.openURL('instagram://app').catch(() => {});
+      showAlert('Instagram Not Installed', 'Please install Instagram to use this feature.');
     }
   };
 
@@ -1084,7 +1070,7 @@ export default function EditorScreen() {
                 <View style={styles.sheetNote}>
                   <MaterialIcons name="info-outline" size={13} color={Colors.textMuted} />
                   <Text style={styles.sheetNoteText}>
-                    Saves your hook-burned video to Photos and opens Instagram so you can pick it for a Reel — full editing tools, music, and better engagement than the API publish.
+                    Hands your hook-burned video straight to Instagram's Reels composer — full editing tools, music, and better engagement than the API publish.
                   </Text>
                 </View>
                 <Pressable
@@ -1107,7 +1093,7 @@ export default function EditorScreen() {
               <View style={styles.sheetPhase}>
                 <ActivityIndicator size="large" color="#e1306c" />
                 <Text style={styles.sheetPhaseTitle}>
-                  {burningOverlay ? 'Applying hook & audio...' : 'Saving to your Photos library...'}
+                  {burningOverlay ? 'Applying hook & audio...' : 'Handing off to Instagram...'}
                 </Text>
                 <Text style={styles.sheetPhaseSub}>
                   {savingToPhotos ? 'Almost ready to open Instagram.' : 'Almost ready...'}

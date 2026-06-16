@@ -24,6 +24,21 @@ export async function photosToVideo(
   return await VideoTextOverlay.photosToVideo(photoUris, durationPerPhoto);
 }
 
+export async function shareToInstagramReels(
+  videoUri: string,
+  appId: string,
+): Promise<{ error?: string }> {
+  if (!VideoTextOverlay?.shareToInstagramReels) {
+    return { error: 'Native sharing not available' };
+  }
+  try {
+    await VideoTextOverlay.shareToInstagramReels(videoUri, appId);
+    return {};
+  } catch (e: any) {
+    return { error: e?.message ?? 'Could not prepare Instagram share' };
+  }
+}
+
 export async function burnHookOverlay(
   videoUri: string,
   hookText: string,
