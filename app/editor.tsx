@@ -473,23 +473,28 @@ export default function EditorScreen() {
     const snap = snapshotEditorState();
     if (!video?.videoUri) { showAlert('No Video File', 'Select a video first.'); return; }
 
-    const isAvailable = await Sharing.isAvailableAsync();
-    if (!isAvailable) {
-      showAlert('Sharing Not Available', 'Your device does not support sharing.');
-      return;
-    }
-
     setSavingToPhotos(true);
     const resolved = await resolveVideoUri(video.videoUri);
+    const MediaLibrary = await import('expo-media-library');
+    const { status } = await MediaLibrary.requestPermissionsAsync();
+    if (status !== 'granted') {
+      setSavingToPhotos(false);
+      showAlert('Permission Required', 'Please allow photo library access so ViralCut can save the video before opening Instagram.');
+      return;
+    }
+    const asset = await MediaLibrary.createAssetAsync(resolved);
+    // Give Photos a moment to index the asset before Instagram reads it
+    await new Promise(resolve => setTimeout(resolve, 800));
     setSavingToPhotos(false);
 
     updateVideo(video.id, { ...snap, title: videoTitle });
     setShowInstagramSheet(false);
 
-    await Sharing.shareAsync(resolved, {
-      mimeType: 'video/mp4',
-      UTI: 'public.movie',
-    });
+    try {
+      await Linking.openURL(`instagram-reels://share?localIdentifier=${encodeURIComponent(asset.id)}`);
+    } catch {
+      showAlert('Could not open Instagram', 'Make sure Instagram is installed and try again.');
+    }
   };
 
   const togglePlatform = (p: PlatformType) => {
