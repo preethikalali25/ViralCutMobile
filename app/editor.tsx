@@ -497,9 +497,10 @@ export default function EditorScreen() {
     updateVideo(video.id, { ...snap, title: videoTitle });
     setShowInstagramSheet(false);
 
-    try {
-      await Linking.openURL(`instagram-reels://share?localIdentifier=${encodeURIComponent(asset.id)}`);
-    } catch {
+    // Instagram expects the raw localIdentifier (contains '/' which must NOT be encoded)
+    const reelsUrl = `instagram-reels://share?localIdentifier=${asset.id}`;
+    const opened = await Linking.openURL(reelsUrl).then(() => true).catch(() => false);
+    if (!opened) {
       showAlert('Could not open Instagram', 'Make sure Instagram is installed and try again.');
     }
   };
