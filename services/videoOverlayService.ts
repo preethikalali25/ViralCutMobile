@@ -24,6 +24,18 @@ export async function photosToVideo(
   return await VideoTextOverlay.photosToVideo(photoUris, durationPerPhoto);
 }
 
+export async function openVideoInApp(videoUri: string): Promise<{ error?: string }> {
+  if (!VideoTextOverlay?.openVideoInApp) {
+    return { error: 'Native sharing not available' };
+  }
+  try {
+    await VideoTextOverlay.openVideoInApp(videoUri);
+    return {};
+  } catch (e: any) {
+    return { error: e?.message ?? 'Could not open share sheet' };
+  }
+}
+
 export async function burnHookOverlay(
   videoUri: string,
   hookText: string,

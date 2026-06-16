@@ -21,7 +21,7 @@ import { FunctionsHttpError } from '@supabase/supabase-js';
 import { useTikTok } from '@/hooks/useTikTok';
 import { useInstagram } from '@/hooks/useInstagram';
 import { uploadVideoToStorage } from '@/services/tiktokService';
-import { burnHookOverlay } from '@/services/videoOverlayService';
+import { burnHookOverlay, openVideoInApp } from '@/services/videoOverlayService';
 import * as FileSystem from 'expo-file-system';
 import * as Sharing from 'expo-sharing';
 
@@ -483,26 +483,14 @@ export default function EditorScreen() {
 
     setSavingToPhotos(true);
     const resolved = await resolveVideoUri(video.videoUri);
-    const MediaLibrary = await import('expo-media-library');
-    const { status } = await MediaLibrary.requestPermissionsAsync();
-    if (status !== 'granted') {
-      setSavingToPhotos(false);
-      showAlert('Permission Required', 'Please allow photo library access so ViralCut can save the video before opening Instagram.');
-      return;
-    }
-    const asset = await MediaLibrary.createAssetAsync(resolved);
-    // Give Photos a moment to index the asset before Instagram reads it
-    await new Promise(resolve => setTimeout(resolve, 800));
     setSavingToPhotos(false);
 
     updateVideo(video.id, { ...snap, title: videoTitle });
     setShowInstagramSheet(false);
 
-    // Instagram expects the raw localIdentifier (contains '/' which must NOT be encoded)
-    const reelsUrl = `instagram-reels://share?localIdentifier=${asset.id}`;
-    const opened = await Linking.openURL(reelsUrl).then(() => true).catch(() => false);
-    if (!opened) {
-      showAlert('Could not open Instagram', 'Make sure Instagram is installed and try again.');
+    const { error } = await openVideoInApp(resolved);
+    if (error) {
+      showAlert('Could not Open Share Sheet', error);
     }
   };
 

@@ -221,13 +221,75 @@
 // React Native module
 // ---------------------------------------------------------------------------
 
-@interface VideoTextOverlay : NSObject <RCTBridgeModule>
+// Strong reference to prevent UIDocumentInteractionController from being
+// deallocated before the user interacts with the share sheet.
+static UIDocumentInteractionController *_shareController = nil;
+
+@interface VideoTextOverlay : NSObject <RCTBridgeModule, UIDocumentInteractionControllerDelegate>
 @end
 
 @implementation VideoTextOverlay
 
 RCT_EXPORT_MODULE();
 + (BOOL)requiresMainQueueSetup { return NO; }
+
+// UIDocumentInteractionControllerDelegate — required to get a presenting view controller
+- (UIViewController *)documentInteractionControllerViewControllerForPreview:(UIDocumentInteractionController *)controller {
+    return UIApplication.sharedApplication.delegate.window.rootViewController;
+}
+
+// Opens the native iOS "Open In" sheet so the user can pick Instagram → Reels.
+// Works without any URL scheme registration.
+RCT_EXPORT_METHOD(openVideoInApp:(NSString *)videoUri
+                  resolver:(RCTPromiseResolveBlock)resolve
+                  rejecter:(RCTPromiseRejectBlock)reject) {
+
+    dispatch_async(dispatch_get_main_queue(), ^{
+        NSURL *srcUrl = [videoUri hasPrefix:@"file://"]
+            ? [NSURL URLWithString:videoUri]
+            : [NSURL fileURLWithPath:videoUri];
+
+        if (!srcUrl || ![[NSFileManager defaultManager] fileExistsAtPath:srcUrl.path]) {
+            reject(@"open_failed", @"Video file not found", nil);
+            return;
+        }
+
+        // Copy to a temp file — ensures it has a .mp4 extension Instagram recognises
+        NSString *tmp = [NSTemporaryDirectory()
+                         stringByAppendingPathComponent:
+                             [NSString stringWithFormat:@"viralcut_share_%lld.mp4",
+                              (long long)([[NSDate date] timeIntervalSince1970])]];
+        NSURL *tmpUrl = [NSURL fileURLWithPath:tmp];
+        [[NSFileManager defaultManager] removeItemAtURL:tmpUrl error:nil];
+
+        NSError *copyErr = nil;
+        [[NSFileManager defaultManager] copyItemAtURL:srcUrl toURL:tmpUrl error:&copyErr];
+        if (copyErr) { reject(@"open_failed", copyErr.localizedDescription, nil); return; }
+
+        _shareController = [UIDocumentInteractionController interactionControllerWithURL:tmpUrl];
+        _shareController.UTI = @"public.mpeg-4";
+        _shareController.delegate = self;
+
+        // Find the key window/view to anchor the sheet
+        UIWindow *keyWindow = nil;
+        for (UIScene *scene in UIApplication.sharedApplication.connectedScenes) {
+            if ([scene isKindOfClass:[UIWindowScene class]]) {
+                keyWindow = ((UIWindowScene *)scene).keyWindow;
+                if (keyWindow) break;
+            }
+        }
+
+        if (!keyWindow) { reject(@"open_failed", @"No window available", nil); return; }
+
+        CGRect anchor = CGRectMake(keyWindow.bounds.size.width / 2,
+                                   keyWindow.bounds.size.height - 100, 1, 1);
+        BOOL shown = [_shareController presentOpenInMenuFromRect:anchor
+                                                         inView:keyWindow
+                                                       animated:YES];
+        if (shown) resolve(@(YES));
+        else reject(@"open_failed", @"No apps can open this video", nil);
+    });
+}
 
 // Derive vImage rotation constant from AVFoundation's preferredTransform.
 // vImageRotate90_ARGB8888 constants: 0=0° 1=90°CW 2=180° 3=90°CCW
