@@ -149,6 +149,23 @@ ${captionsBlock}
 ${SAFETY_RULES}
 ${GENERIC_HOOK_BAN}`;
 
+      const framelessHookPrompt = videoTitle
+        ? `Write 3 viral hooks for a short-form video titled: "${videoTitle}".${contextNote}
+Infer the specific subject from the title. Each hook must name the actual subject — no vague "this" or "it".
+Each hook: 5–7 words MAX, under 50 characters. Short, punchy, reads instantly on screen.
+
+Return in EXACTLY this format:
+HOOK1: [question style]
+HOOK2: [bold statement or surprising angle]
+HOOK3: [vivid sensory description]`
+        : `Write 3 viral hooks for a short-form video.${contextNote || ''}
+Each hook: 5–7 words MAX, under 50 characters. Specific, punchy, scroll-stopping.
+
+Return in EXACTLY this format:
+HOOK1: [question style]
+HOOK2: [bold statement or surprising angle]
+HOOK3: [vivid sensory description]`;
+
       // Single call: one prompt that chains observation → 3 hooks
       const uPrompt = hasFrame
         ? `${rawFrames.length > 1 ? `You are looking at ${rawFrames.length} frames from different moments in the video.` : 'You are looking at a frame from the video.'}
@@ -168,40 +185,47 @@ Return in EXACTLY this format, nothing else:
 HOOK1: [question that names the specific subject and action]
 HOOK2: [bold statement or surprising angle about the exact thing you saw]
 HOOK3: [vivid sensory description of what's happening]`
-        : videoTitle
-        ? `Write 3 viral hooks for a short-form video titled: "${videoTitle}".${contextNote}
-Infer the specific subject from the title. Each hook must name the actual subject — no vague "this" or "it".
-Each hook: 5–7 words MAX, under 50 characters. Short, punchy, reads instantly on screen.
+        : framelessHookPrompt;
 
-Return in EXACTLY this format:
-HOOK1: [question style]
-HOOK2: [bold statement or surprising angle]
-HOOK3: [vivid sensory description]`
-        : `Write 3 viral hooks for a short-form video.${contextNote || ''}
-Each hook: 5–7 words MAX, under 50 characters. Specific, punchy, scroll-stopping.
+      // Parse HOOK1:/HOOK2:/HOOK3: lines, tolerating formatting the model adds
+      // despite instructions (bold markers, leading dashes/bullets, quotes,
+      // "Hook 1)" / "hook1." style numbering instead of "HOOK1:").
+      const extractHooks = (raw: string): string[] => {
+        const extract = (num: number) => {
+          const re = new RegExp(`HOOK\\s*${num}\\s*[:.)\\-]?\\s*(.+)`, 'i');
+          const match = raw.match(re);
+          if (!match) return '';
+          return match[1]
+            .trim()
+            .replace(/^[*_\-\s]+|[*_\-\s]+$/g, '')
+            .replace(/^["']|["']$/g, '')
+            .trim();
+        };
+        let found = [1, 2, 3].map(extract).filter(v => v.length > 5);
+        if (found.length > 0) return found;
 
-Return in EXACTLY this format:
-HOOK1: [question style]
-HOOK2: [bold statement or surprising angle]
-HOOK3: [vivid sensory description]`;
+        // Heuristic fallback: the model ignored the HOOK1/2/3 labels entirely.
+        // Take the last few short, non-empty lines (the actual hooks tend to
+        // come after any inventory/reasoning the model included).
+        const candidateLines = raw
+          .split('\n')
+          .map(l => l.trim().replace(/^[*_\-\d.)\s]+|[*_\-\s]+$/g, '').replace(/^["']|["']$/g, '').trim())
+          .filter(l => l.length > 5 && l.length < 80 && !/^(STEP|SUBJECT|ACTION|SETTING|NOTABLE)/i.test(l));
+        return candidateLines.slice(-3);
+      };
 
       const uContent = buildUserContent(uPrompt, rawFrames);
-      const rawHooks = await callAnthropic(ANTHROPIC_MODEL_SONNET, sharedSystem, uContent, 400, 0.9);
+      let rawHooks = await callAnthropic(ANTHROPIC_MODEL_SONNET, sharedSystem, uContent, 800, 0.9);
+      let variations = extractHooks(rawHooks);
 
-      // Parse HOOK1:/HOOK2:/HOOK3: lines, tolerating markdown the model adds
-      // despite instructions (bold markers, leading dashes/bullets, quotes).
-      const extract = (label: string) => {
-        const match = rawHooks.match(new RegExp(`${label}:\\s*(.+)`));
-        if (!match) return '';
-        return match[1]
-          .trim()
-          .replace(/^[*_\-\s]+|[*_\-\s]+$/g, '')
-          .replace(/^["']|["']$/g, '')
-          .trim();
-      };
-      const variations = ['HOOK1', 'HOOK2', 'HOOK3']
-        .map(extract)
-        .filter(v => v.length > 5);
+      // If the vision call produced nothing usable (format drift, refusal,
+      // etc.), fall back to a frame-less, title-only generation rather than
+      // surfacing an empty result to the user.
+      if (variations.length === 0 && hasFrame) {
+        console.warn('[ai-content-generator] frame-based hook extraction failed, retrying frameless');
+        rawHooks = await callAnthropic(ANTHROPIC_MODEL_SONNET, sharedSystem, framelessHookPrompt, 400, 0.9);
+        variations = extractHooks(rawHooks);
+      }
 
       console.log(`[ai-content-generator] hook raw:\n${rawHooks}`);
       console.log(`[ai-content-generator] hook frameCount=${rawFrames.length} validVariations=${variations.length}`);
