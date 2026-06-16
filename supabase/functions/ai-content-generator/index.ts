@@ -186,7 +186,7 @@ HOOK2: [bold statement or surprising angle]
 HOOK3: [vivid sensory description]`;
 
       const uContent = buildUserContent(uPrompt, rawFrames);
-      const rawHooks = await callAnthropic(ANTHROPIC_MODEL_SONNET, sharedSystem, uContent, 400, 0.9);
+      const rawHooks = await callAnthropic(ANTHROPIC_MODEL_SONNET, sharedSystem, uContent, 800, 0.9);
 
       // Parse HOOK1:/HOOK2:/HOOK3: lines, tolerating markdown the model adds
       // despite instructions (bold markers, leading dashes/bullets, quotes).
