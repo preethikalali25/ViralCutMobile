@@ -139,6 +139,7 @@ export default function EditorScreen() {
   const [tab, setTab] = useState<Tab>('hook');
   const [hookType, setHookType] = useState<HookType>('question');
   const [hookText, setHookText] = useState('');
+  const [hookVariations, setHookVariations] = useState<string[]>([]);
   const [caption, setCaption] = useState('');
   const [hashtags, setHashtags] = useState('');
   const [selectedAudioId, setSelectedAudioId] = useState('');
@@ -248,8 +249,11 @@ export default function EditorScreen() {
           platforms: video.platforms ?? ['tiktok'], ...framePayload,
         });
         if (data?.result) {
-          setHookText(data.result);
-          updateVideo(video.id, { hook: { type: 'question', text: data.result } });
+          const variations: string[] = Array.isArray(data.result) ? data.result : [String(data.result)];
+          const best = variations[0] ?? '';
+          setHookVariations(variations);
+          setHookText(best);
+          updateVideo(video.id, { hook: { type: 'question', text: best } });
         }
       }
 
@@ -308,8 +312,11 @@ export default function EditorScreen() {
     setGeneratingHook(false);
     if (error) { showAlert('AI Error', error); return; }
     if (data?.result) {
-      setHookText(data.result);
-      updateVideo(video.id, { hook: { type: hookType, text: data.result } });
+      const variations: string[] = Array.isArray(data.result) ? data.result : [String(data.result)];
+      const best = variations[0] ?? '';
+      setHookVariations(variations);
+      setHookText(best);
+      updateVideo(video.id, { hook: { type: hookType, text: best } });
     }
   };
 
@@ -647,6 +654,24 @@ export default function EditorScreen() {
                     <><MaterialCommunityIcons name="auto-fix" size={16} color={Colors.primaryLight} /><Text style={styles.aiBtnText}>{hookText ? 'Regenerate Hook' : 'AI Generate Hook'}</Text></>
                   )}
                 </Pressable>
+
+                {hookVariations.length > 1 ? (
+                  <View style={{ marginBottom: Spacing.sm }}>
+                    <Text style={[styles.sectionLabel, { marginTop: Spacing.xs }]}>Pick a hook</Text>
+                    {hookVariations.map((v, i) => (
+                      <Pressable
+                        key={i}
+                        style={[styles.hookVariationCard, hookText === v && styles.hookVariationCardActive]}
+                        onPress={() => {
+                          setHookText(v);
+                          updateVideo(video.id, { hook: { type: hookType, text: v } });
+                        }}
+                      >
+                        <Text style={[styles.hookVariationText, hookText === v && styles.hookVariationTextActive]}>{v}</Text>
+                      </Pressable>
+                    ))}
+                  </View>
+                ) : null}
 
                 <Text style={[styles.sectionLabel, { marginTop: Spacing.xs }]}>Hook Text</Text>
                 <TextInput
@@ -1301,6 +1326,10 @@ const styles = StyleSheet.create({
     color: Colors.textPrimary, textAlignVertical: 'top', minHeight: 80, includeFontPadding: false,
   },
   charCount: { fontSize: FontSize.xs, color: Colors.textMuted, textAlign: 'right', includeFontPadding: false },
+  hookVariationCard: { padding: Spacing.sm, borderRadius: Radius.md, borderWidth: 1, borderColor: Colors.border, marginBottom: Spacing.xs, backgroundColor: Colors.surface },
+  hookVariationCardActive: { borderColor: Colors.primaryLight, backgroundColor: Colors.primary + '22' },
+  hookVariationText: { fontSize: FontSize.sm, color: Colors.textSecondary },
+  hookVariationTextActive: { color: Colors.primaryLight, fontWeight: FontWeight.semibold },
   suggestedTags: { flexDirection: 'row', flexWrap: 'wrap', gap: Spacing.sm, marginTop: 4 },
   tagChip: {
     backgroundColor: Colors.primaryGlow, borderRadius: Radius.full,
