@@ -34,6 +34,11 @@
 	</array>
 	<key>CFBundleVersion</key>
 	<string>1</string>
+	<key>LSApplicationQueriesSchemes</key>
+	<array>
+		<string>instagram</string>
+		<string>instagram-reels</string>
+	</array>
 	<key>LSMinimumSystemVersion</key>
 	<string>12.0</string>
 	<key>LSRequiresIPhoneOS</key>
@@ -55,6 +60,8 @@
 	<string>Allow $(PRODUCT_NAME) to access your microphone</string>
 	<key>NSPhotoLibraryUsageDescription</key>
 	<string>ViralCut needs access to your photo library to select videos for editing and publishing.</string>
+	<key>NSPhotoLibraryAddUsageDescription</key>
+	<string>ViralCut needs permission to save your edited video before opening Instagram.</string>
 	<key>NSRemindersFullAccessUsageDescription</key>
 	<string>This app needs access to your reminders.</string>
 	<key>NSUserActivityTypes</key>

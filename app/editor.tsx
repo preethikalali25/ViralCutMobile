@@ -2,7 +2,7 @@
 import React, { useState, useCallback, useRef, useEffect } from 'react';
 import {
   View, Text, ScrollView, StyleSheet, Pressable, TextInput,
-  KeyboardAvoidingView, Platform, ActivityIndicator, Modal,
+  KeyboardAvoidingView, Platform, ActivityIndicator, Modal, Linking,
 } from 'react-native';
 import { useVideoPlayer, VideoView } from 'expo-video';
 import { SafeAreaView } from 'react-native-safe-area-context';
@@ -21,8 +21,11 @@ import { FunctionsHttpError } from '@supabase/supabase-js';
 import { useTikTok } from '@/hooks/useTikTok';
 import { useInstagram } from '@/hooks/useInstagram';
 import { uploadVideoToStorage } from '@/services/tiktokService';
-import { burnHookOverlay } from '@/services/videoOverlayService';
+import { burnHookOverlay, shareToInstagramReels } from '@/services/videoOverlayService';
+import { INSTAGRAM_APP_ID } from '@/constants/instagram';
+import { searchViralAudio, AudioSearchResult } from '@/services/audioSearchService';
 import * as FileSystem from 'expo-file-system';
+import Slider from '@react-native-community/slider';
 
 type Tab = 'hook' | 'caption' | 'audio' | 'platforms';
 
@@ -35,6 +38,7 @@ interface AISuggestedAudio {
   platform: string[];
   mood: string;
   reason?: string;
+  previewUrl?: string;
 }
 
 const HOOK_TYPES: { type: HookType; label: string; desc: string; icon: string }[] = [
@@ -138,6 +142,7 @@ export default function EditorScreen() {
   const [tab, setTab] = useState<Tab>('hook');
   const [hookType, setHookType] = useState<HookType>('question');
   const [hookText, setHookText] = useState('');
+  const [hookVariations, setHookVariations] = useState<string[]>([]);
   const [caption, setCaption] = useState('');
   const [hashtags, setHashtags] = useState('');
   const [selectedAudioId, setSelectedAudioId] = useState('');
@@ -149,6 +154,12 @@ export default function EditorScreen() {
   const [generatingAudio, setGeneratingAudio] = useState(false);
   const [aiPickedSong, setAiPickedSong] = useState<AISuggestedAudio | null>(null);
   const [autoGenDone, setAutoGenDone] = useState(false);
+  const [audioQuery, setAudioQuery] = useState('');
+  const [searchingAudio, setSearchingAudio] = useState(false);
+  const [searchResults, setSearchResults] = useState<AudioSearchResult[]>([]);
+  const [previewCache, setPreviewCache] = useState<Record<string, string>>({});
+  const [originalVolume, setOriginalVolume] = useState(0.6);
+  const [bgVolume, setBgVolume] = useState(0.8);
 
   const [showPlayer, setShowPlayer] = useState(false);
   const [videoTitle, setVideoTitle] = useState('');
@@ -159,6 +170,7 @@ export default function EditorScreen() {
   const [uploadingToStorage, setUploadingToStorage] = useState(false);
   const [uploadProgress, setUploadProgress] = useState(0);
   const [burningOverlay, setBurningOverlay] = useState(false);
+  const [savingToPhotos, setSavingToPhotos] = useState(false);
   const [generatingThumbnail, setGeneratingThumbnail] = useState(false);
   const [thumbnailUri, setThumbnailUri] = useState<string | null>(video?.thumbnail ?? null);
 
@@ -222,6 +234,9 @@ export default function EditorScreen() {
     setCaption(video.caption ?? '');
     setHashtags(video.hashtags?.join(' ') ?? '');
     setSelectedAudioId(video.audio?.id ?? '');
+    if (video.audio?.id && video.audio.previewUrl) {
+      setPreviewCache(prev => ({ ...prev, [video.audio!.id]: video.audio!.previewUrl! }));
+    }
     setPlatforms(video.platforms ?? ['tiktok']);
     setThumbnailUri(video.thumbnail ?? null);
   }, [video?.id]);
@@ -241,13 +256,17 @@ export default function EditorScreen() {
       const framePayload = frame ? { videoFrameBase64: frame.base64, videoFrameMime: frame.mime } : {};
 
       if (needsHook) {
-        const { data } = await callAIGenerator('hook', {
+        const { data, error } = await callAIGenerator('hook', {
           videoTitle: cleanTitle(video.title), hookType: 'question',
           platforms: video.platforms ?? ['tiktok'], ...framePayload,
         });
-        if (data?.result) {
-          setHookText(data.result);
-          updateVideo(video.id, { hook: { type: 'question', text: data.result } });
+        if (error) console.warn('[autoGenHook] failed:', error);
+        if (data?.result?.length) {
+          const variations: string[] = data.result;
+          const best = variations[0] ?? '';
+          setHookVariations(variations);
+          setHookText(best);
+          updateVideo(video.id, { hook: { type: 'question', text: best } });
         }
       }
 
@@ -277,6 +296,27 @@ export default function EditorScreen() {
     runAll();
   }, [video?.id]);
 
+  // Best-effort: resolve a real ~30s preview clip for whichever song is
+  // currently selected (AI pick or trending list), so the volume mixer
+  // below has actual audio to mix instead of just a title/artist label.
+  useEffect(() => {
+    if (!selectedAudioId || previewCache[selectedAudioId]) return;
+    const source: { title: string; artist: string } | undefined =
+      aiPickedSong?.id === selectedAudioId
+        ? aiPickedSong
+        : searchResults.find(r => r.id === selectedAudioId) ??
+          MOCK_TRENDING_AUDIO.find(a => a.id === selectedAudioId);
+    if (!source) return;
+    let cancelled = false;
+    (async () => {
+      const { results } = await searchViralAudio(`${source.title} ${source.artist}`);
+      if (!cancelled && results[0]?.previewUrl) {
+        setPreviewCache(prev => ({ ...prev, [selectedAudioId]: results[0].previewUrl! }));
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [selectedAudioId, aiPickedSong?.id]);
+
   if (!video) {
     return (
       <SafeAreaView style={[styles.safe, { alignItems: 'center', justifyContent: 'center', gap: 12 }]}>
@@ -305,9 +345,14 @@ export default function EditorScreen() {
     });
     setGeneratingHook(false);
     if (error) { showAlert('AI Error', error); return; }
-    if (data?.result) {
-      setHookText(data.result);
-      updateVideo(video.id, { hook: { type: hookType, text: data.result } });
+    if (data?.result?.length) {
+      const variations: string[] = data.result;
+      const best = variations[0] ?? '';
+      setHookVariations(variations);
+      setHookText(best);
+      updateVideo(video.id, { hook: { type: hookType, text: best } });
+    } else {
+      showAlert('AI Error', "Couldn't write a hook this time — try again.");
     }
   };
 
@@ -336,6 +381,21 @@ export default function EditorScreen() {
     if (song?.id) { setAiPickedSong(song); setSelectedAudioId(song.id); }
   }, [video.title, platforms, showAlert]);
 
+  const handleSearchAudio = async () => {
+    if (!audioQuery.trim()) return;
+    setSearchingAudio(true);
+    const { results, error } = await searchViralAudio(audioQuery.trim());
+    setSearchingAudio(false);
+    if (error) { showAlert('Search Error', error); return; }
+    setSearchResults(results);
+  };
+
+  const selectSearchResult = (r: AudioSearchResult) => {
+    setSelectedAudioId(r.id);
+    setAiPickedSong(null);
+    if (r.previewUrl) setPreviewCache(prev => ({ ...prev, [r.id]: r.previewUrl! }));
+  };
+
   const handleGenerateTitle = useCallback(async () => {
     setGeneratingTitle(true);
     const framePayload = await ensureFrame();
@@ -353,14 +413,18 @@ export default function EditorScreen() {
   const snapshotEditorState = () => {
     const audioSource = aiPickedSong && selectedAudioId === aiPickedSong.id
       ? aiPickedSong
-      : MOCK_TRENDING_AUDIO.find(a => a.id === selectedAudioId);
+      : searchResults.find(a => a.id === selectedAudioId) ?? MOCK_TRENDING_AUDIO.find(a => a.id === selectedAudioId);
     return {
       hook: { type: hookType, text: hookText },
       caption,
       hashtags: hashtags.split(/\s+/).filter(Boolean),
       platforms,
       audio: audioSource
-        ? { id: audioSource.id, title: audioSource.title, artist: audioSource.artist, uses: audioSource.uses, trending: audioSource.trending }
+        ? {
+            id: audioSource.id, title: audioSource.title, artist: audioSource.artist,
+            uses: 'uses' in audioSource ? audioSource.uses : '', trending: 'trending' in audioSource ? audioSource.trending : false,
+            previewUrl: previewCache[audioSource.id],
+          }
         : undefined,
     };
   };
@@ -368,7 +432,7 @@ export default function EditorScreen() {
   const handleSave = () => {
     const snap = snapshotEditorState();
     updateVideo(video.id, { ...snap, title: videoTitle });
-    showAlert('Saved', 'Your changes have been saved.');
+    router.push('/(tabs)/library');
   };
 
   const handleSchedule = () => {
@@ -417,6 +481,53 @@ export default function EditorScreen() {
     ]);
   };
 
+  const burnOverlayLocally = async (
+    videoUri: string,
+    hookText: string,
+  ): Promise<{ outputUri: string }> => {
+    const resolved = await resolveVideoUri(videoUri);
+
+    setBurningOverlay(true);
+
+    let bgLocalPath: string | undefined;
+    const previewUrl = previewCache[selectedAudioId];
+    if (previewUrl) {
+      try {
+        const dest = FileSystem.cacheDirectory + `bg_audio_${Date.now()}.m4a`;
+        const downloadTimeout = new Promise<never>((_, reject) =>
+          setTimeout(() => reject(new Error('bg audio download timeout')), 10000),
+        );
+        const dl = await Promise.race([FileSystem.downloadAsync(previewUrl, dest), downloadTimeout]);
+        bgLocalPath = dl.uri;
+      } catch (e) {
+        console.warn('[burnOverlayLocally] bg audio download failed or timed out, continuing without it:', e);
+      }
+    }
+
+    const { outputUri } = await burnHookOverlay(resolved, hookText, bgLocalPath, originalVolume, bgVolume);
+    setBurningOverlay(false);
+    return { outputUri };
+  };
+
+  const prepareVideoForPublish = async (
+    videoUri: string,
+    hookText: string,
+  ): Promise<{ videoUrl: string; error?: string }> => {
+    if (!user?.id || !video?.id) return { videoUrl: '', error: 'Not authenticated.' };
+
+    const { outputUri } = await burnOverlayLocally(videoUri, hookText);
+
+    setUploadingToStorage(true);
+    const { publicUrl, error } = await uploadVideoToStorage(
+      outputUri, user.id, video.id, setUploadProgress,
+    );
+    setUploadingToStorage(false);
+    setUploadProgress(0);
+
+    if (error || !publicUrl) return { videoUrl: '', error: error ?? 'Upload failed.' };
+    return { videoUrl: publicUrl };
+  };
+
   const handleTikTokPublish = async () => {
     const snap = snapshotEditorState();
     if (!video?.videoUri) { showAlert('No Video File', 'Select a video before publishing to TikTok.'); return; }
@@ -438,10 +549,36 @@ export default function EditorScreen() {
     const { videoUrl, error: prepError } = await prepareVideoForPublish(video.videoUri, snap.hook?.text ?? '');
     if (prepError || !videoUrl) { showAlert('Upload Failed', prepError ?? 'Could not upload video.'); return; }
 
-    const captionText = [snap.caption, snap.hashtags.join(' ')].filter(Boolean).join('\n\n');
+    const captionText = [snap.hook?.text, snap.caption, snap.hashtags.join(' ')].filter(Boolean).join('\n\n');
+    const audioName = snap.audio ? `${snap.audio.title} by ${snap.audio.artist}` : undefined;
     updateVideo(video.id, { ...snap, title: videoTitle });
-    const { error } = await instagram.publish(videoUrl, captionText);
+    const { error } = await instagram.publish(videoUrl, captionText, undefined, audioName);
     if (error) showAlert('Instagram Error', error);
+  };
+
+  const handleOpenInInstagram = async () => {
+    const snap = snapshotEditorState();
+    if (!video?.videoUri) { showAlert('No Video File', 'Select a video first.'); return; }
+
+    const { outputUri } = await burnOverlayLocally(video.videoUri, snap.hook?.text ?? '');
+    updateVideo(video.id, { ...snap, title: videoTitle });
+
+    // Meta's documented Sharing-to-Reels handoff: the video goes on the
+    // pasteboard (not the Photos library), then instagram-reels://share
+    // opens Instagram straight into the Reels composer with it loaded.
+    setSavingToPhotos(true);
+    const { error: shareError } = await shareToInstagramReels(outputUri, INSTAGRAM_APP_ID);
+    setSavingToPhotos(false);
+    if (shareError) {
+      showAlert('Could Not Open Instagram', shareError);
+      return;
+    }
+    setShowInstagramSheet(false);
+
+    const opened = await Linking.openURL('instagram-reels://share').then(() => true).catch(() => false);
+    if (!opened) {
+      showAlert('Instagram Not Installed', 'Please install Instagram to use this feature.');
+    }
   };
 
   const togglePlatform = (p: PlatformType) => {
@@ -595,6 +732,24 @@ export default function EditorScreen() {
                   )}
                 </Pressable>
 
+                {hookVariations.length > 1 ? (
+                  <View style={{ marginBottom: Spacing.sm }}>
+                    <Text style={[styles.sectionLabel, { marginTop: Spacing.xs }]}>Pick a hook</Text>
+                    {hookVariations.map((v, i) => (
+                      <Pressable
+                        key={i}
+                        style={[styles.hookVariationCard, hookText === v && styles.hookVariationCardActive]}
+                        onPress={() => {
+                          setHookText(v);
+                          updateVideo(video.id, { hook: { type: hookType, text: v } });
+                        }}
+                      >
+                        <Text style={[styles.hookVariationText, hookText === v && styles.hookVariationTextActive]}>{v}</Text>
+                      </Pressable>
+                    ))}
+                  </View>
+                ) : null}
+
                 <Text style={[styles.sectionLabel, { marginTop: Spacing.xs }]}>Hook Text</Text>
                 <TextInput
                   style={styles.textInput}
@@ -661,6 +816,66 @@ export default function EditorScreen() {
             {/* ── Audio Tab ── */}
             {tab === 'audio' ? (
               <View style={styles.section}>
+                <View style={styles.searchRow}>
+                  <View style={styles.searchInputWrap}>
+                    <MaterialIcons name="search" size={18} color={Colors.textMuted} />
+                    <TextInput
+                      style={styles.searchInput}
+                      value={audioQuery}
+                      onChangeText={setAudioQuery}
+                      onSubmitEditing={handleSearchAudio}
+                      placeholder="Search any viral song or artist..."
+                      placeholderTextColor={Colors.textMuted}
+                      returnKeyType="search"
+                    />
+                  </View>
+                  <Pressable
+                    style={({ pressed }) => [styles.searchBtn, pressed && { opacity: 0.85 }]}
+                    onPress={handleSearchAudio}
+                    disabled={searchingAudio}
+                  >
+                    {searchingAudio ? (
+                      <ActivityIndicator size="small" color="#fff" />
+                    ) : (
+                      <MaterialIcons name="search" size={18} color="#fff" />
+                    )}
+                  </Pressable>
+                </View>
+
+                {searchResults.length > 0 ? (
+                  <View style={{ gap: Spacing.sm }}>
+                    <View style={styles.audioHeader}>
+                      <Text style={styles.sectionLabel}>Search Results</Text>
+                      <Pressable onPress={() => setSearchResults([])}>
+                        <Text style={styles.orPickText}>Clear</Text>
+                      </Pressable>
+                    </View>
+                    {searchResults.map(r => {
+                      const isSelected = selectedAudioId === r.id;
+                      return (
+                        <Pressable
+                          key={r.id}
+                          style={[styles.audioRow, isSelected && styles.audioRowActive]}
+                          onPress={() => selectSearchResult(r)}
+                        >
+                          {r.artworkUrl ? (
+                            <Image source={{ uri: r.artworkUrl }} style={styles.audioArtwork} />
+                          ) : (
+                            <View style={[styles.audioIcon, isSelected && { backgroundColor: Colors.primary }]}>
+                              <MaterialIcons name="music-note" size={18} color={isSelected ? '#fff' : Colors.textSecondary} />
+                            </View>
+                          )}
+                          <View style={{ flex: 1 }}>
+                            <Text style={styles.audioTitle}>{r.title}</Text>
+                            <Text style={styles.audioArtist}>{r.artist}</Text>
+                          </View>
+                          {isSelected ? <MaterialIcons name="check-circle" size={20} color={Colors.primary} /> : null}
+                        </Pressable>
+                      );
+                    })}
+                  </View>
+                ) : null}
+
                 <Pressable
                   style={({ pressed }) => [styles.aiBtn, pressed && { opacity: 0.85 }, generatingAudio && styles.aiBtnLoading]}
                   onPress={handleGenerateAudio}
@@ -737,6 +952,45 @@ export default function EditorScreen() {
                     </Pressable>
                   );
                 })}
+
+                {selectedAudioId ? (
+                  <View style={styles.volumeSection}>
+                    <Text style={styles.sectionLabel}>Audio Mix</Text>
+                    <View style={styles.volumeRow}>
+                      <Text style={styles.volumeLabel}>Your Video Audio</Text>
+                      <Text style={styles.volumeValue}>{Math.round(originalVolume * 100)}%</Text>
+                    </View>
+                    <Slider
+                      style={styles.slider}
+                      minimumValue={0}
+                      maximumValue={1}
+                      value={originalVolume}
+                      onValueChange={setOriginalVolume}
+                      minimumTrackTintColor={Colors.primary}
+                      maximumTrackTintColor={Colors.surfaceBorder}
+                      thumbTintColor={Colors.primary}
+                    />
+                    <View style={styles.volumeRow}>
+                      <Text style={styles.volumeLabel}>Background Song</Text>
+                      <Text style={styles.volumeValue}>{Math.round(bgVolume * 100)}%</Text>
+                    </View>
+                    <Slider
+                      style={styles.slider}
+                      minimumValue={0}
+                      maximumValue={1}
+                      value={bgVolume}
+                      onValueChange={setBgVolume}
+                      minimumTrackTintColor={Colors.primary}
+                      maximumTrackTintColor={Colors.surfaceBorder}
+                      thumbTintColor={Colors.primary}
+                    />
+                    <Text style={styles.volumeHint}>
+                      {previewCache[selectedAudioId]
+                        ? 'A short preview clip of this song will be mixed in at these levels.'
+                        : 'Looking for a real preview clip to mix in...'}
+                    </Text>
+                  </View>
+                ) : null}
               </View>
             ) : null}
 
@@ -814,22 +1068,40 @@ export default function EditorScreen() {
               ) : null}
             </View>
 
-            {instagram.publishState.phase === 'idle' && !uploadingToStorage ? (
+            {instagram.publishState.phase === 'idle' && !uploadingToStorage && !burningOverlay && !savingToPhotos ? (
               <>
                 <View style={styles.sheetNote}>
                   <MaterialIcons name="info-outline" size={13} color={Colors.textMuted} />
                   <Text style={styles.sheetNoteText}>
-                    The video will be posted as an Instagram Reel. Your caption and hashtags will be included.
+                    Hands your hook-burned video straight to Instagram's Reels composer — full editing tools, music, and better engagement than the API publish.
                   </Text>
                 </View>
                 <Pressable
                   style={({ pressed }) => [styles.tiktokPublishBtn, { backgroundColor: '#e1306c' }, pressed && { opacity: 0.85 }]}
-                  onPress={handleInstagramPublish}
+                  onPress={handleOpenInInstagram}
                 >
                   <MaterialCommunityIcons name="instagram" size={18} color="#fff" />
-                  <Text style={styles.tiktokPublishBtnText}>Post as Reel</Text>
+                  <Text style={styles.tiktokPublishBtnText}>Finish in Instagram</Text>
+                </Pressable>
+                <Pressable
+                  style={({ pressed }) => [styles.tiktokPublishBtn, { backgroundColor: 'transparent', borderWidth: 1, borderColor: '#e1306c', marginTop: Spacing.sm }, pressed && { opacity: 0.7 }]}
+                  onPress={handleInstagramPublish}
+                >
+                  <Text style={[styles.tiktokPublishBtnText, { color: '#e1306c' }]}>Post directly via API</Text>
                 </Pressable>
               </>
+            ) : null}
+
+            {(burningOverlay || savingToPhotos) ? (
+              <View style={styles.sheetPhase}>
+                <ActivityIndicator size="large" color="#e1306c" />
+                <Text style={styles.sheetPhaseTitle}>
+                  {burningOverlay ? 'Applying hook & audio...' : 'Handing off to Instagram...'}
+                </Text>
+                <Text style={styles.sheetPhaseSub}>
+                  {savingToPhotos ? 'Almost ready to open Instagram.' : 'Almost ready...'}
+                </Text>
+              </View>
             ) : null}
 
             {uploadingToStorage ? (
@@ -1230,6 +1502,10 @@ const styles = StyleSheet.create({
     color: Colors.textPrimary, textAlignVertical: 'top', minHeight: 80, includeFontPadding: false,
   },
   charCount: { fontSize: FontSize.xs, color: Colors.textMuted, textAlign: 'right', includeFontPadding: false },
+  hookVariationCard: { padding: Spacing.sm, borderRadius: Radius.md, borderWidth: 1, borderColor: Colors.border, marginBottom: Spacing.xs, backgroundColor: Colors.surface },
+  hookVariationCardActive: { borderColor: Colors.primaryLight, backgroundColor: Colors.primary + '22' },
+  hookVariationText: { fontSize: FontSize.sm, color: Colors.textSecondary },
+  hookVariationTextActive: { color: Colors.primaryLight, fontWeight: FontWeight.semibold },
   suggestedTags: { flexDirection: 'row', flexWrap: 'wrap', gap: Spacing.sm, marginTop: 4 },
   tagChip: {
     backgroundColor: Colors.primaryGlow, borderRadius: Radius.full,
@@ -1258,6 +1534,24 @@ const styles = StyleSheet.create({
   },
   trendingText: { fontSize: 9, color: Colors.primary, fontWeight: FontWeight.bold, includeFontPadding: false },
   audioUses: { fontSize: FontSize.xs, color: Colors.textMuted, includeFontPadding: false },
+  audioArtwork: { width: 36, height: 36, borderRadius: Radius.md },
+  searchRow: { flexDirection: 'row', gap: Spacing.sm },
+  searchInputWrap: {
+    flex: 1, flexDirection: 'row', alignItems: 'center', gap: 6,
+    backgroundColor: Colors.surfaceElevated, borderRadius: Radius.md, borderWidth: 1,
+    borderColor: Colors.surfaceBorder, paddingHorizontal: Spacing.sm,
+  },
+  searchInput: { flex: 1, fontSize: FontSize.sm, color: Colors.textPrimary, paddingVertical: 11, includeFontPadding: false },
+  searchBtn: {
+    width: 44, alignItems: 'center', justifyContent: 'center',
+    backgroundColor: Colors.primary, borderRadius: Radius.md,
+  },
+  volumeSection: { gap: Spacing.xs, marginTop: Spacing.sm },
+  volumeRow: { flexDirection: 'row', justifyContent: 'space-between', marginTop: Spacing.xs },
+  volumeLabel: { fontSize: FontSize.sm, color: Colors.textSecondary, includeFontPadding: false },
+  volumeValue: { fontSize: FontSize.sm, fontWeight: FontWeight.semibold, color: Colors.textPrimary, includeFontPadding: false },
+  slider: { width: '100%', height: 32 },
+  volumeHint: { fontSize: FontSize.xs, color: Colors.textMuted, includeFontPadding: false, marginTop: 2 },
   platformRow: {
     flexDirection: 'row', alignItems: 'center', gap: Spacing.sm,
     backgroundColor: Colors.surfaceElevated, borderRadius: Radius.md,
