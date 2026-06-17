@@ -45,7 +45,7 @@ async function getVideoPreviewUri(uri: string): Promise<string> {
 
 export default function UploadScreen() {
   const router = useRouter();
-  const { addVideo } = useVideos();
+  const { addVideo, updateVideo } = useVideos();
   const { showAlert } = useAlert();
 
   const [platforms, setPlatforms] = useState<PlatformType[]>(['tiktok']);
@@ -53,6 +53,7 @@ export default function UploadScreen() {
   const [isProcessing, setIsProcessing] = useState(false);
   const [processingLabel, setProcessingLabel] = useState('');
   const didConsumeRef = useRef(false);
+  const pendingMetaRef = useRef<{ title?: string; hook?: string }>({});
 
   const togglePlatform = (p: PlatformType) => {
     setPlatforms(prev =>
@@ -114,8 +115,9 @@ export default function UploadScreen() {
   useEffect(() => {
     if (didConsumeRef.current) return;
     didConsumeRef.current = true;
-    const { items, autoOpen } = consumePendingReelItems();
+    const { items, autoOpen, meta } = consumePendingReelItems();
     if (!items.length) return;
+    pendingMetaRef.current = meta;
     const loaded: MediaPreviewItem[] = items.map(item => ({
       uri: item.uri, type: item.type,
       previewUri: item.previewUri ?? '', durationSec: item.durationSec,
@@ -182,6 +184,16 @@ export default function UploadScreen() {
 
     setIsProcessing(false);
     setProcessingLabel('');
+
+    const meta = pendingMetaRef.current;
+    if (meta.title || meta.hook) {
+      updateVideo(id, {
+        ...(meta.title ? { title: meta.title } : {}),
+        ...(meta.hook ? { hook: { type: 'question' as const, text: meta.hook } } : {}),
+      });
+      pendingMetaRef.current = {};
+    }
+
     router.push({ pathname: '/editor', params: { id } });
   };
 

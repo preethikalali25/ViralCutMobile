@@ -368,10 +368,18 @@ export default function SuggestScreen() {
 
   const handleMakeReel = (s: Suggestion, batchEvents: EventCluster[]) => {
     const picks: PendingReelItem[] = (s.galleryIndices ?? [])
-      .map(i => batchEvents[i]?.rep)
-      .filter(Boolean)
-      .map(g => ({ uri: g.uri, type: g.type, previewUri: g.uri, durationSec: g.durationSec }));
-    if (picks.length) setPendingReelItems(picks, true);
+      .map(i => {
+        const ev = batchEvents[i];
+        if (!ev) return null;
+        return {
+          uri: ev.rep.uri,
+          type: ev.rep.type,
+          previewUri: ev.base64 ? `data:image/jpeg;base64,${ev.base64}` : ev.rep.uri,
+          durationSec: ev.rep.durationSec,
+        };
+      })
+      .filter((x): x is PendingReelItem => x !== null);
+    if (picks.length) setPendingReelItems(picks, true, { title: s.title, hook: s.hook });
     router.push('/upload');
   };
 
