@@ -12,7 +12,7 @@ import { Colors, Spacing, Radius, FontSize, FontWeight } from '@/constants/theme
 import { useAuth, getSupabaseClient } from '@/template';
 import { Image } from 'expo-image';
 import { useInstagram } from '@/hooks/useInstagram';
-import { getInstagramStatus, InstagramStatus } from '@/services/instagramService';
+import { getInstagramStatus, getInstagramFullStatus, InstagramStatus } from '@/services/instagramService';
 import { setPendingReelItems, PendingReelItem } from '@/stores/pendingReel';
 
 const { width } = Dimensions.get('window');
@@ -234,13 +234,14 @@ export default function SuggestScreen() {
     if (igStatus.connected && user.id && !igProfileRef.current) {
       if (mode === 'replace') setLoadingStep('Loading your Instagram profile…');
       try {
-        const fetched = await getInstagramStatus(user.id);
+        // full=true fetches bio + recent post captions so the AI can determine niche
+        const fetched = await getInstagramFullStatus(user.id);
         if (fetched.connected) {
           igProfileRef.current = fetched;
           setLiveProfile(fetched);
         }
       } catch {
-        // Non-fatal — proceed without live profile data
+        // Non-fatal — continue with basic status from useInstagram
       }
     }
 
@@ -259,10 +260,17 @@ export default function SuggestScreen() {
     const igConnected = igStatus.connected;
 
     let profileSection: string;
+    let captionsBlock = '';
     const username = igProfile?.username ?? igStatus.username;
     const followers = igProfile?.followersCount ?? igStatus.followersCount;
     if (igConnected && username) {
-      profileSection = `Instagram Profile:\nUsername: @${username}\nFollowers: ${followers?.toLocaleString() ?? 'unknown'}`;
+      profileSection = `Instagram Profile:\nUsername: @${username}\nBio: ${igProfile?.bio || 'Not set'}\nFollowers: ${followers?.toLocaleString() ?? 'unknown'}${igProfile?.mediaCount != null ? `\nTotal posts: ${igProfile.mediaCount}` : ''}`;
+      if (igProfile?.recentPosts?.length) {
+        const postLines = igProfile.recentPosts
+          .map((p, i) => `  ${i + 1}. [${p.type}] ${p.date} | ${p.likes ?? '?'} likes | "${p.caption ?? 'no caption'}"`)
+          .join('\n');
+        captionsBlock = `\n\nLast ${igProfile.recentPosts.length} posts:\n${postLines}`;
+      }
     } else {
       profileSection = 'Instagram: not connected.';
     }
@@ -280,7 +288,7 @@ export default function SuggestScreen() {
       const { data, error: fnError } = await getSupabaseClient().functions.invoke('analyze-gallery', {
         body: {
           profileSection,
-          captionsBlock: '',
+          captionsBlock,
           thumbnails,
           totalItems,
           evCount: evList.length,
