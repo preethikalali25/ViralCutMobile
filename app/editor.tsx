@@ -25,6 +25,7 @@ import { burnHookOverlay, shareToInstagramReels } from '@/services/videoOverlayS
 import { INSTAGRAM_APP_ID } from '@/constants/instagram';
 import { searchViralAudio, AudioSearchResult } from '@/services/audioSearchService';
 import * as FileSystem from 'expo-file-system';
+import * as Clipboard from 'expo-clipboard';
 import Slider from '@react-native-community/slider';
 
 type Tab = 'hook' | 'caption' | 'audio' | 'platforms';
@@ -160,6 +161,11 @@ export default function EditorScreen() {
   const [previewCache, setPreviewCache] = useState<Record<string, string>>({});
   const [originalVolume, setOriginalVolume] = useState(0.6);
   const [bgVolume, setBgVolume] = useState(0.8);
+
+  const resolveAudioSource = (id: string) =>
+    aiPickedSong?.id === id
+      ? aiPickedSong
+      : searchResults.find(r => r.id === id) ?? MOCK_TRENDING_AUDIO.find(a => a.id === id);
 
   const [showPlayer, setShowPlayer] = useState(false);
   const [videoTitle, setVideoTitle] = useState('');
@@ -301,11 +307,7 @@ export default function EditorScreen() {
   // below has actual audio to mix instead of just a title/artist label.
   useEffect(() => {
     if (!selectedAudioId || previewCache[selectedAudioId]) return;
-    const source: { title: string; artist: string } | undefined =
-      aiPickedSong?.id === selectedAudioId
-        ? aiPickedSong
-        : searchResults.find(r => r.id === selectedAudioId) ??
-          MOCK_TRENDING_AUDIO.find(a => a.id === selectedAudioId);
+    const source = resolveAudioSource(selectedAudioId);
     if (!source) return;
     let cancelled = false;
     (async () => {
@@ -335,6 +337,31 @@ export default function EditorScreen() {
     }
     const frame = frameCache.current !== 'pending' ? frameCache.current : null;
     return frame ? { videoFrameBase64: frame.base64, videoFrameMime: frame.mime } : {};
+  };
+
+  // The background-audio `useEffect` resolves the preview clip lazily and may
+  // not have finished by the time the user taps a burn/share action — so the
+  // burn step can't just read `previewCache` synchronously, it has to await
+  // the same lookup itself or the selected song silently gets dropped.
+  const ensureAudioPreviewUrl = async (): Promise<string | undefined> => {
+    if (!selectedAudioId) return undefined;
+    if (previewCache[selectedAudioId]) return previewCache[selectedAudioId];
+    const source = resolveAudioSource(selectedAudioId);
+    if (!source) return undefined;
+
+    // The AI's "best song" pick is a free-text guess, not a verified catalog
+    // entry — an exact "title artist" search often misses, so fall back to
+    // looser queries before giving up on finding a real preview clip.
+    const queries = [`${source.title} ${source.artist}`, source.title, source.artist].filter(Boolean);
+    for (const q of queries) {
+      const { results } = await searchViralAudio(q);
+      const previewUrl = results.find(r => r.previewUrl)?.previewUrl;
+      if (previewUrl) {
+        setPreviewCache(prev => ({ ...prev, [selectedAudioId]: previewUrl }));
+        return previewUrl;
+      }
+    }
+    return undefined;
   };
 
   const handleGenerateHook = async () => {
@@ -411,9 +438,7 @@ export default function EditorScreen() {
   }, [video, showAlert, updateVideo]);
 
   const snapshotEditorState = () => {
-    const audioSource = aiPickedSong && selectedAudioId === aiPickedSong.id
-      ? aiPickedSong
-      : searchResults.find(a => a.id === selectedAudioId) ?? MOCK_TRENDING_AUDIO.find(a => a.id === selectedAudioId);
+    const audioSource = resolveAudioSource(selectedAudioId);
     return {
       hook: { type: hookType, text: hookText },
       caption,
@@ -484,13 +509,13 @@ export default function EditorScreen() {
   const burnOverlayLocally = async (
     videoUri: string,
     hookText: string,
-  ): Promise<{ outputUri: string }> => {
+  ): Promise<{ outputUri: string; audioMixed: boolean }> => {
     const resolved = await resolveVideoUri(videoUri);
 
     setBurningOverlay(true);
 
     let bgLocalPath: string | undefined;
-    const previewUrl = previewCache[selectedAudioId];
+    const previewUrl = await ensureAudioPreviewUrl();
     if (previewUrl) {
       try {
         const dest = FileSystem.cacheDirectory + `bg_audio_${Date.now()}.m4a`;
@@ -506,7 +531,7 @@ export default function EditorScreen() {
 
     const { outputUri } = await burnHookOverlay(resolved, hookText, bgLocalPath, originalVolume, bgVolume);
     setBurningOverlay(false);
-    return { outputUri };
+    return { outputUri, audioMixed: !!bgLocalPath };
   };
 
   const prepareVideoForPublish = async (
@@ -560,8 +585,16 @@ export default function EditorScreen() {
     const snap = snapshotEditorState();
     if (!video?.videoUri) { showAlert('No Video File', 'Select a video first.'); return; }
 
-    const { outputUri } = await burnOverlayLocally(video.videoUri, snap.hook?.text ?? '');
+    const { outputUri, audioMixed } = await burnOverlayLocally(video.videoUri, snap.hook?.text ?? '');
     updateVideo(video.id, { ...snap, title: videoTitle });
+
+    // Instagram's Reels sharing-to-stories pasteboard handoff has no field
+    // for a pre-filled caption (Meta blocks this on purpose to stop spam),
+    // so the closest we can do is put it on the clipboard for a quick paste.
+    const captionText = [snap.hook?.text, snap.caption, snap.hashtags.join(' ')].filter(Boolean).join('\n\n');
+    if (captionText) {
+      await Clipboard.setStringAsync(captionText);
+    }
 
     // Meta's documented Sharing-to-Reels handoff: the video goes on the
     // pasteboard (not the Photos library), then instagram-reels://share
@@ -575,9 +608,27 @@ export default function EditorScreen() {
     }
     setShowInstagramSheet(false);
 
-    const opened = await Linking.openURL('instagram-reels://share').then(() => true).catch(() => false);
-    if (!opened) {
-      showAlert('Instagram Not Installed', 'Please install Instagram to use this feature.');
+    const openInstagram = async () => {
+      const opened = await Linking.openURL('instagram-reels://share').then(() => true).catch(() => false);
+      if (!opened) {
+        showAlert('Instagram Not Installed', 'Please install Instagram to use this feature.');
+      }
+    };
+
+    // Show this BEFORE switching to Instagram — once the app backgrounds,
+    // an alert fired after the fact is easy to miss entirely.
+    const notes: string[] = [];
+    if (captionText) {
+      notes.push("Instagram doesn't let apps pre-fill the caption on Reels drafts, so we copied your caption and hashtags to the clipboard — paste them into the caption field once Instagram opens.");
+    }
+    if (snap.audio && !audioMixed) {
+      notes.push(`We couldn't find a matching preview clip for "${snap.audio.title}", so the original clip audio was kept instead of that song.`);
+    }
+
+    if (notes.length) {
+      showAlert('Before You Continue', notes.join('\n\n'), [{ text: 'Open Instagram', onPress: openInstagram }]);
+    } else {
+      await openInstagram();
     }
   };
 
@@ -1023,9 +1074,59 @@ export default function EditorScreen() {
               <MaterialIcons name="schedule" size={18} color={Colors.primaryLight} />
               <Text style={styles.scheduleBtnText}>Schedule</Text>
             </Pressable>
-            <Pressable style={({ pressed }) => [styles.publishBtn, pressed && { opacity: 0.8 }]} onPress={handlePublish}>
-              <MaterialIcons name="send" size={18} color="#fff" />
-              <Text style={styles.publishBtnText}>Publish Now</Text>
+          </View>
+
+          {/* Platform Publish Buttons */}
+          <View style={styles.publishSection}>
+            <Text style={styles.publishSectionLabel}>Publish to</Text>
+            <Pressable
+              style={({ pressed }) => [
+                styles.platformPublishBtn,
+                { borderColor: '#010101', backgroundColor: tiktok.status.connected ? '#010101' : Colors.surfaceElevated },
+                pressed && { opacity: 0.8 },
+                !tiktok.status.connected && styles.platformPublishBtnDisabled,
+              ]}
+              onPress={() => tiktok.status.connected ? setShowTikTokSheet(true) : showAlert('TikTok Not Connected', 'Connect your TikTok account in Settings to publish here.')}
+            >
+              <MaterialCommunityIcons name="music-note" size={20} color={tiktok.status.connected ? '#fff' : Colors.textMuted} />
+              <View style={{ flex: 1 }}>
+                <Text style={[styles.platformPublishName, { color: tiktok.status.connected ? '#fff' : Colors.textMuted }]}>TikTok</Text>
+                <Text style={[styles.platformPublishSub, { color: tiktok.status.connected ? 'rgba(255,255,255,0.6)' : Colors.textMuted }]}>
+                  {tiktok.status.connected ? `@${tiktok.status.creatorName || 'your account'}` : 'Not connected'}
+                </Text>
+              </View>
+              <MaterialIcons name={tiktok.status.connected ? 'arrow-forward-ios' : 'lock-outline'} size={16} color={tiktok.status.connected ? 'rgba(255,255,255,0.6)' : Colors.textMuted} />
+            </Pressable>
+
+            <Pressable
+              style={({ pressed }) => [
+                styles.platformPublishBtn,
+                { borderColor: '#e1306c', backgroundColor: instagram.status.connected ? '#e1306c' : Colors.surfaceElevated },
+                pressed && { opacity: 0.8 },
+                !instagram.status.connected && styles.platformPublishBtnDisabled,
+              ]}
+              onPress={() => instagram.status.connected ? setShowInstagramSheet(true) : showAlert('Instagram Not Connected', 'Connect your Instagram account in Settings to publish here.')}
+            >
+              <MaterialCommunityIcons name="instagram" size={20} color={instagram.status.connected ? '#fff' : Colors.textMuted} />
+              <View style={{ flex: 1 }}>
+                <Text style={[styles.platformPublishName, { color: instagram.status.connected ? '#fff' : Colors.textMuted }]}>Instagram Reels</Text>
+                <Text style={[styles.platformPublishSub, { color: instagram.status.connected ? 'rgba(255,255,255,0.6)' : Colors.textMuted }]}>
+                  {instagram.status.connected ? `@${instagram.status.username || 'your account'}` : 'Not connected'}
+                </Text>
+              </View>
+              <MaterialIcons name={instagram.status.connected ? 'arrow-forward-ios' : 'lock-outline'} size={16} color={instagram.status.connected ? 'rgba(255,255,255,0.6)' : Colors.textMuted} />
+            </Pressable>
+
+            <Pressable
+              style={({ pressed }) => [styles.platformPublishBtn, styles.platformPublishBtnDisabled, pressed && { opacity: 0.8 }]}
+              onPress={() => showAlert('YouTube Shorts', 'YouTube Shorts publishing is coming soon!')}
+            >
+              <MaterialCommunityIcons name="youtube" size={20} color={Colors.textMuted} />
+              <View style={{ flex: 1 }}>
+                <Text style={[styles.platformPublishName, { color: Colors.textMuted }]}>YouTube Shorts</Text>
+                <Text style={[styles.platformPublishSub, { color: Colors.textMuted }]}>Coming soon</Text>
+              </View>
+              <MaterialIcons name="lock-outline" size={16} color={Colors.textMuted} />
             </Pressable>
           </View>
 
@@ -1574,11 +1675,27 @@ const styles = StyleSheet.create({
     borderWidth: 1.5, borderColor: Colors.primary,
   },
   scheduleBtnText: { fontSize: FontSize.md, fontWeight: FontWeight.bold, color: Colors.primaryLight, includeFontPadding: false },
-  publishBtn: {
-    flex: 1, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 6,
-    backgroundColor: Colors.primary, borderRadius: Radius.full, paddingVertical: 14,
+  publishSection: {
+    paddingHorizontal: Spacing.md, paddingTop: Spacing.md, gap: Spacing.sm,
   },
-  publishBtnText: { fontSize: FontSize.md, fontWeight: FontWeight.bold, color: '#fff', includeFontPadding: false },
+  publishSectionLabel: {
+    fontSize: FontSize.xs, fontWeight: FontWeight.bold, color: Colors.textMuted,
+    textTransform: 'uppercase', letterSpacing: 1, includeFontPadding: false,
+  },
+  platformPublishBtn: {
+    flexDirection: 'row', alignItems: 'center', gap: Spacing.sm,
+    borderRadius: Radius.lg, paddingVertical: Spacing.sm + 4, paddingHorizontal: Spacing.md,
+    borderWidth: 2,
+  },
+  platformPublishBtnDisabled: {
+    backgroundColor: Colors.surfaceElevated, borderColor: Colors.surfaceBorder,
+  },
+  platformPublishName: {
+    fontSize: FontSize.md, fontWeight: FontWeight.bold, includeFontPadding: false,
+  },
+  platformPublishSub: {
+    fontSize: FontSize.xs, includeFontPadding: false, marginTop: 1,
+  },
   emptyTitle: { fontSize: FontSize.lg, fontWeight: FontWeight.bold, color: Colors.textPrimary, includeFontPadding: false },
   uploadBtn: {
     backgroundColor: Colors.primary, borderRadius: Radius.full,
