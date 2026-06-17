@@ -39,7 +39,6 @@ export interface TrendingAudio {
   artist: string;
   uses: string;
   trending: boolean;
-  previewUrl?: string;
 }
 
 export interface CalendarEvent {
