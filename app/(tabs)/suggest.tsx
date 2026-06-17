@@ -12,7 +12,7 @@ import { Colors, Spacing, Radius, FontSize, FontWeight } from '@/constants/theme
 import { useAuth, getSupabaseClient } from '@/template';
 import { Image } from 'expo-image';
 import { useInstagram } from '@/hooks/useInstagram';
-import { getInstagramFullStatus, InstagramStatus } from '@/services/instagramService';
+import { getInstagramStatus, InstagramStatus } from '@/services/instagramService';
 import { setPendingReelItems, PendingReelItem } from '@/stores/pendingReel';
 
 const { width } = Dimensions.get('window');
@@ -231,13 +231,16 @@ export default function SuggestScreen() {
       setLoadingMore(true);
     }
 
-    // Fetch live Instagram profile (bio + posts) once per session via get_status?full=true
     if (igStatus.connected && user.id && !igProfileRef.current) {
       if (mode === 'replace') setLoadingStep('Loading your Instagram profile…');
-      const fetched = await getInstagramFullStatus(user.id);
-      if (fetched.connected) {
-        igProfileRef.current = fetched;
-        setLiveProfile(fetched);
+      try {
+        const fetched = await getInstagramStatus(user.id);
+        if (fetched.connected) {
+          igProfileRef.current = fetched;
+          setLiveProfile(fetched);
+        }
+      } catch {
+        // Non-fatal — proceed without live profile data
       }
     }
 
@@ -256,22 +259,10 @@ export default function SuggestScreen() {
     const igConnected = igStatus.connected;
 
     let profileSection: string;
-    if (igProfile?.bio || (igProfile?.recentPosts?.length ?? 0) > 0) {
-      const postLines = (igProfile!.recentPosts ?? [])
-        .map((p: any, i: number) =>
-          `  ${i + 1}. [${p.type}] ${p.date} | ${p.likes ?? '?'} likes | ${p.comments ?? '?'} comments | "${p.caption ?? 'no caption'}"`,
-        )
-        .join('\n');
-      profileSection = `Instagram Profile:
-Username: @${igProfile!.username ?? igStatus.username ?? 'unknown'}
-Bio: ${igProfile!.bio || 'Not set'}
-Followers: ${igProfile!.followersCount?.toLocaleString() ?? 'unknown'}
-Total posts: ${igProfile!.mediaCount ?? 'unknown'}
-
-Last ${igProfile!.recentPosts?.length ?? 0} posts (engagement data):
-${postLines || '  (no posts found)'}`;
-    } else if (igConnected && igStatus.username) {
-      profileSection = `Instagram Profile:\nUsername: @${igStatus.username}\nFollowers: ${igStatus.followersCount?.toLocaleString() ?? 'unknown'}\nBio: (not loaded yet)`;
+    const username = igProfile?.username ?? igStatus.username;
+    const followers = igProfile?.followersCount ?? igStatus.followersCount;
+    if (igConnected && username) {
+      profileSection = `Instagram Profile:\nUsername: @${username}\nFollowers: ${followers?.toLocaleString() ?? 'unknown'}`;
     } else {
       profileSection = 'Instagram: not connected.';
     }
@@ -435,7 +426,6 @@ ${postLines || '  (no posts found)'}`;
             {(liveProfile?.followersCount ?? igStatus.followersCount) != null && (
               <Text style={styles.igFollowers}>
                 · {(liveProfile?.followersCount ?? igStatus.followersCount)!.toLocaleString()} followers
-                {liveProfile?.mediaCount != null ? ` · ${liveProfile.mediaCount} posts` : ''}
               </Text>
             )}
           </View>
@@ -562,7 +552,7 @@ ${postLines || '  (no posts found)'}`;
                 style={({ pressed }) => [styles.loadMoreBtn, pressed && { opacity: 0.8 }]}
                 onPress={handleLoadMore}
               >
-                <MaterialCommunityIcons name="creation-outline" size={18} color={Colors.primary} />
+                <MaterialCommunityIcons name="crown-outline" size={18} color={Colors.primary} />
                 <Text style={styles.loadMoreBtnText}>Load More Ideas</Text>
                 <Text style={styles.loadMoreHint}>from different moments</Text>
               </Pressable>
