@@ -235,7 +235,7 @@ export default function ProfileScreen() {
     if (!account) return;
     showAlert(
       `Disconnect ${platform.label}?`,
-      `Remove @${account.handle} from your ViralCut profile?`,
+      `Remove @${account.handle} from your KalELConnect profile?`,
       [
         { text: 'Cancel', style: 'cancel' },
         {
@@ -365,7 +365,7 @@ export default function ProfileScreen() {
           <View style={styles.infoNote}>
             <MaterialIcons name="info-outline" size={13} color={Colors.textMuted} />
             <Text style={styles.infoText}>
-              Connecting via OAuth lets ViralCut publish directly to your TikTok account using the official TikTok Content Posting API.
+              Connecting via OAuth lets KalELConnect publish directly to your TikTok account using the official TikTok Content Posting API.
             </Text>
           </View>
         ) : null}
