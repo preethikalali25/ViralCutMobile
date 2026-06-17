@@ -1074,9 +1074,59 @@ export default function EditorScreen() {
               <MaterialIcons name="schedule" size={18} color={Colors.primaryLight} />
               <Text style={styles.scheduleBtnText}>Schedule</Text>
             </Pressable>
-            <Pressable style={({ pressed }) => [styles.publishBtn, pressed && { opacity: 0.8 }]} onPress={handlePublish}>
-              <MaterialIcons name="send" size={18} color="#fff" />
-              <Text style={styles.publishBtnText}>Publish Now</Text>
+          </View>
+
+          {/* Platform Publish Buttons */}
+          <View style={styles.publishSection}>
+            <Text style={styles.publishSectionLabel}>Publish to</Text>
+            <Pressable
+              style={({ pressed }) => [
+                styles.platformPublishBtn,
+                { borderColor: '#010101', backgroundColor: tiktok.status.connected ? '#010101' : Colors.surfaceElevated },
+                pressed && { opacity: 0.8 },
+                !tiktok.status.connected && styles.platformPublishBtnDisabled,
+              ]}
+              onPress={() => tiktok.status.connected ? setShowTikTokSheet(true) : showAlert('TikTok Not Connected', 'Connect your TikTok account in Settings to publish here.')}
+            >
+              <MaterialCommunityIcons name="music-note" size={20} color={tiktok.status.connected ? '#fff' : Colors.textMuted} />
+              <View style={{ flex: 1 }}>
+                <Text style={[styles.platformPublishName, { color: tiktok.status.connected ? '#fff' : Colors.textMuted }]}>TikTok</Text>
+                <Text style={[styles.platformPublishSub, { color: tiktok.status.connected ? 'rgba(255,255,255,0.6)' : Colors.textMuted }]}>
+                  {tiktok.status.connected ? `@${tiktok.status.creatorName || 'your account'}` : 'Not connected'}
+                </Text>
+              </View>
+              <MaterialIcons name={tiktok.status.connected ? 'arrow-forward-ios' : 'lock-outline'} size={16} color={tiktok.status.connected ? 'rgba(255,255,255,0.6)' : Colors.textMuted} />
+            </Pressable>
+
+            <Pressable
+              style={({ pressed }) => [
+                styles.platformPublishBtn,
+                { borderColor: '#e1306c', backgroundColor: instagram.status.connected ? '#e1306c' : Colors.surfaceElevated },
+                pressed && { opacity: 0.8 },
+                !instagram.status.connected && styles.platformPublishBtnDisabled,
+              ]}
+              onPress={() => instagram.status.connected ? setShowInstagramSheet(true) : showAlert('Instagram Not Connected', 'Connect your Instagram account in Settings to publish here.')}
+            >
+              <MaterialCommunityIcons name="instagram" size={20} color={instagram.status.connected ? '#fff' : Colors.textMuted} />
+              <View style={{ flex: 1 }}>
+                <Text style={[styles.platformPublishName, { color: instagram.status.connected ? '#fff' : Colors.textMuted }]}>Instagram Reels</Text>
+                <Text style={[styles.platformPublishSub, { color: instagram.status.connected ? 'rgba(255,255,255,0.6)' : Colors.textMuted }]}>
+                  {instagram.status.connected ? `@${instagram.status.username || 'your account'}` : 'Not connected'}
+                </Text>
+              </View>
+              <MaterialIcons name={instagram.status.connected ? 'arrow-forward-ios' : 'lock-outline'} size={16} color={instagram.status.connected ? 'rgba(255,255,255,0.6)' : Colors.textMuted} />
+            </Pressable>
+
+            <Pressable
+              style={({ pressed }) => [styles.platformPublishBtn, styles.platformPublishBtnDisabled, pressed && { opacity: 0.8 }]}
+              onPress={() => showAlert('YouTube Shorts', 'YouTube Shorts publishing is coming soon!')}
+            >
+              <MaterialCommunityIcons name="youtube" size={20} color={Colors.textMuted} />
+              <View style={{ flex: 1 }}>
+                <Text style={[styles.platformPublishName, { color: Colors.textMuted }]}>YouTube Shorts</Text>
+                <Text style={[styles.platformPublishSub, { color: Colors.textMuted }]}>Coming soon</Text>
+              </View>
+              <MaterialIcons name="lock-outline" size={16} color={Colors.textMuted} />
             </Pressable>
           </View>
 
@@ -1625,11 +1675,27 @@ const styles = StyleSheet.create({
     borderWidth: 1.5, borderColor: Colors.primary,
   },
   scheduleBtnText: { fontSize: FontSize.md, fontWeight: FontWeight.bold, color: Colors.primaryLight, includeFontPadding: false },
-  publishBtn: {
-    flex: 1, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 6,
-    backgroundColor: Colors.primary, borderRadius: Radius.full, paddingVertical: 14,
+  publishSection: {
+    paddingHorizontal: Spacing.md, paddingTop: Spacing.md, gap: Spacing.sm,
   },
-  publishBtnText: { fontSize: FontSize.md, fontWeight: FontWeight.bold, color: '#fff', includeFontPadding: false },
+  publishSectionLabel: {
+    fontSize: FontSize.xs, fontWeight: FontWeight.bold, color: Colors.textMuted,
+    textTransform: 'uppercase', letterSpacing: 1, includeFontPadding: false,
+  },
+  platformPublishBtn: {
+    flexDirection: 'row', alignItems: 'center', gap: Spacing.sm,
+    borderRadius: Radius.lg, paddingVertical: Spacing.sm + 4, paddingHorizontal: Spacing.md,
+    borderWidth: 2,
+  },
+  platformPublishBtnDisabled: {
+    backgroundColor: Colors.surfaceElevated, borderColor: Colors.surfaceBorder,
+  },
+  platformPublishName: {
+    fontSize: FontSize.md, fontWeight: FontWeight.bold, includeFontPadding: false,
+  },
+  platformPublishSub: {
+    fontSize: FontSize.xs, includeFontPadding: false, marginTop: 1,
+  },
   emptyTitle: { fontSize: FontSize.lg, fontWeight: FontWeight.bold, color: Colors.textPrimary, includeFontPadding: false },
   uploadBtn: {
     backgroundColor: Colors.primary, borderRadius: Radius.full,
