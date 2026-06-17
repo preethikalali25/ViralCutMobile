@@ -11,6 +11,7 @@
     "ios": {
       "supportsTablet": true,
       "bundleIdentifier": "com.kalel.KalelViralCut",
+      "buildNumber": "2",
       "infoPlist": {
         "LSApplicationQueriesSchemes": ["instagram-reels", "instagram"],
         "NSContactsUsageDescription": "KalELConnect does not use your contacts. This permission is required by a third-party SDK included in the app."
