@@ -5,7 +5,7 @@
   "build": {
     "production": {
       "ios": {
-        "image": "macos-sequoia-26.5-xcode-26.5"
+        "image": "macos-tahoe-26.4-xcode-26.4"
       }
     }
   },
