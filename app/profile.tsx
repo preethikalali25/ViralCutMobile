@@ -6,7 +6,7 @@ import {
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useRouter } from 'expo-router';
 import { MaterialIcons, MaterialCommunityIcons } from '@expo/vector-icons';
-import { useAuth, useAlert } from '@/template';
+import { useAuth, useAlert, getSupabaseClient } from '@/template';
 import { Colors, Spacing, Radius, FontSize, FontWeight } from '@/constants/theme';
 import { useSocialAccounts } from '@/hooks/useSocialAccounts';
 import { useTikTok } from '@/hooks/useTikTok';
@@ -84,10 +84,51 @@ export default function ProfileScreen() {
   const [followers, setFollowers] = useState('');
   const [saving, setSaving] = useState(false);
   const [loggingOut, setLoggingOut] = useState(false);
+  const [deletingAccount, setDeletingAccount] = useState(false);
 
   useEffect(() => {
     load();
   }, [load]);
+
+  const handleDeleteAccount = () => {
+    showAlert(
+      'Delete Account',
+      'This permanently deletes your account and all associated data. This cannot be undone.',
+      [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: 'Delete My Account',
+          style: 'destructive',
+          onPress: () => {
+            showAlert(
+              'Are you absolutely sure?',
+              'Your videos, connected platforms, and account data will be permanently deleted.',
+              [
+                { text: 'Cancel', style: 'cancel' },
+                {
+                  text: 'Yes, Delete Everything',
+                  style: 'destructive',
+                  onPress: async () => {
+                    setDeletingAccount(true);
+                    try {
+                      const { error } = await getSupabaseClient().functions.invoke('delete-account');
+                      if (error) {
+                        showAlert('Error', 'Could not delete account. Please try again or contact support.');
+                      }
+                    } catch {
+                      showAlert('Error', 'Could not delete account. Please try again or contact support.');
+                    } finally {
+                      setDeletingAccount(false);
+                    }
+                  },
+                },
+              ],
+            );
+          },
+        },
+      ],
+    );
+  };
 
   const handleLogout = async () => {
     showAlert('Sign Out', 'Are you sure you want to sign out?', [
@@ -465,7 +506,7 @@ export default function ProfileScreen() {
           <Pressable
             style={({ pressed }) => [styles.accountRow, pressed && { opacity: 0.7 }]}
             onPress={handleLogout}
-            disabled={loggingOut}
+            disabled={loggingOut || deletingAccount}
           >
             {loggingOut ? (
               <ActivityIndicator size="small" color={Colors.error} />
@@ -473,6 +514,24 @@ export default function ProfileScreen() {
               <MaterialIcons name="logout" size={18} color={Colors.error} />
             )}
             <Text style={styles.signOutText}>Sign Out</Text>
+          </Pressable>
+
+          <View style={styles.accountDivider} />
+
+          <Pressable
+            style={({ pressed }) => [styles.accountRow, pressed && { opacity: 0.7 }]}
+            onPress={handleDeleteAccount}
+            disabled={loggingOut || deletingAccount}
+          >
+            {deletingAccount ? (
+              <ActivityIndicator size="small" color={Colors.error} />
+            ) : (
+              <MaterialIcons name="delete-forever" size={18} color={Colors.error} />
+            )}
+            <View style={{ flex: 1 }}>
+              <Text style={styles.signOutText}>Delete Account</Text>
+              <Text style={styles.deleteAccountSub}>Permanently remove all data</Text>
+            </View>
           </Pressable>
         </View>
 
@@ -650,7 +709,9 @@ const styles = StyleSheet.create({
     borderWidth: 1, borderColor: Colors.surfaceBorder, overflow: 'hidden', marginBottom: Spacing.lg,
   },
   accountRow: { flexDirection: 'row', alignItems: 'center', gap: Spacing.sm, padding: Spacing.md, minHeight: 52 },
+  accountDivider: { height: 1, backgroundColor: Colors.surfaceBorder, marginHorizontal: Spacing.md },
   signOutText: { fontSize: FontSize.md, fontWeight: FontWeight.semibold, color: Colors.error, includeFontPadding: false },
+  deleteAccountSub: { fontSize: FontSize.xs, color: Colors.textMuted, marginTop: 1, includeFontPadding: false },
 
   // Modal
   modalOverlay: { flex: 1, justifyContent: 'flex-end' },

@@ -50,6 +50,7 @@
     "dedent": "^0.7.0",
     "es6-error": "^4.1.1",
     "expo": "~53.0.9",
+    "expo-apple-authentication": "^56.0.4",
     "expo-application": "~6.1.4",
     "expo-asset": "~11.1.5",
     "expo-audio": "~0.4.6",
