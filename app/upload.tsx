@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import {
   View, Text, ScrollView, StyleSheet, Pressable, ActivityIndicator, FlatList,
 } from 'react-native';
@@ -13,6 +13,7 @@ import { useAlert } from '@/template';
 import { Platform as PlatformType, Video } from '@/types';
 import PlatformBadge from '@/components/ui/PlatformBadge';
 import { combineMediaToVideo, type MediaItem } from '@/services/videoOverlayService';
+import { consumePendingReelItems } from '@/stores/pendingReel';
 
 const ALL_PLATFORMS: PlatformType[] = ['tiktok', 'reels', 'youtube'];
 
@@ -51,6 +52,7 @@ export default function UploadScreen() {
   const [mediaItems, setMediaItems] = useState<MediaPreviewItem[]>([]);
   const [isProcessing, setIsProcessing] = useState(false);
   const [processingLabel, setProcessingLabel] = useState('');
+  const didConsumeRef = useRef(false);
 
   const togglePlatform = (p: PlatformType) => {
     setPlatforms(prev =>
@@ -108,8 +110,24 @@ export default function UploadScreen() {
     return sum + Math.min(item.durationSec ?? 15, 15);
   }, 0);
 
-  const handleEdit = async () => {
-    if (mediaItems.length === 0) {
+  // Consume pending items from the Suggest screen on first mount and auto-proceed
+  useEffect(() => {
+    if (didConsumeRef.current) return;
+    didConsumeRef.current = true;
+    const { items, autoOpen } = consumePendingReelItems();
+    if (!items.length) return;
+    const loaded: MediaPreviewItem[] = items.map(item => ({
+      uri: item.uri, type: item.type,
+      previewUri: item.previewUri ?? '', durationSec: item.durationSec,
+    }));
+    setMediaItems(loaded);
+    if (autoOpen) handleEdit(loaded);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  const handleEdit = async (overrideItems?: MediaPreviewItem[]) => {
+    const items = overrideItems ?? mediaItems;
+    if (items.length === 0) {
       showAlert('No Media', 'Add at least one photo or video clip.');
       return;
     }
@@ -119,21 +137,23 @@ export default function UploadScreen() {
 
     try {
       let videoUri: string;
-      let thumbnail = mediaItems[0].previewUri;
-      if (!thumbnail && mediaItems[0].type === 'video') {
-        thumbnail = await getVideoPreviewUri(mediaItems[0].uri);
+      let thumbnail = items[0].previewUri;
+      if (!thumbnail && items[0].type === 'video') {
+        thumbnail = await getVideoPreviewUri(items[0].uri);
       }
 
-      if (mediaItems.length === 1 && mediaItems[0].type === 'video') {
+      const totalDur = items.reduce((s, m) => s + (m.type === 'photo' ? 3 : Math.min(m.durationSec ?? 15, 15)), 0);
+
+      if (items.length === 1 && items[0].type === 'video') {
         // Single video — pass through directly, no conversion needed
-        videoUri = mediaItems[0].uri;
-        const assetId = mediaItems[0].uri.startsWith('ph://')
-          ? mediaItems[0].uri.replace('ph://', '').split('/')[0]
+        videoUri = items[0].uri;
+        const assetId = items[0].uri.startsWith('ph://')
+          ? items[0].uri.replace('ph://', '').split('/')[0]
           : undefined;
 
         addVideo({
           id, title: '', thumbnail,
-          duration: mediaItems[0].durationSec ?? 15,
+          duration: items[0].durationSec ?? 15,
           status: 'ready', platforms,
           createdAt: new Date().toISOString(),
           videoUri,
@@ -142,12 +162,12 @@ export default function UploadScreen() {
       } else {
         // Photos, multiple videos, or any mix — combine into one reel
         setProcessingLabel('Creating reel…');
-        const items: MediaItem[] = mediaItems.map(m => ({ uri: m.uri, type: m.type }));
-        videoUri = await combineMediaToVideo(items, 3.0);
+        const mediaList: MediaItem[] = items.map(m => ({ uri: m.uri, type: m.type }));
+        videoUri = await combineMediaToVideo(mediaList, 3.0);
 
         addVideo({
           id, title: '', thumbnail,
-          duration: totalDuration, status: 'ready', platforms,
+          duration: totalDur, status: 'ready', platforms,
           createdAt: new Date().toISOString(),
           videoUri,
         } as Video);
@@ -281,7 +301,7 @@ export default function UploadScreen() {
               (!hasMedia || isProcessing) && styles.actionBtnDisabled,
               pressed && { opacity: 0.85 },
             ]}
-            onPress={handleEdit}
+            onPress={() => handleEdit()}
             disabled={!hasMedia || isProcessing}
           >
             {isProcessing ? (
