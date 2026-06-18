@@ -1,6 +1,6 @@
 {
   "expo": {
-    "name": "KalELConnect",
+    "name": "ViralCut",
     "slug": "viralcut",
     "version": "1.0.0",
     "orientation": "portrait",
@@ -10,12 +10,7 @@
     "newArchEnabled": true,
     "ios": {
       "supportsTablet": true,
-      "bundleIdentifier": "com.kalel.KalelViralCut",
-      "buildNumber": "2",
-      "infoPlist": {
-        "LSApplicationQueriesSchemes": ["instagram-reels", "instagram"],
-        "NSContactsUsageDescription": "KalELConnect does not use your contacts. This permission is required by a third-party SDK included in the app."
-      }
+      "bundleIdentifier": "com.kalel.KalelViralCut"
     },
     "android": {
       "package": "com.kalel.KalelViralCut",
@@ -56,20 +51,11 @@
     },
     "plugins": [
       "expo-router",
-      "expo-apple-authentication",
-      [
-        "expo-media-library",
-        {
-          "photosPermission": "KalELConnect needs access to your photo library to save your edited video.",
-          "savePhotosPermission": "KalELConnect needs permission to save your edited video before opening Instagram.",
-          "isAccessMediaLocationEnabled": false
-        }
-      ],
       [
         "expo-image-picker",
         {
-          "photosPermission": "KalELConnect needs access to your photo library to select videos for editing and publishing.",
-          "cameraPermission": "KalELConnect needs access to your camera to record videos directly."
+          "photosPermission": "ViralCut needs access to your photo library to select videos for editing and publishing.",
+          "cameraPermission": "ViralCut needs access to your camera to record videos directly."
         }
       ],
       [

@@ -144,22 +144,9 @@ export function useAuth(): AuthContextType {
       return result;
     } catch (error) {
       console.warn('[Template:useAuth] signInWithGoogle exception:', error);
-      return {
+      return { 
         error: 'Google login failed'
       };
-    } finally {
-      context.setOperationLoading(false);
-    }
-  };
-
-  const signInWithApple = async (): Promise<{ error: string | null }> => {
-    context.setOperationLoading(true);
-    try {
-      const result = await authService.signInWithApple();
-      return result;
-    } catch (error) {
-      console.warn('[Template:useAuth] signInWithApple exception:', error);
-      return { error: 'Apple sign-in failed' };
     } finally {
       context.setOperationLoading(false);
     }
@@ -176,7 +163,6 @@ export function useAuth(): AuthContextType {
     signUpWithPassword,
     signInWithPassword,
     signInWithGoogle,
-    signInWithApple,
     logout,
     refreshSession,
   };

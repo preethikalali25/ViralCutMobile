@@ -1,5 +1,3 @@
-packages:
-  - '.'
 allowBuilds:
   protobufjs: set this to true or false
   react-native-elements: set this to true or false

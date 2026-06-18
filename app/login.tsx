@@ -6,14 +6,13 @@ import {
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Image } from 'expo-image';
 import { MaterialIcons, MaterialCommunityIcons } from '@expo/vector-icons';
-import * as AppleAuthentication from 'expo-apple-authentication';
 import { useAuth, useAlert } from '@/template';
 import { Colors, Spacing, Radius, FontSize, FontWeight } from '@/constants/theme';
 
 type Mode = 'landing' | 'email-login' | 'email-signup' | 'otp';
 
 export default function LoginScreen() {
-  const { signInWithGoogle, signInWithApple, signInWithPassword, sendOTP, verifyOTPAndLogin, operationLoading } = useAuth();
+  const { signInWithGoogle, signInWithPassword, sendOTP, verifyOTPAndLogin, operationLoading } = useAuth();
   const { showAlert } = useAlert();
 
   const [mode, setMode] = useState<Mode>('landing');
@@ -28,11 +27,6 @@ export default function LoginScreen() {
   const handleGoogle = async () => {
     const { error } = await signInWithGoogle();
     if (error) showAlert('Google Sign-In Failed', error);
-  };
-
-  const handleApple = async () => {
-    const { error } = await signInWithApple!();
-    if (error && error !== 'User cancelled Apple sign-in') showAlert('Apple Sign-In Failed', error);
   };
 
   const handleEmailLogin = async () => {
@@ -92,7 +86,7 @@ export default function LoginScreen() {
             />
             <View style={styles.heroOverlay}>
               <MaterialCommunityIcons name="scissors-cutting" size={32} color={Colors.primaryLight} />
-              <Text style={styles.heroTitle}>KalELConnect</Text>
+              <Text style={styles.heroTitle}>ViralCut</Text>
               <Text style={styles.heroSub}>Your short-form video studio</Text>
             </View>
           </View>
@@ -105,17 +99,6 @@ export default function LoginScreen() {
               <>
                 <Text style={styles.cardTitle}>Get Started</Text>
                 <Text style={styles.cardSub}>Sign in to manage your videos</Text>
-
-                {/* Apple — iOS only, required by App Store guideline 4.8 */}
-                {Platform.OS === 'ios' ? (
-                  <AppleAuthentication.AppleAuthenticationButton
-                    buttonType={AppleAuthentication.AppleAuthenticationButtonType.SIGN_IN}
-                    buttonStyle={AppleAuthentication.AppleAuthenticationButtonStyle.BLACK}
-                    cornerRadius={30}
-                    style={styles.appleBtn}
-                    onPress={handleApple}
-                  />
-                ) : null}
 
                 {/* Google */}
                 <Pressable
@@ -420,11 +403,6 @@ const styles = StyleSheet.create({
     lineHeight: 20,
     includeFontPadding: false,
     marginTop: -Spacing.sm,
-  },
-  appleBtn: {
-    width: '100%',
-    height: 50,
-    borderRadius: 30,
   },
   googleBtn: {
     flexDirection: 'row',
