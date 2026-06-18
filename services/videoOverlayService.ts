@@ -24,21 +24,6 @@ export async function photosToVideo(
   return await VideoTextOverlay.photosToVideo(photoUris, durationPerPhoto);
 }
 
-export async function shareToInstagramReels(
-  videoUri: string,
-  appId: string,
-): Promise<{ error?: string }> {
-  if (!VideoTextOverlay?.shareToInstagramReels) {
-    return { error: 'Native sharing not available' };
-  }
-  try {
-    await VideoTextOverlay.shareToInstagramReels(videoUri, appId);
-    return {};
-  } catch (e: any) {
-    return { error: e?.message ?? 'Could not prepare Instagram share' };
-  }
-}
-
 export async function burnHookOverlay(
   videoUri: string,
   hookText: string,
@@ -53,23 +38,17 @@ export async function burnHookOverlay(
     return { outputUri: videoUri };
   }
 
-  const timeout = new Promise<string>((_, reject) =>
-    setTimeout(() => reject(new Error('timeout')), 120000),
-  );
   try {
-    const outputUri: string = await Promise.race([
-      VideoTextOverlay.burnText(
-        videoUri,
-        hookText.trim(),
-        backgroundAudioUri ?? '',
-        originalVolume ?? 0.6,
-        bgVolume ?? 0.8,
-      ),
-      timeout,
-    ]);
+    const outputUri: string = await VideoTextOverlay.burnText(
+      videoUri,
+      hookText.trim(),
+      backgroundAudioUri ?? '',
+      originalVolume ?? 0.6,
+      bgVolume ?? 0.8,
+    );
     return { outputUri };
   } catch (e: any) {
-    console.warn('[burnHookOverlay] Native overlay failed or timed out, using original:', e?.message);
+    console.warn('[burnHookOverlay] Native overlay failed, using original:', e?.message);
     return { outputUri: videoUri };
   }
 }

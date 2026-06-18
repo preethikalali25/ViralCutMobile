@@ -374,7 +374,7 @@ const styles = StyleSheet.create({
   strip: { gap: 8, paddingHorizontal: 4 },
   stripItem: {
     width: 80, height: 106, borderRadius: Radius.md,
-    overflow: 'hidden', position: 'relative',
+    overflow: 'hidden', position: 'absolute',
   },
   stripThumb: { width: '100%', height: '100%' },
   stripThumbPlaceholder: { alignItems: 'center', justifyContent: 'center', backgroundColor: Colors.surfaceElevated },
