@@ -74,7 +74,7 @@ Deno.serve(async (req) => {
       const params = new URLSearchParams({
         client_key: clientKey,
         response_type: 'code',
-        scope: 'user.info.basic,video.publish,video.upload',
+        scope: 'user.info.basic',
         redirect_uri: redirectUri,
         state,
         code_challenge: codeChallenge,
