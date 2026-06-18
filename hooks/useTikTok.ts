@@ -17,7 +17,9 @@ import { Linking } from 'react-native';
 // The redirect URI registered in TikTok Developer portal.
 // TikTok redirects here → backend forwards to viralcut://tiktok-callback.
 // Register exactly this URL in TikTok Developer Portal → your app → Redirect URI.
-export const TIKTOK_REDIRECT_URI = 'https://mrsvovoywukechawmrsv.backend.onspace.ai/functions/v1/tiktok-publisher?action=callback';
+// TikTok does not allow query parameters in registered redirect URIs,
+// so we use the bare function URL and detect the callback by the presence of 'code'.
+export const TIKTOK_REDIRECT_URI = 'https://mrsvovoywukechawmrsv.backend.onspace.ai/functions/v1/tiktok-publisher';
 
 export type PublishPhase =
   | 'idle'

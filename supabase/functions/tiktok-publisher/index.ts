@@ -24,9 +24,9 @@ Deno.serve(async (req) => {
   const url = new URL(req.url);
 
   // ─── OAuth Callback (GET — TikTok redirects here) ─────────────────────────
-  // Registered redirect URI in TikTok Developer portal points to this endpoint.
-  // We forward the code/state to the app via deep link.
-  if (req.method === 'GET' && url.searchParams.get('action') === 'callback') {
+  // TikTok does not allow query params in the registered redirect URI, so we
+  // detect the callback by the presence of 'code' or 'error' on a GET request.
+  if (req.method === 'GET' && (url.searchParams.get('code') || url.searchParams.get('error'))) {
     const code = url.searchParams.get('code') ?? '';
     const state = url.searchParams.get('state') ?? '';
     const error = url.searchParams.get('error') ?? '';
