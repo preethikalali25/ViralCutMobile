@@ -76,6 +76,12 @@ export async function disconnectTikTok(userId: string): Promise<{ error?: string
   return { error: error ?? undefined };
 }
 
+/** Manually refresh the TikTok access token using the stored refresh token */
+export async function refreshTikTokToken(userId: string): Promise<{ error?: string }> {
+  const { error } = await invoke('refresh_token', { userId });
+  return { error: error ?? undefined };
+}
+
 /**
  * Publish a video to TikTok.
  * videoUrl must be a publicly accessible URL (not a local file:// URI).

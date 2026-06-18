@@ -176,6 +176,15 @@ export default function ProfileScreen() {
     );
   };
 
+  const handleTikTokRefresh = async () => {
+    const { error } = await tiktok.refreshToken();
+    if (error) {
+      showAlert('Refresh Failed', 'Could not refresh your TikTok session. Please reconnect your account.');
+    } else {
+      showAlert('Session Refreshed', 'Your TikTok session is now up to date.');
+    }
+  };
+
   // ── Instagram OAuth Connect ─────────────────────────────────────────────
   const handleInstagramConnect = async () => {
     const { error } = await instagram.connect();
@@ -321,7 +330,7 @@ export default function ProfileScreen() {
                 {tiktok.status.expired ? (
                   <View style={styles.expiredBadge}>
                     <MaterialIcons name="warning" size={10} color={Colors.amber} />
-                    <Text style={styles.expiredText}>Token expired — reconnect</Text>
+                    <Text style={styles.expiredText}>Session expired</Text>
                   </View>
                 ) : (
                   <View style={styles.connectedBadge}>
@@ -336,12 +345,23 @@ export default function ProfileScreen() {
           </View>
 
           {tiktok.status.connected ? (
-            <Pressable
-              style={({ pressed }) => [styles.disconnectBtn, pressed && { opacity: 0.7 }]}
-              onPress={handleTikTokDisconnect}
-            >
-              <MaterialIcons name="link-off" size={14} color={Colors.error} />
-            </Pressable>
+            <View style={{ flexDirection: 'row', gap: 8, alignItems: 'center' }}>
+              {tiktok.status.expired ? (
+                <Pressable
+                  style={({ pressed }) => [styles.oauthBtn, { paddingHorizontal: 10 }, pressed && { opacity: 0.85 }]}
+                  onPress={handleTikTokRefresh}
+                >
+                  <MaterialIcons name="refresh" size={14} color="#fff" />
+                  <Text style={styles.oauthBtnText}>Refresh</Text>
+                </Pressable>
+              ) : null}
+              <Pressable
+                style={({ pressed }) => [styles.disconnectBtn, pressed && { opacity: 0.7 }]}
+                onPress={handleTikTokDisconnect}
+              >
+                <MaterialIcons name="link-off" size={14} color={Colors.error} />
+              </Pressable>
+            </View>
           ) : (
             <Pressable
               style={({ pressed }) => [styles.oauthBtn, tiktok.connectingOAuth && styles.oauthBtnLoading, pressed && { opacity: 0.85 }]}

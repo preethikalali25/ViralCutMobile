@@ -9,6 +9,7 @@ import {
   getTikTokAuthUrl,
   exchangeTikTokCode,
   generateCodeVerifier,
+  refreshTikTokToken,
 } from '@/services/tiktokService';
 import * as WebBrowser from 'expo-web-browser';
 import { Linking } from 'react-native';
@@ -153,6 +154,14 @@ export function useTikTok() {
     return { error };
   }, [user?.id]);
 
+  // ── Refresh Token ─────────────────────────────────────────────────────────
+  const refreshToken = useCallback(async (): Promise<{ error?: string }> => {
+    if (!user?.id) return { error: 'Not logged in' };
+    const { error } = await refreshTikTokToken(user.id);
+    if (!error) await loadStatus();
+    return { error };
+  }, [user?.id, loadStatus]);
+
   // ── Publish Video ─────────────────────────────────────────────────────────
   /**
    * videoUrl must be a publicly accessible URL.
@@ -224,6 +233,7 @@ export function useTikTok() {
     publishState,
     connect,
     disconnect,
+    refreshToken,
     publish,
     resetPublish,
     loadStatus,

@@ -271,10 +271,10 @@ Deno.serve(async (req) => {
         );
       }
 
-      // Fetch stored access token
+      // Fetch stored tokens (include refresh fields for auto-refresh)
       const { data: tokenRow, error: tokenErr } = await supabase
         .from('tiktok_tokens')
-        .select('access_token, expires_at, open_id')
+        .select('access_token, refresh_token, expires_at, refresh_expires_at, open_id')
         .eq('user_id', userId)
         .single();
 
@@ -285,15 +285,51 @@ Deno.serve(async (req) => {
         );
       }
 
-      // Check expiry
+      // Auto-refresh if access token is expired but refresh token is still valid
+      let accessToken = tokenRow.access_token;
       if (new Date(tokenRow.expires_at) < new Date()) {
-        return new Response(
-          JSON.stringify({ error: 'TikTok token expired. Please reconnect your TikTok account.' }),
-          { status: 401, headers: { ...corsHeaders, 'Content-Type': 'application/json' } },
-        );
-      }
+        const refreshExpired = tokenRow.refresh_expires_at
+          ? new Date(tokenRow.refresh_expires_at) < new Date()
+          : false;
 
-      const accessToken = tokenRow.access_token;
+        if (refreshExpired || !tokenRow.refresh_token) {
+          return new Response(
+            JSON.stringify({ error: 'TikTok session expired. Please reconnect your TikTok account.' }),
+            { status: 401, headers: { ...corsHeaders, 'Content-Type': 'application/json' } },
+          );
+        }
+
+        console.log('[tiktok-publisher] Access token expired — attempting auto-refresh');
+        const refreshRes = await fetch(TIKTOK_TOKEN_URL, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+          body: new URLSearchParams({
+            client_key: clientKey,
+            client_secret: clientSecret,
+            grant_type: 'refresh_token',
+            refresh_token: tokenRow.refresh_token,
+          }),
+        });
+        const refreshData = await refreshRes.json();
+
+        if (refreshData.error) {
+          console.warn('[tiktok-publisher] Token refresh failed:', refreshData.error_description ?? refreshData.error);
+          return new Response(
+            JSON.stringify({ error: 'TikTok session expired. Please reconnect your TikTok account.' }),
+            { status: 401, headers: { ...corsHeaders, 'Content-Type': 'application/json' } },
+          );
+        }
+
+        accessToken = refreshData.access_token;
+        const newExpiresAt = new Date(Date.now() + (refreshData.expires_in ?? 86400) * 1000).toISOString();
+        await supabase.from('tiktok_tokens').update({
+          access_token: accessToken,
+          refresh_token: refreshData.refresh_token ?? tokenRow.refresh_token,
+          expires_at: newExpiresAt,
+          updated_at: new Date().toISOString(),
+        }).eq('user_id', userId);
+        console.log('[tiktok-publisher] Token refreshed successfully');
+      }
 
       // Initialize upload using PULL_FROM_URL
       const initPayload = {
