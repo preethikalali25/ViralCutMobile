@@ -1,5 +1,6 @@
 import { getSupabaseClient } from '@/template';
 import { FunctionsHttpError } from '@supabase/supabase-js';
+import * as ExpoCrypto from 'expo-crypto';
 
 export interface TikTokStatus {
   connected: boolean;
@@ -16,9 +17,8 @@ export interface TikTokPublishResult {
 
 /** Generate a random PKCE code verifier (43-128 chars, URL-safe) */
 export function generateCodeVerifier(): string {
-  const array = new Uint8Array(64);
-  crypto.getRandomValues(array);
-  return btoa(String.fromCharCode(...array))
+  const bytes = ExpoCrypto.getRandomBytes(64);
+  return btoa(String.fromCharCode(...bytes))
     .replace(/\+/g, '-')
     .replace(/\//g, '_')
     .replace(/=+$/, '')
