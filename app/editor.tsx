@@ -562,7 +562,7 @@ export default function EditorScreen() {
 
     updateVideo(video.id, { ...snap, title: videoTitle });
     const { error } = await tiktok.publish(
-      videoUrl, videoTitle || snap.hook.text || 'ViralCut video', tiktokPrivacy,
+      videoUrl, videoTitle || snap.hook.text || 'KalELConnect video', tiktokPrivacy,
     );
     if (error) showAlert('TikTok Error', error);
   };

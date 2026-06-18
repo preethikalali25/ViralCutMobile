@@ -5,6 +5,7 @@ import { configManager } from '../../core/config';
 import { Platform } from 'react-native';
 import * as AuthSession from 'expo-auth-session';
 import * as WebBrowser from 'expo-web-browser';
+import * as AppleAuthentication from 'expo-apple-authentication';
 
 // Ensure Web platform correctly handles auth callbacks
 WebBrowser.maybeCompleteAuthSession();
@@ -568,6 +569,33 @@ export class AuthService {
       return { 
         error: `Google login failed: ${errorMessage}`
       };
+    }
+  }
+
+  async signInWithApple(): Promise<{ error: string | null }> {
+    try {
+      const available = await AppleAuthentication.isAvailableAsync();
+      if (!available) return { error: 'Sign in with Apple is not available on this device' };
+
+      const credential = await AppleAuthentication.signInAsync({
+        requestedScopes: [
+          AppleAuthentication.AppleAuthenticationScope.FULL_NAME,
+          AppleAuthentication.AppleAuthenticationScope.EMAIL,
+        ],
+      });
+
+      if (!credential.identityToken) return { error: 'No identity token received from Apple' };
+
+      const { error } = await this.supabase.auth.signInWithIdToken({
+        provider: 'apple',
+        token: credential.identityToken,
+      });
+
+      if (error) return { error: error.message };
+      return { error: null };
+    } catch (e: any) {
+      if (e.code === 'ERR_REQUEST_CANCELED') return { error: 'User cancelled Apple sign-in' };
+      return { error: e.message ?? 'Apple sign-in failed' };
     }
   }
 
