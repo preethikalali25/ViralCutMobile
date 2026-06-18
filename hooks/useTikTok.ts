@@ -191,6 +191,11 @@ export function useTikTok() {
     return { publishId };
   }, [user?.id, status.connected]);
 
+  const startPollingById = useCallback((publishId: string) => {
+    setPublishState({ phase: 'processing', publishId });
+    startPolling(publishId);
+  }, []);
+
   // Poll TikTok status until done or max attempts
   const startPolling = (publishId: string) => {
     let attempts = 0;
@@ -237,6 +242,7 @@ export function useTikTok() {
     disconnect,
     refreshToken,
     publish,
+    startPollingById,
     resetPublish,
     loadStatus,
   };

@@ -20,7 +20,7 @@ import { formatDuration } from '@/services/formatters';
 import { FunctionsHttpError } from '@supabase/supabase-js';
 import { useTikTok } from '@/hooks/useTikTok';
 import { useInstagram } from '@/hooks/useInstagram';
-import { uploadVideoToStorage } from '@/services/tiktokService';
+import { uploadVideoToStorage, initTikTokPublish, uploadVideoToTikTok } from '@/services/tiktokService';
 import { burnHookOverlay, shareToInstagramReels } from '@/services/videoOverlayService';
 import { INSTAGRAM_APP_ID } from '@/constants/instagram';
 import { searchViralAudio, AudioSearchResult } from '@/services/audioSearchService';
@@ -556,15 +556,39 @@ export default function EditorScreen() {
   const handleTikTokPublish = async () => {
     const snap = snapshotEditorState();
     if (!video?.videoUri) { showAlert('No Video File', 'Select a video before publishing to TikTok.'); return; }
+    if (!user?.id) { showAlert('Not logged in', 'Please sign in first.'); return; }
 
-    const { videoUrl, error: prepError } = await prepareVideoForPublish(video.videoUri, snap.hook?.text ?? '');
-    if (prepError || !videoUrl) { showAlert('Upload Failed', prepError ?? 'Could not upload video.'); return; }
+    // Step 1: burn hook overlay locally
+    const { outputUri } = await burnOverlayLocally(video.videoUri, snap.hook?.text ?? '');
+
+    // Step 2: get file size
+    const FileSystem = await import('expo-file-system');
+    const info = await FileSystem.getInfoAsync(outputUri, { size: true });
+    const videoSize = (info as any).size as number;
+    if (!videoSize) { showAlert('Upload Failed', 'Could not read video file size.'); return; }
+
+    // Step 3: init TikTok FILE_UPLOAD — get upload URL
+    setUploadingToStorage(true);
+    const title = videoTitle || snap.hook?.text || 'KalELConnect video';
+    const { publishId, uploadUrl, error: initError } = await initTikTokPublish(
+      user.id, videoSize, title, tiktokPrivacy,
+    );
+    if (initError || !publishId || !uploadUrl) {
+      setUploadingToStorage(false);
+      showAlert('TikTok Error', initError ?? 'Could not initialize upload.');
+      return;
+    }
+
+    // Step 4: upload binary directly to TikTok
+    const { error: uploadError } = await uploadVideoToTikTok(outputUri, uploadUrl, videoSize, setUploadProgress);
+    setUploadingToStorage(false);
+    setUploadProgress(0);
+    if (uploadError) { showAlert('Upload Failed', uploadError); return; }
 
     updateVideo(video.id, { ...snap, title: videoTitle });
-    const { error } = await tiktok.publish(
-      videoUrl, videoTitle || snap.hook.text || 'KalELConnect video', tiktokPrivacy,
-    );
-    if (error) showAlert('TikTok Error', error);
+
+    // Step 5: start polling
+    tiktok.startPollingById(publishId);
   };
 
   const handleInstagramPublish = async () => {

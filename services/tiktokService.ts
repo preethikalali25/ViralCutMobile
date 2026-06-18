@@ -83,19 +83,54 @@ export async function refreshTikTokToken(userId: string): Promise<{ error?: stri
 }
 
 /**
- * Publish a video to TikTok.
- * videoUrl must be a publicly accessible URL (not a local file:// URI).
- * privacyLevel: 'SELF_ONLY' | 'FRIENDS_ONLY' | 'MUTUAL_FOLLOW_FRIENDS' | 'PUBLIC_TO_EVERYONE'
+ * Initialize a FILE_UPLOAD publish on TikTok.
+ * Returns publishId and uploadUrl — then upload the binary to uploadUrl directly.
  */
-export async function publishToTikTok(
+export async function initTikTokPublish(
   userId: string,
-  videoUrl: string,
+  videoSize: number,
   title: string,
   privacyLevel: string = 'SELF_ONLY',
-): Promise<TikTokPublishResult> {
-  const { data, error } = await invoke('publish', { userId, videoUrl, title, privacyLevel });
+): Promise<{ publishId?: string; uploadUrl?: string; error?: string }> {
+  const chunkSize = videoSize; // single chunk
+  const { data, error } = await invoke('publish', {
+    userId, title, privacyLevel,
+    videoSize, chunkSize, totalChunkCount: 1,
+    videoUrl: '', // not used for FILE_UPLOAD but kept for compat
+  });
   if (error) return { error };
-  return { publishId: data.publishId };
+  return { publishId: data.publishId, uploadUrl: data.uploadUrl };
+}
+
+/**
+ * Upload a local video file directly to TikTok's upload URL (FILE_UPLOAD flow).
+ */
+export async function uploadVideoToTikTok(
+  localUri: string,
+  uploadUrl: string,
+  videoSize: number,
+  onProgress?: (pct: number) => void,
+): Promise<{ error?: string }> {
+  try {
+    const FileSystem = await import('expo-file-system');
+    onProgress?.(10);
+    const result = await FileSystem.uploadAsync(uploadUrl, localUri, {
+      httpMethod: 'PUT',
+      uploadType: (FileSystem as any).FileSystemUploadType.BINARY_CONTENT,
+      headers: {
+        'Content-Type': 'video/mp4',
+        'Content-Range': `bytes 0-${videoSize - 1}/${videoSize}`,
+        'Content-Length': String(videoSize),
+      },
+    });
+    onProgress?.(100);
+    if (result.status < 200 || result.status > 299) {
+      return { error: `TikTok upload failed with status ${result.status}` };
+    }
+    return {};
+  } catch (e: any) {
+    return { error: String(e?.message ?? e) };
+  }
 }
 
 /**
