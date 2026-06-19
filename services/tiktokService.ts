@@ -82,9 +82,12 @@ export async function refreshTikTokToken(userId: string): Promise<{ error?: stri
   return { error: error ?? undefined };
 }
 
+const TIKTOK_MAX_CHUNK = 64 * 1024 * 1024; // TikTok hard limit: 64 MB per chunk
+
 /**
  * Initialize a FILE_UPLOAD publish on TikTok.
- * Returns publishId and uploadUrl — then upload the binary to uploadUrl directly.
+ * Automatically splits videos >64 MB into multiple chunks.
+ * Returns publishId and uploadUrl — then upload binary chunks to uploadUrl.
  */
 export async function initTikTokPublish(
   userId: string,
@@ -92,11 +95,12 @@ export async function initTikTokPublish(
   title: string,
   privacyLevel: string = 'SELF_ONLY',
 ): Promise<{ publishId?: string; uploadUrl?: string; error?: string }> {
-  const chunkSize = videoSize; // single chunk
+  const chunkSize = Math.min(videoSize, TIKTOK_MAX_CHUNK);
+  const totalChunkCount = Math.ceil(videoSize / chunkSize);
   const { data, error } = await invoke('publish', {
     userId, title, privacyLevel,
-    videoSize, chunkSize, totalChunkCount: 1,
-    videoUrl: '', // not used for FILE_UPLOAD but kept for compat
+    videoSize, chunkSize, totalChunkCount,
+    videoUrl: '',
   });
   if (error) return { error };
   return { publishId: data.publishId, uploadUrl: data.uploadUrl };
@@ -104,6 +108,7 @@ export async function initTikTokPublish(
 
 /**
  * Upload a local video file directly to TikTok's upload URL (FILE_UPLOAD flow).
+ * Handles multi-chunk uploads for videos larger than 64 MB.
  */
 export async function uploadVideoToTikTok(
   localUri: string,
@@ -111,22 +116,58 @@ export async function uploadVideoToTikTok(
   videoSize: number,
   onProgress?: (pct: number) => void,
 ): Promise<{ error?: string }> {
+  const chunkSize = Math.min(videoSize, TIKTOK_MAX_CHUNK);
+  const totalChunks = Math.ceil(videoSize / chunkSize);
+
   try {
     const FileSystem = await import('expo-file-system');
-    onProgress?.(10);
-    const result = await FileSystem.uploadAsync(uploadUrl, localUri, {
-      httpMethod: 'PUT',
-      uploadType: (FileSystem as any).FileSystemUploadType.BINARY_CONTENT,
-      headers: {
-        'Content-Type': 'video/mp4',
-        'Content-Range': `bytes 0-${videoSize - 1}/${videoSize}`,
-        'Content-Length': String(videoSize),
-      },
-    });
-    onProgress?.(100);
-    if (result.status < 200 || result.status > 299) {
-      return { error: `TikTok upload failed with status ${result.status}` };
+
+    for (let i = 0; i < totalChunks; i++) {
+      const start = i * chunkSize;
+      const end = Math.min(start + chunkSize, videoSize) - 1;
+      const thisChunkSize = end - start + 1;
+
+      onProgress?.(10 + Math.round((i / totalChunks) * 85));
+
+      let chunkUri = localUri;
+      let isTempFile = false;
+
+      if (totalChunks > 1) {
+        // Read this slice as base64 and write to a temp file so uploadAsync
+        // can stream it without holding the full video in memory.
+        const b64 = await (FileSystem as any).readAsStringAsync(localUri, {
+          encoding: (FileSystem as any).EncodingType.Base64,
+          position: start,
+          length: thisChunkSize,
+        });
+        const tempUri = `${(FileSystem as any).cacheDirectory}tiktok_c${i}_${Date.now()}.mp4`;
+        await (FileSystem as any).writeAsStringAsync(tempUri, b64, {
+          encoding: (FileSystem as any).EncodingType.Base64,
+        });
+        chunkUri = tempUri;
+        isTempFile = true;
+      }
+
+      const result = await (FileSystem as any).uploadAsync(uploadUrl, chunkUri, {
+        httpMethod: 'PUT',
+        uploadType: (FileSystem as any).FileSystemUploadType.BINARY_CONTENT,
+        headers: {
+          'Content-Type': 'video/mp4',
+          'Content-Range': `bytes ${start}-${end}/${videoSize}`,
+          'Content-Length': String(thisChunkSize),
+        },
+      });
+
+      if (isTempFile) {
+        (FileSystem as any).deleteAsync(chunkUri, { idempotent: true }).catch(() => {});
+      }
+
+      if (result.status < 200 || result.status > 299) {
+        return { error: `TikTok upload failed (chunk ${i + 1}/${totalChunks}) with status ${result.status}` };
+      }
     }
+
+    onProgress?.(100);
     return {};
   } catch (e: any) {
     return { error: String(e?.message ?? e) };
