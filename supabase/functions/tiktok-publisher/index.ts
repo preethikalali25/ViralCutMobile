@@ -368,11 +368,12 @@ Deno.serve(async (req) => {
 
       if (initData.error?.code && initData.error.code !== 'ok') {
         console.error('[tiktok-publisher] Init error code:', initData.error.code, '| message:', initData.error.message);
-        const hint = initData.error.code === 'integration_guidelines_violated'
-          ? ' (Sandbox only supports SELF_ONLY privacy level)'
-          : '';
         return new Response(
-          JSON.stringify({ error: `TikTok: ${initData.error.message ?? initData.error.code}${hint}` }),
+          JSON.stringify({
+            error: `TikTok [${initData.error.code}]: ${initData.error.message ?? initData.error.code}`,
+            tiktokErrorCode: initData.error.code,
+            payload: initPayload,
+          }),
           { status: 502, headers: { ...corsHeaders, 'Content-Type': 'application/json' } },
         );
       }
