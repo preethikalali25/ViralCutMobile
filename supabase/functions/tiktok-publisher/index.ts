@@ -339,9 +339,9 @@ Deno.serve(async (req) => {
         post_info: {
           title: title.slice(0, 150),
           privacy_level: privacyLevel,
-          disable_duet: false,
-          disable_comment: false,
-          disable_stitch: false,
+          disable_duet: true,
+          disable_comment: true,
+          disable_stitch: true,
           video_cover_timestamp_ms: 1000,
         },
         source_info: {
