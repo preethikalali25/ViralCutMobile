@@ -331,7 +331,10 @@ Deno.serve(async (req) => {
         console.log('[tiktok-publisher] Token refreshed successfully');
       }
 
-      // Initialize upload using PULL_FROM_URL
+      // Initialize FILE_UPLOAD — avoids PULL_FROM_URL domain verification requirement
+      const { videoSize, chunkSize, totalChunkCount } = body as {
+        videoSize: number; chunkSize: number; totalChunkCount: number;
+      };
       const initPayload = {
         post_info: {
           title: title.slice(0, 150),
@@ -342,8 +345,10 @@ Deno.serve(async (req) => {
           video_cover_timestamp_ms: 1000,
         },
         source_info: {
-          source: 'PULL_FROM_URL',
-          video_url: videoUrl,
+          source: 'FILE_UPLOAD',
+          video_size: videoSize,
+          chunk_size: chunkSize,
+          total_chunk_count: totalChunkCount,
         },
       };
 
@@ -369,15 +374,16 @@ Deno.serve(async (req) => {
       }
 
       const publishId = initData.data?.publish_id;
-      if (!publishId) {
+      const uploadUrl = initData.data?.upload_url;
+      if (!publishId || !uploadUrl) {
         return new Response(
-          JSON.stringify({ error: 'TikTok did not return a publish_id', raw: initData }),
+          JSON.stringify({ error: 'TikTok did not return publish_id/upload_url', raw: initData }),
           { status: 502, headers: { ...corsHeaders, 'Content-Type': 'application/json' } },
         );
       }
 
       return new Response(
-        JSON.stringify({ success: true, publishId }),
+        JSON.stringify({ success: true, publishId, uploadUrl }),
         { headers: { ...corsHeaders, 'Content-Type': 'application/json' } },
       );
     }
