@@ -520,13 +520,19 @@ export default function EditorScreen() {
       try {
         const dest = FileSystem.cacheDirectory + `bg_audio_${Date.now()}.m4a`;
         const downloadTimeout = new Promise<never>((_, reject) =>
-          setTimeout(() => reject(new Error('bg audio download timeout')), 10000),
+          setTimeout(() => reject(new Error('bg audio download timeout')), 15000),
         );
-        const dl = await Promise.race([FileSystem.downloadAsync(previewUrl, dest), downloadTimeout]);
-        bgLocalPath = dl.uri;
+        const dl = await Promise.race([FileSystem.downloadAsync(previewUrl, dest), downloadTimeout]) as { uri: string; status: number };
+        if (dl.status >= 200 && dl.status < 300) {
+          bgLocalPath = dl.uri;
+        } else {
+          console.warn('[burnOverlayLocally] Audio download HTTP error:', dl.status, previewUrl);
+        }
       } catch (e) {
-        console.warn('[burnOverlayLocally] bg audio download failed or timed out, continuing without it:', e);
+        console.warn('[burnOverlayLocally] bg audio download failed or timed out:', e);
       }
+    } else {
+      console.warn('[burnOverlayLocally] No audio preview URL found for selectedAudioId:', selectedAudioId);
     }
 
     const { outputUri } = await burnHookOverlay(resolved, hookText, bgLocalPath, originalVolume, bgVolume);
