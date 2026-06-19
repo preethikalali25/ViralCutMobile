@@ -264,9 +264,9 @@ Deno.serve(async (req) => {
         userId: string; videoUrl: string; title: string; privacyLevel?: string;
       };
 
-      if (!videoUrl || !title) {
+      if (!title) {
         return new Response(
-          JSON.stringify({ error: 'videoUrl and title are required' }),
+          JSON.stringify({ error: 'title is required' }),
           { status: 400, headers: { ...corsHeaders, 'Content-Type': 'application/json' } },
         );
       }
