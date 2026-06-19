@@ -135,7 +135,7 @@ export async function uploadVideoToTikTok(
 
 /**
  * Upload a local video file to Supabase Storage and return its public URL.
- * On mobile, file:// URIs must be read as base64 since fetch() can't access them.
+ * Uses FileSystem.uploadAsync for memory-efficient binary upload on mobile.
  */
 export async function uploadVideoToStorage(
   localUri: string,
@@ -146,31 +146,32 @@ export async function uploadVideoToStorage(
   try {
     const client = getSupabaseClient();
     const fileName = `${userId}/${videoId}.mp4`;
+    const supabaseUrl = process.env.EXPO_PUBLIC_SUPABASE_URL!;
 
-    // React Native: read as base64, convert to ArrayBuffer
+    // Get the authenticated user's JWT for the upload request
+    const { data: { session } } = await client.auth.getSession();
+    const token = session?.access_token ?? process.env.EXPO_PUBLIC_SUPABASE_ANON_KEY!;
+
+    onProgress?.(10);
+
     const FileSystem = await import('expo-file-system');
-    const base64 = await FileSystem.readAsStringAsync(localUri, {
-      encoding: FileSystem.EncodingType.Base64,
+    const uploadUrl = `${supabaseUrl}/storage/v1/object/videos/${fileName}`;
+
+    const result = await (FileSystem as any).uploadAsync(uploadUrl, localUri, {
+      httpMethod: 'POST',
+      uploadType: (FileSystem as any).FileSystemUploadType.BINARY_CONTENT,
+      headers: {
+        Authorization: `Bearer ${token}`,
+        'Content-Type': 'video/mp4',
+        'x-upsert': 'true',
+      },
     });
 
-    // Decode base64 → Uint8Array
-    const binaryString = atob(base64);
-    const bytes = new Uint8Array(binaryString.length);
-    for (let i = 0; i < binaryString.length; i++) {
-      bytes[i] = binaryString.charCodeAt(i);
+    if (result.status < 200 || result.status > 299) {
+      return { error: `Storage upload failed (${result.status}): ${result.body ?? ''}` };
     }
-    onProgress?.(30);
 
-    const { error } = await client.storage
-      .from('videos')
-      .upload(fileName, bytes.buffer as ArrayBuffer, {
-        contentType: 'video/mp4',
-        upsert: true,
-      });
-
-    if (error) return { error: error.message };
     onProgress?.(100);
-
     const { data } = client.storage.from('videos').getPublicUrl(fileName);
     return { publicUrl: data.publicUrl };
   } catch (e: any) {
