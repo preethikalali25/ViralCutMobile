@@ -1346,7 +1346,9 @@ export default function EditorScreen() {
                 ))}
                 <View style={styles.sheetNote}>
                   <MaterialIcons name="info-outline" size={13} color={Colors.textMuted} />
-                  <Text style={styles.sheetNoteText}>Start with "Only Me" to review before making it public.</Text>
+                  <Text style={styles.sheetNoteText}>
+                    {'Start with "Only Me" to review before making it public.\n\nIn TikTok sandbox, only "Only Me" is supported — other privacy levels require production app approval.'}
+                  </Text>
                 </View>
                 <Pressable style={({ pressed }) => [styles.tiktokPublishBtn, pressed && { opacity: 0.85 }]} onPress={handleTikTokPublish}>
                   <MaterialCommunityIcons name="music-note" size={18} color="#fff" />
