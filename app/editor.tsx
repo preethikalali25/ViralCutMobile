@@ -20,7 +20,7 @@ import { formatDuration } from '@/services/formatters';
 import { FunctionsHttpError } from '@supabase/supabase-js';
 import { useTikTok } from '@/hooks/useTikTok';
 import { useInstagram } from '@/hooks/useInstagram';
-import { uploadVideoToStorage } from '@/services/tiktokService';
+import { uploadVideoToStorage, initTikTokPublish, uploadVideoToTikTok } from '@/services/tiktokService';
 import { burnHookOverlay, shareToInstagramReels } from '@/services/videoOverlayService';
 import { INSTAGRAM_APP_ID } from '@/constants/instagram';
 import { searchViralAudio, AudioSearchResult } from '@/services/audioSearchService';
@@ -520,13 +520,19 @@ export default function EditorScreen() {
       try {
         const dest = FileSystem.cacheDirectory + `bg_audio_${Date.now()}.m4a`;
         const downloadTimeout = new Promise<never>((_, reject) =>
-          setTimeout(() => reject(new Error('bg audio download timeout')), 10000),
+          setTimeout(() => reject(new Error('bg audio download timeout')), 15000),
         );
-        const dl = await Promise.race([FileSystem.downloadAsync(previewUrl, dest), downloadTimeout]);
-        bgLocalPath = dl.uri;
+        const dl = await Promise.race([FileSystem.downloadAsync(previewUrl, dest), downloadTimeout]) as { uri: string; status: number };
+        if (dl.status >= 200 && dl.status < 300) {
+          bgLocalPath = dl.uri;
+        } else {
+          console.warn('[burnOverlayLocally] Audio download HTTP error:', dl.status, previewUrl);
+        }
       } catch (e) {
-        console.warn('[burnOverlayLocally] bg audio download failed or timed out, continuing without it:', e);
+        console.warn('[burnOverlayLocally] bg audio download failed or timed out:', e);
       }
+    } else {
+      console.warn('[burnOverlayLocally] No audio preview URL found for selectedAudioId:', selectedAudioId);
     }
 
     const { outputUri } = await burnHookOverlay(resolved, hookText, bgLocalPath, originalVolume, bgVolume);
@@ -556,15 +562,39 @@ export default function EditorScreen() {
   const handleTikTokPublish = async () => {
     const snap = snapshotEditorState();
     if (!video?.videoUri) { showAlert('No Video File', 'Select a video before publishing to TikTok.'); return; }
+    if (!user?.id) { showAlert('Not logged in', 'Please sign in first.'); return; }
 
-    const { videoUrl, error: prepError } = await prepareVideoForPublish(video.videoUri, snap.hook?.text ?? '');
-    if (prepError || !videoUrl) { showAlert('Upload Failed', prepError ?? 'Could not upload video.'); return; }
+    // Step 1: burn hook overlay locally
+    const { outputUri } = await burnOverlayLocally(video.videoUri, snap.hook?.text ?? '');
+
+    // Step 2: get file size
+    const FileSystem = await import('expo-file-system');
+    const info = await FileSystem.getInfoAsync(outputUri, { size: true });
+    const videoSize = (info as any).size as number;
+    if (!videoSize) { showAlert('Upload Failed', 'Could not read video file size.'); return; }
+
+    // Step 3: init TikTok FILE_UPLOAD — get upload URL
+    setUploadingToStorage(true);
+    const title = videoTitle || snap.hook?.text || 'KalELConnect video';
+    const { publishId, uploadUrl, error: initError } = await initTikTokPublish(
+      user.id, videoSize, title, tiktokPrivacy,
+    );
+    if (initError || !publishId || !uploadUrl) {
+      setUploadingToStorage(false);
+      showAlert('TikTok Error', initError ?? 'Could not initialize upload.');
+      return;
+    }
+
+    // Step 4: upload binary directly to TikTok
+    const { error: uploadError } = await uploadVideoToTikTok(outputUri, uploadUrl, videoSize, setUploadProgress);
+    setUploadingToStorage(false);
+    setUploadProgress(0);
+    if (uploadError) { showAlert('Upload Failed', uploadError); return; }
 
     updateVideo(video.id, { ...snap, title: videoTitle });
-    const { error } = await tiktok.publish(
-      videoUrl, videoTitle || snap.hook.text || 'KalELConnect video', tiktokPrivacy,
-    );
-    if (error) showAlert('TikTok Error', error);
+
+    // Step 5: start polling
+    tiktok.startPollingById(publishId);
   };
 
   const handleInstagramPublish = async () => {
@@ -1322,7 +1352,9 @@ export default function EditorScreen() {
                 ))}
                 <View style={styles.sheetNote}>
                   <MaterialIcons name="info-outline" size={13} color={Colors.textMuted} />
-                  <Text style={styles.sheetNoteText}>Start with "Only Me" to review before making it public.</Text>
+                  <Text style={styles.sheetNoteText}>
+                    {'Start with "Only Me" to review before making it public.\n\nIn TikTok sandbox, only "Only Me" is supported — other privacy levels require production app approval.'}
+                  </Text>
                 </View>
                 <Pressable style={({ pressed }) => [styles.tiktokPublishBtn, pressed && { opacity: 0.85 }]} onPress={handleTikTokPublish}>
                   <MaterialCommunityIcons name="music-note" size={18} color="#fff" />

@@ -1,5 +1,6 @@
 import { getSupabaseClient } from '@/template';
 import { FunctionsHttpError } from '@supabase/supabase-js';
+import * as ExpoCrypto from 'expo-crypto';
 
 export interface TikTokStatus {
   connected: boolean;
@@ -16,9 +17,8 @@ export interface TikTokPublishResult {
 
 /** Generate a random PKCE code verifier (43-128 chars, URL-safe) */
 export function generateCodeVerifier(): string {
-  const array = new Uint8Array(64);
-  crypto.getRandomValues(array);
-  return btoa(String.fromCharCode(...array))
+  const bytes = ExpoCrypto.getRandomBytes(64);
+  return btoa(String.fromCharCode(...bytes))
     .replace(/\+/g, '-')
     .replace(/\//g, '_')
     .replace(/=+$/, '')
@@ -76,25 +76,72 @@ export async function disconnectTikTok(userId: string): Promise<{ error?: string
   return { error: error ?? undefined };
 }
 
+/** Manually refresh the TikTok access token using the stored refresh token */
+export async function refreshTikTokToken(userId: string): Promise<{ error?: string }> {
+  const { error } = await invoke('refresh_token', { userId });
+  return { error: error ?? undefined };
+}
+
+const TIKTOK_MAX_FILE_SIZE = 64 * 1024 * 1024; // 64 MB — TikTok single-chunk limit
+
 /**
- * Publish a video to TikTok.
- * videoUrl must be a publicly accessible URL (not a local file:// URI).
- * privacyLevel: 'SELF_ONLY' | 'FRIENDS_ONLY' | 'MUTUAL_FOLLOW_FRIENDS' | 'PUBLIC_TO_EVERYONE'
+ * Initialize a FILE_UPLOAD publish on TikTok (single-chunk, max 64 MB).
+ * Returns publishId and uploadUrl — then PUT the binary to uploadUrl directly.
  */
-export async function publishToTikTok(
+export async function initTikTokPublish(
   userId: string,
-  videoUrl: string,
+  videoSize: number,
   title: string,
   privacyLevel: string = 'SELF_ONLY',
-): Promise<TikTokPublishResult> {
-  const { data, error } = await invoke('publish', { userId, videoUrl, title, privacyLevel });
+): Promise<{ publishId?: string; uploadUrl?: string; error?: string }> {
+  if (videoSize > TIKTOK_MAX_FILE_SIZE) {
+    return {
+      error: `Video is too large for TikTok (${(videoSize / 1024 / 1024).toFixed(0)} MB). TikTok requires videos under 64 MB. Please use a shorter or more compressed clip.`,
+    };
+  }
+  const { data, error } = await invoke('publish', {
+    userId, title, privacyLevel,
+    videoSize, chunkSize: videoSize, totalChunkCount: 1,
+    videoUrl: '',
+  });
   if (error) return { error };
-  return { publishId: data.publishId };
+  return { publishId: data.publishId, uploadUrl: data.uploadUrl };
+}
+
+/**
+ * Upload a local video file directly to TikTok's upload URL (FILE_UPLOAD flow).
+ */
+export async function uploadVideoToTikTok(
+  localUri: string,
+  uploadUrl: string,
+  videoSize: number,
+  onProgress?: (pct: number) => void,
+): Promise<{ error?: string }> {
+  try {
+    const FileSystem = await import('expo-file-system');
+    onProgress?.(10);
+    const result = await (FileSystem as any).uploadAsync(uploadUrl, localUri, {
+      httpMethod: 'PUT',
+      uploadType: (FileSystem as any).FileSystemUploadType.BINARY_CONTENT,
+      headers: {
+        'Content-Type': 'video/mp4',
+        'Content-Range': `bytes 0-${videoSize - 1}/${videoSize}`,
+        'Content-Length': String(videoSize),
+      },
+    });
+    onProgress?.(100);
+    if (result.status < 200 || result.status > 299) {
+      return { error: `TikTok upload failed with status ${result.status}` };
+    }
+    return {};
+  } catch (e: any) {
+    return { error: String(e?.message ?? e) };
+  }
 }
 
 /**
  * Upload a local video file to Supabase Storage and return its public URL.
- * On mobile, file:// URIs must be read as base64 since fetch() can't access them.
+ * Uses FileSystem.uploadAsync for memory-efficient binary upload on mobile.
  */
 export async function uploadVideoToStorage(
   localUri: string,
@@ -105,31 +152,32 @@ export async function uploadVideoToStorage(
   try {
     const client = getSupabaseClient();
     const fileName = `${userId}/${videoId}.mp4`;
+    const supabaseUrl = process.env.EXPO_PUBLIC_SUPABASE_URL!;
 
-    // React Native: read as base64, convert to ArrayBuffer
+    // Get the authenticated user's JWT for the upload request
+    const { data: { session } } = await client.auth.getSession();
+    const token = session?.access_token ?? process.env.EXPO_PUBLIC_SUPABASE_ANON_KEY!;
+
+    onProgress?.(10);
+
     const FileSystem = await import('expo-file-system');
-    const base64 = await FileSystem.readAsStringAsync(localUri, {
-      encoding: FileSystem.EncodingType.Base64,
+    const uploadUrl = `${supabaseUrl}/storage/v1/object/videos/${fileName}`;
+
+    const result = await (FileSystem as any).uploadAsync(uploadUrl, localUri, {
+      httpMethod: 'POST',
+      uploadType: (FileSystem as any).FileSystemUploadType.BINARY_CONTENT,
+      headers: {
+        Authorization: `Bearer ${token}`,
+        'Content-Type': 'video/mp4',
+        'x-upsert': 'true',
+      },
     });
 
-    // Decode base64 → Uint8Array
-    const binaryString = atob(base64);
-    const bytes = new Uint8Array(binaryString.length);
-    for (let i = 0; i < binaryString.length; i++) {
-      bytes[i] = binaryString.charCodeAt(i);
+    if (result.status < 200 || result.status > 299) {
+      return { error: `Storage upload failed (${result.status}): ${result.body ?? ''}` };
     }
-    onProgress?.(30);
 
-    const { error } = await client.storage
-      .from('videos')
-      .upload(fileName, bytes.buffer as ArrayBuffer, {
-        contentType: 'video/mp4',
-        upsert: true,
-      });
-
-    if (error) return { error: error.message };
     onProgress?.(100);
-
     const { data } = client.storage.from('videos').getPublicUrl(fileName);
     return { publicUrl: data.publicUrl };
   } catch (e: any) {

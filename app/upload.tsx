@@ -12,11 +12,8 @@ import { Colors, Spacing, Radius, FontSize, FontWeight } from '@/constants/theme
 import { useVideos } from '@/hooks/useVideos';
 import { useAlert } from '@/template';
 import { Platform as PlatformType, Video } from '@/types';
-import PlatformBadge from '@/components/ui/PlatformBadge';
 import { combineMediaToVideo, type MediaItem } from '@/services/videoOverlayService';
 import { consumePendingReelItems } from '@/stores/pendingReel';
-
-const ALL_PLATFORMS: PlatformType[] = ['tiktok', 'reels', 'youtube'];
 
 async function requestPermission(): Promise<boolean> {
   const { status } = await ImagePicker.requestMediaLibraryPermissionsAsync();
@@ -49,18 +46,11 @@ export default function UploadScreen() {
   const { addVideo, updateVideo } = useVideos();
   const { showAlert } = useAlert();
 
-  const [platforms, setPlatforms] = useState<PlatformType[]>(['tiktok']);
   const [mediaItems, setMediaItems] = useState<MediaPreviewItem[]>([]);
   const [isProcessing, setIsProcessing] = useState(false);
   const [processingLabel, setProcessingLabel] = useState('');
   const didConsumeRef = useRef(false);
   const pendingMetaRef = useRef<{ title?: string; hook?: string }>({});
-
-  const togglePlatform = (p: PlatformType) => {
-    setPlatforms(prev =>
-      prev.includes(p) ? (prev.length > 1 ? prev.filter(x => x !== p) : prev) : [...prev, p]
-    );
-  };
 
   const handleBrowse = async () => {
     if (!(await requestPermission())) {
@@ -170,7 +160,7 @@ export default function UploadScreen() {
         addVideo({
           id, title: '', thumbnail,
           duration: items[0].durationSec ?? 15,
-          status: 'ready', platforms,
+          status: 'ready', platforms: ['tiktok', 'reels'] as PlatformType[],
           createdAt: new Date().toISOString(),
           videoUri,
           ...(assetId ? { videoAssetId: assetId } : {}),
@@ -183,7 +173,7 @@ export default function UploadScreen() {
 
         addVideo({
           id, title: '', thumbnail,
-          duration: totalDur, status: 'ready', platforms,
+          duration: totalDur, status: 'ready', platforms: ['tiktok', 'reels'] as PlatformType[],
           createdAt: new Date().toISOString(),
           videoUri,
         } as Video);
@@ -295,28 +285,6 @@ export default function UploadScreen() {
           <Text style={styles.tipText}>• Mix photos and clips — photos show for 3 s each</Text>
           <Text style={styles.tipText}>• Video clips are trimmed to 15 s max per clip</Text>
           <Text style={styles.tipText}>• Tap × on any item to remove it from the reel</Text>
-        </View>
-
-        {/* Platforms */}
-        <View style={styles.field}>
-          <Text style={styles.fieldLabel}>Target Platforms</Text>
-          <View style={styles.platformsList}>
-            {ALL_PLATFORMS.map(p => (
-              <Pressable
-                key={p}
-                style={[styles.platformCard, platforms.includes(p) && styles.platformCardActive]}
-                onPress={() => togglePlatform(p)}
-              >
-                <PlatformBadge platform={p} size="md" />
-                <Text style={[styles.platformName, platforms.includes(p) && styles.platformNameActive]}>
-                  {p === 'tiktok' ? 'TikTok' : p === 'reels' ? 'Instagram Reels' : 'YouTube Shorts'}
-                </Text>
-                {platforms.includes(p)
-                  ? <MaterialIcons name="check-circle" size={18} color={Colors.primary} />
-                  : <MaterialIcons name="radio-button-unchecked" size={18} color={Colors.textMuted} />}
-              </Pressable>
-            ))}
-          </View>
         </View>
 
         {/* Edit Button */}
@@ -434,23 +402,6 @@ const styles = StyleSheet.create({
     color: Colors.amber, includeFontPadding: false,
   },
   tipText: { fontSize: FontSize.sm, color: Colors.textSecondary, includeFontPadding: false },
-  field: { paddingHorizontal: Spacing.md, marginBottom: Spacing.lg, gap: Spacing.sm },
-  fieldLabel: {
-    fontSize: FontSize.sm, fontWeight: FontWeight.semibold,
-    color: Colors.textSecondary, includeFontPadding: false,
-  },
-  platformsList: { gap: Spacing.sm },
-  platformCard: {
-    flexDirection: 'row', alignItems: 'center', gap: Spacing.sm,
-    backgroundColor: Colors.surfaceElevated, borderRadius: Radius.md,
-    padding: Spacing.sm + 4, borderWidth: 1.5, borderColor: Colors.surfaceBorder,
-  },
-  platformCardActive: { borderColor: Colors.primary, backgroundColor: Colors.primaryGlow },
-  platformName: {
-    flex: 1, fontSize: FontSize.md, fontWeight: FontWeight.semibold,
-    color: Colors.textSecondary, includeFontPadding: false,
-  },
-  platformNameActive: { color: Colors.textPrimary },
   actionRow: { marginHorizontal: Spacing.md },
   editBtn: {
     flexDirection: 'row', alignItems: 'center', justifyContent: 'center',
