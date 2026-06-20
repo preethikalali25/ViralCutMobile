@@ -7,7 +7,7 @@
 	<key>CFBundleDevelopmentRegion</key>
 	<string>$(DEVELOPMENT_LANGUAGE)</string>
 	<key>CFBundleDisplayName</key>
-	<string>ViralCut</string>
+	<string>KalELConnect</string>
 	<key>CFBundleExecutable</key>
 	<string>$(EXECUTABLE_NAME)</string>
 	<key>CFBundleIdentifier</key>
@@ -50,11 +50,11 @@
 	<key>NSCalendarsUsageDescription</key>
 	<string>This app needs access to your calendar.</string>
 	<key>NSCameraUsageDescription</key>
-	<string>ViralCut needs access to your camera to record videos directly.</string>
+	<string>KalELConnect needs access to your camera to record videos directly.</string>
 	<key>NSMicrophoneUsageDescription</key>
 	<string>Allow $(PRODUCT_NAME) to access your microphone</string>
 	<key>NSPhotoLibraryUsageDescription</key>
-	<string>ViralCut needs access to your photo library to select videos for editing and publishing.</string>
+	<string>KalELConnect needs access to your photo library to select videos for editing and publishing.</string>
 	<key>NSRemindersFullAccessUsageDescription</key>
 	<string>This app needs access to your reminders.</string>
 	<key>NSUserActivityTypes</key>

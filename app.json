@@ -1,6 +1,6 @@
 {
   "expo": {
-    "name": "ViralCut",
+    "name": "KalELConnect",
     "slug": "viralcut",
     "version": "1.0.0",
     "orientation": "portrait",
@@ -54,8 +54,8 @@
       [
         "expo-image-picker",
         {
-          "photosPermission": "ViralCut needs access to your photo library to select videos for editing and publishing.",
-          "cameraPermission": "ViralCut needs access to your camera to record videos directly."
+          "photosPermission": "KalELConnect needs access to your photo library to select videos for editing and publishing.",
+          "cameraPermission": "KalELConnect needs access to your camera to record videos directly."
         }
       ],
       [

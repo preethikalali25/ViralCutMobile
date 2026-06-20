@@ -6,6 +6,7 @@ import {
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Image } from 'expo-image';
 import { MaterialIcons, MaterialCommunityIcons } from '@expo/vector-icons';
+import * as AppleAuthentication from 'expo-apple-authentication';
 import { useAuth, useAlert } from '@/template';
 import { Colors, Spacing, Radius, FontSize, FontWeight } from '@/constants/theme';
 
@@ -91,7 +92,7 @@ export default function LoginScreen() {
             />
             <View style={styles.heroOverlay}>
               <MaterialCommunityIcons name="scissors-cutting" size={32} color={Colors.primaryLight} />
-              <Text style={styles.heroTitle}>ViralCut</Text>
+              <Text style={styles.heroTitle}>KalELConnect</Text>
               <Text style={styles.heroSub}>Your short-form video studio</Text>
             </View>
           </View>
