@@ -136,9 +136,10 @@ Deno.serve(async (req) => {
       }, { onConflict: 'user_id' });
 
       if (dbError) {
-        console.error('[youtube] DB error:', dbError);
+        const detail = JSON.stringify({ message: dbError.message, code: (dbError as any).code, details: (dbError as any).details, hint: (dbError as any).hint });
+        console.error('[youtube] DB error:', detail);
         return new Response(
-          JSON.stringify({ error: `DB error: ${dbError.message}` }),
+          JSON.stringify({ error: `DB error: ${detail}` }),
           { status: 500, headers: { ...corsHeaders, 'Content-Type': 'application/json' } },
         );
       }
