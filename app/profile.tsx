@@ -11,6 +11,7 @@ import { Colors, Spacing, Radius, FontSize, FontWeight } from '@/constants/theme
 import { useSocialAccounts } from '@/hooks/useSocialAccounts';
 import { useTikTok } from '@/hooks/useTikTok';
 import { useInstagram } from '@/hooks/useInstagram';
+import { useYouTube } from '@/hooks/useYouTube';
 
 type PlatformMeta = {
   id: 'tiktok' | 'reels' | 'youtube';
@@ -56,7 +57,7 @@ const PLATFORMS: PlatformMeta[] = [
     iconLib: 'MaterialCommunityIcons',
     handlePrefix: '@',
     placeholder: '@yourchannel',
-    supportsOAuth: false,
+    supportsOAuth: true,
   },
 ];
 
@@ -78,6 +79,7 @@ export default function ProfileScreen() {
   const { accounts, loading, load, connect, disconnect, getAccount } = useSocialAccounts();
   const tiktok = useTikTok();
   const instagram = useInstagram();
+  const youtube = useYouTube();
 
   const [connectModal, setConnectModal] = useState<PlatformMeta | null>(null);
   const [handle, setHandle] = useState('');
@@ -213,7 +215,35 @@ export default function ProfileScreen() {
     );
   };
 
-  // ── Manual account connect (YouTube) ────────────────────────────────────
+  // ── YouTube OAuth Connect ───────────────────────────────────────────────
+  const handleYouTubeConnect = async () => {
+    const { error } = await youtube.connect();
+    if (error) {
+      showAlert('YouTube Connect Failed', error);
+    } else {
+      showAlert('YouTube Connected!', `Channel "${youtube.status.channelTitle || 'your channel'}" is now linked. You can publish directly to YouTube Shorts.`);
+    }
+  };
+
+  const handleYouTubeDisconnect = () => {
+    showAlert(
+      'Disconnect YouTube?',
+      'Your YouTube access will be removed. You can reconnect anytime.',
+      [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: 'Disconnect',
+          style: 'destructive',
+          onPress: async () => {
+            const { error } = await youtube.disconnect();
+            if (error) showAlert('Error', error);
+          },
+        },
+      ],
+    );
+  };
+
+  // ── Manual account connect (other platforms) ─────────────────────────────
   const openConnect = (platform: PlatformMeta) => {
     const existing = getAccount(platform.id);
     setHandle(existing?.handle ?? '');
@@ -451,6 +481,64 @@ export default function ProfileScreen() {
             <MaterialIcons name="info-outline" size={13} color={Colors.textMuted} />
             <Text style={styles.infoText}>
               Connect via OAuth to publish Reels directly to Instagram using the official Graph API.
+            </Text>
+          </View>
+        ) : null}
+
+        {/* ── YouTube OAuth Card ───────────────────────────────────────── */}
+        <Text style={[styles.sectionLabel, { marginTop: Spacing.md }]}>YouTube</Text>
+        <View style={[styles.tiktokCard, { borderColor: '#ff000055' }]}>
+          <View style={[styles.platformIcon, { backgroundColor: '#ff0000' }]}>
+            <MaterialCommunityIcons name="youtube" size={20} color="#fff" />
+          </View>
+          <View style={styles.platformInfo}>
+            <Text style={styles.platformCardLabel}>YouTube Shorts</Text>
+            {youtube.loadingStatus ? (
+              <ActivityIndicator size="small" color={Colors.primaryLight} />
+            ) : youtube.status.connected ? (
+              <View style={styles.connectedMeta}>
+                <Text style={styles.platformHandle}>
+                  {youtube.status.channelTitle || 'Connected'}
+                </Text>
+                <View style={styles.connectedBadge}>
+                  <MaterialIcons name="check-circle" size={11} color={Colors.emerald} />
+                  <Text style={styles.connectedBadgeText}>Live API connected</Text>
+                </View>
+              </View>
+            ) : (
+              <Text style={styles.notConnected}>Not connected</Text>
+            )}
+          </View>
+          {youtube.status.connected ? (
+            <Pressable
+              style={({ pressed }) => [styles.disconnectBtn, pressed && { opacity: 0.7 }]}
+              onPress={handleYouTubeDisconnect}
+            >
+              <MaterialIcons name="link-off" size={14} color={Colors.error} />
+            </Pressable>
+          ) : (
+            <Pressable
+              style={({ pressed }) => [styles.oauthBtn, { backgroundColor: '#ff0000' }, youtube.connectingOAuth && styles.oauthBtnLoading, pressed && { opacity: 0.85 }]}
+              onPress={handleYouTubeConnect}
+              disabled={youtube.connectingOAuth}
+            >
+              {youtube.connectingOAuth ? (
+                <ActivityIndicator size="small" color="#fff" />
+              ) : (
+                <>
+                  <MaterialIcons name="link" size={14} color="#fff" />
+                  <Text style={styles.oauthBtnText}>Connect via Google</Text>
+                </>
+              )}
+            </Pressable>
+          )}
+        </View>
+
+        {!youtube.status.connected ? (
+          <View style={[styles.infoNote, { marginBottom: Spacing.sm }]}>
+            <MaterialIcons name="info-outline" size={13} color={Colors.textMuted} />
+            <Text style={styles.infoText}>
+              Connect via Google OAuth to publish directly to YouTube Shorts using the YouTube Data API.
             </Text>
           </View>
         ) : null}
