@@ -20,9 +20,7 @@ import { formatDuration } from '@/services/formatters';
 import { FunctionsHttpError } from '@supabase/supabase-js';
 import { useTikTok } from '@/hooks/useTikTok';
 import { useInstagram } from '@/hooks/useInstagram';
-import { useYouTube } from '@/hooks/useYouTube';
 import { uploadVideoToStorage, initTikTokPublish, uploadVideoToTikTok } from '@/services/tiktokService';
-import { initYouTubeUpload, uploadVideoToYouTube } from '@/services/youtubeService';
 import { burnHookOverlay, shareToInstagramReels } from '@/services/videoOverlayService';
 import { INSTAGRAM_APP_ID } from '@/constants/instagram';
 import { searchViralAudio, AudioSearchResult } from '@/services/audioSearchService';
@@ -174,9 +172,7 @@ export default function EditorScreen() {
   const [generatingTitle, setGeneratingTitle] = useState(false);
   const [showTikTokSheet, setShowTikTokSheet] = useState(false);
   const [showInstagramSheet, setShowInstagramSheet] = useState(false);
-  const [showYouTubeSheet, setShowYouTubeSheet] = useState(false);
   const [tiktokPrivacy, setTiktokPrivacy] = useState('SELF_ONLY');
-  const [youtubePrivacy, setYoutubePrivacy] = useState('public');
   const [uploadingToStorage, setUploadingToStorage] = useState(false);
   const [uploadProgress, setUploadProgress] = useState(0);
   const [burningOverlay, setBurningOverlay] = useState(false);
@@ -230,7 +226,6 @@ export default function EditorScreen() {
   const frameCache = useRef<{ base64: string; mime: string } | null | 'pending'>('pending');
   const tiktok = useTikTok();
   const instagram = useInstagram();
-  const youtube = useYouTube();
 
   const videoPlayer = useVideoPlayer(
     { uri: video?.videoUri ?? '' },
@@ -614,52 +609,6 @@ export default function EditorScreen() {
     updateVideo(video.id, { ...snap, title: videoTitle });
     const { error } = await instagram.publish(videoUrl, captionText, undefined, audioName);
     if (error) showAlert('Instagram Error', error);
-  };
-
-  const handleYouTubePublish = async () => {
-    const snap = snapshotEditorState();
-    if (!video?.videoUri) { showAlert('No Video File', 'Select a video before publishing to YouTube.'); return; }
-    if (!user?.id) { showAlert('Not logged in', 'Please sign in first.'); return; }
-
-    youtube.setPublishState({ phase: 'burning' });
-
-    // Step 1: burn hook overlay locally
-    const { outputUri } = await burnOverlayLocally(video.videoUri, snap.hook?.text ?? '');
-
-    // Step 2: get file size
-    const FS = await import('expo-file-system');
-    const info = await FS.getInfoAsync(outputUri, { size: true });
-    const videoSize = (info as any).size as number;
-    if (!videoSize) {
-      youtube.setPublishState({ phase: 'error', errorMessage: 'Could not read video file size.' });
-      return;
-    }
-
-    // Step 3: init YouTube resumable upload
-    youtube.setPublishState({ phase: 'uploading', progress: 0 });
-    const title = videoTitle || snap.hook?.text || 'KalELConnect Short';
-    const description = [snap.caption, snap.hashtags.join(' ')].filter(Boolean).join('\n\n');
-    const initResult = await initYouTubeUpload(user.id, title, videoSize, description, youtubePrivacy);
-    if ('error' in initResult) {
-      youtube.setPublishState({ phase: 'error', errorMessage: initResult.error });
-      return;
-    }
-
-    // Step 4: upload binary directly to YouTube
-    const { error: uploadError } = await uploadVideoToYouTube(
-      outputUri,
-      initResult.uploadUrl,
-      videoSize,
-      (pct) => youtube.setPublishState({ phase: 'uploading', progress: pct }),
-    );
-
-    if (uploadError) {
-      youtube.setPublishState({ phase: 'error', errorMessage: uploadError });
-      return;
-    }
-
-    updateVideo(video.id, { ...snap, title: videoTitle });
-    youtube.setPublishState({ phase: 'success' });
   };
 
   const handleOpenInInstagram = async () => {
@@ -1199,24 +1148,15 @@ export default function EditorScreen() {
             </Pressable>
 
             <Pressable
-              style={({ pressed }) => [
-                styles.platformPublishBtn,
-                { borderColor: '#ff0000', backgroundColor: youtube.status.connected ? '#ff0000' : Colors.surfaceElevated },
-                pressed && { opacity: 0.8 },
-                !youtube.status.connected && styles.platformPublishBtnDisabled,
-              ]}
-              onPress={() => youtube.status.connected
-                ? setShowYouTubeSheet(true)
-                : showAlert('YouTube Not Connected', 'Connect your YouTube account in Settings to publish here.')}
+              style={({ pressed }) => [styles.platformPublishBtn, styles.platformPublishBtnDisabled, pressed && { opacity: 0.8 }]}
+              onPress={() => showAlert('YouTube Shorts', 'YouTube Shorts publishing is coming soon!')}
             >
-              <MaterialCommunityIcons name="youtube" size={20} color={youtube.status.connected ? '#fff' : Colors.textMuted} />
+              <MaterialCommunityIcons name="youtube" size={20} color={Colors.textMuted} />
               <View style={{ flex: 1 }}>
-                <Text style={[styles.platformPublishName, { color: youtube.status.connected ? '#fff' : Colors.textMuted }]}>YouTube Shorts</Text>
-                <Text style={[styles.platformPublishSub, { color: youtube.status.connected ? 'rgba(255,255,255,0.6)' : Colors.textMuted }]}>
-                  {youtube.status.connected ? youtube.status.channelTitle || 'your channel' : 'Not connected'}
-                </Text>
+                <Text style={[styles.platformPublishName, { color: Colors.textMuted }]}>YouTube Shorts</Text>
+                <Text style={[styles.platformPublishSub, { color: Colors.textMuted }]}>Coming soon</Text>
               </View>
-              <MaterialIcons name={youtube.status.connected ? 'arrow-forward-ios' : 'lock-outline'} size={16} color={youtube.status.connected ? 'rgba(255,255,255,0.6)' : Colors.textMuted} />
+              <MaterialIcons name="lock-outline" size={16} color={Colors.textMuted} />
             </Pressable>
           </View>
 
@@ -1483,129 +1423,6 @@ export default function EditorScreen() {
                 <Pressable
                   style={[styles.tiktokPublishBtn, { marginTop: Spacing.md, backgroundColor: Colors.error }]}
                   onPress={() => tiktok.resetPublish()}
-                >
-                  <Text style={styles.tiktokPublishBtnText}>Try Again</Text>
-                </Pressable>
-              </View>
-            ) : null}
-          </View>
-        </View>
-      </Modal>
-
-      {/* ── YouTube Publish Sheet ── */}
-      <Modal
-        visible={showYouTubeSheet}
-        animationType="slide"
-        transparent
-        onRequestClose={() => { setShowYouTubeSheet(false); youtube.resetPublish(); }}
-      >
-        <View style={styles.sheetOverlay}>
-          <Pressable
-            style={StyleSheet.absoluteFillObject}
-            onPress={() => {
-              if (youtube.publishState.phase === 'idle') setShowYouTubeSheet(false);
-            }}
-          />
-          <View style={styles.tiktokSheet}>
-            <View style={styles.sheetHandle} />
-
-            <View style={styles.sheetHeader}>
-              <View style={[styles.sheetIcon, { backgroundColor: '#ff0000' }]}>
-                <MaterialCommunityIcons name="youtube" size={22} color="#fff" />
-              </View>
-              <View style={{ flex: 1 }}>
-                <Text style={styles.sheetTitle}>Publish to YouTube Shorts</Text>
-                <Text style={styles.sheetSub}>{youtube.status.channelTitle || 'your channel'}</Text>
-              </View>
-              {youtube.publishState.phase === 'idle' ? (
-                <Pressable onPress={() => setShowYouTubeSheet(false)} hitSlop={8}>
-                  <MaterialIcons name="close" size={20} color={Colors.textMuted} />
-                </Pressable>
-              ) : null}
-            </View>
-
-            {youtube.publishState.phase === 'idle' ? (
-              <>
-                <Text style={styles.sheetSectionLabel}>Privacy</Text>
-                {[
-                  { value: 'private', label: 'Private', icon: 'lock' },
-                  { value: 'unlisted', label: 'Unlisted', icon: 'link' },
-                  { value: 'public', label: 'Public', icon: 'public' },
-                ].map(opt => (
-                  <Pressable
-                    key={opt.value}
-                    style={[styles.privacyRow, youtubePrivacy === opt.value && styles.privacyRowActive]}
-                    onPress={() => setYoutubePrivacy(opt.value)}
-                  >
-                    <MaterialIcons name={opt.icon as any} size={18} color={youtubePrivacy === opt.value ? Colors.primaryLight : Colors.textSecondary} />
-                    <Text style={[styles.privacyLabel, youtubePrivacy === opt.value && styles.privacyLabelActive]}>{opt.label}</Text>
-                    {youtubePrivacy === opt.value ? <MaterialIcons name="check-circle" size={18} color={Colors.primary} /> : null}
-                  </Pressable>
-                ))}
-                <View style={styles.sheetNote}>
-                  <MaterialIcons name="info-outline" size={13} color={Colors.textMuted} />
-                  <Text style={styles.sheetNoteText}>
-                    Videos under 60 seconds in portrait are automatically published as YouTube Shorts.
-                  </Text>
-                </View>
-                <Pressable
-                  style={({ pressed }) => [styles.tiktokPublishBtn, { backgroundColor: '#ff0000' }, pressed && { opacity: 0.85 }]}
-                  onPress={handleYouTubePublish}
-                >
-                  <MaterialCommunityIcons name="youtube" size={18} color="#fff" />
-                  <Text style={styles.tiktokPublishBtnText}>Post to YouTube Shorts</Text>
-                </Pressable>
-              </>
-            ) : null}
-
-            {youtube.publishState.phase === 'burning' ? (
-              <View style={styles.sheetPhase}>
-                <ActivityIndicator size="large" color="#ff0000" />
-                <Text style={styles.sheetPhaseTitle}>Burning hook overlay...</Text>
-                <Text style={styles.sheetPhaseSub}>Adding your hook text to the video.</Text>
-              </View>
-            ) : null}
-
-            {youtube.publishState.phase === 'uploading' ? (
-              <View style={styles.sheetPhase}>
-                <ActivityIndicator size="large" color="#ff0000" />
-                <Text style={styles.sheetPhaseTitle}>Uploading to YouTube...</Text>
-                <Text style={styles.sheetPhaseSub}>This may take a moment depending on file size.</Text>
-                {(youtube.publishState.progress ?? 0) > 0 ? (
-                  <View style={styles.progressBarBg}>
-                    <View style={[styles.progressBarFill, { width: `${youtube.publishState.progress}%` as any, backgroundColor: '#ff0000' }]} />
-                  </View>
-                ) : null}
-              </View>
-            ) : null}
-
-            {youtube.publishState.phase === 'success' ? (
-              <View style={styles.sheetPhase}>
-                <MaterialIcons name="check-circle" size={56} color={Colors.emerald} />
-                <Text style={styles.sheetPhaseTitle}>Posted to YouTube Shorts!</Text>
-                <Text style={styles.sheetPhaseSub}>Your Short is live. It may take a few minutes to appear.</Text>
-                <Pressable
-                  style={[styles.tiktokPublishBtn, { marginTop: Spacing.md, backgroundColor: '#ff0000' }]}
-                  onPress={() => {
-                    youtube.resetPublish();
-                    setShowYouTubeSheet(false);
-                    updateVideo(video!.id, { status: 'published', publishedAt: new Date().toISOString() });
-                    router.push('/(tabs)/library');
-                  }}
-                >
-                  <Text style={styles.tiktokPublishBtnText}>Done</Text>
-                </Pressable>
-              </View>
-            ) : null}
-
-            {youtube.publishState.phase === 'error' ? (
-              <View style={styles.sheetPhase}>
-                <MaterialIcons name="error-outline" size={52} color={Colors.error} />
-                <Text style={styles.sheetPhaseTitle}>Publish Failed</Text>
-                <Text style={styles.sheetPhaseSub}>{youtube.publishState.errorMessage}</Text>
-                <Pressable
-                  style={[styles.tiktokPublishBtn, { marginTop: Spacing.md, backgroundColor: Colors.error }]}
-                  onPress={() => youtube.resetPublish()}
                 >
                   <Text style={styles.tiktokPublishBtnText}>Try Again</Text>
                 </Pressable>

@@ -10,16 +10,7 @@
     "newArchEnabled": true,
     "ios": {
       "supportsTablet": true,
-      "bundleIdentifier": "com.kalel.KalelViralCut",
-      "infoPlist": {
-        "CFBundleURLTypes": [
-          {
-            "CFBundleURLSchemes": [
-              "com.googleusercontent.apps.384305956807-kv2rnvrc34olbbap2j0k6ilo1i445tpi"
-            ]
-          }
-        ]
-      }
+      "bundleIdentifier": "com.kalel.KalelViralCut"
     },
     "android": {
       "package": "com.kalel.KalelViralCut",
