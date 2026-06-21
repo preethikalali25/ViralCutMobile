@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState } from 'react';
 import {
   View, Text, StyleSheet, Pressable, TextInput,
   KeyboardAvoidingView, Platform, ScrollView, ActivityIndicator,
@@ -16,15 +16,10 @@ export default function LoginScreen() {
   const { showAlert } = useAlert();
 
   const [mode, setMode] = useState<Mode>('landing');
-  const [appleAvailable, setAppleAvailable] = useState(false);
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [confirmPassword, setConfirmPassword] = useState('');
   const [otp, setOtp] = useState('');
-
-  useEffect(() => {
-    AppleAuthentication.isAvailableAsync().then(setAppleAvailable).catch(() => setAppleAvailable(false));
-  }, []);
   const [pendingEmail, setPendingEmail] = useState('');
   const [pendingPassword, setPendingPassword] = useState('');
   const [showPass, setShowPass] = useState(false);
@@ -104,17 +99,6 @@ export default function LoginScreen() {
               <>
                 <Text style={styles.cardTitle}>Get Started</Text>
                 <Text style={styles.cardSub}>Sign in to manage your videos</Text>
-
-                {/* Apple — only renders when native module is available (real device, not Simulator) */}
-                {appleAvailable ? (
-                  <AppleAuthentication.AppleAuthenticationButton
-                    buttonType={AppleAuthentication.AppleAuthenticationButtonType.SIGN_IN}
-                    buttonStyle={AppleAuthentication.AppleAuthenticationButtonStyle.BLACK}
-                    cornerRadius={30}
-                    style={styles.appleBtn}
-                    onPress={handleApple}
-                  />
-                ) : null}
 
                 {/* Google */}
                 <Pressable

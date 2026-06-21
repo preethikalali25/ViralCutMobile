@@ -26,18 +26,10 @@ export async function searchViralAudio(query: string): Promise<AudioSearchRespon
     const encoded = encodeURIComponent(query.trim());
     const url = `https://itunes.apple.com/search?term=${encoded}&media=music&entity=song&limit=10`;
 
-    const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), 8000);
-
-    let response: Response;
-    try {
-      response = await fetch(url, {
-        headers: { Accept: 'application/json' },
-        signal: controller.signal,
-      });
-    } finally {
-      clearTimeout(timeoutId);
-    }
+    const response = await fetch(url, {
+      headers: { Accept: 'application/json' },
+      signal: AbortSignal.timeout(8000),
+    });
 
     if (!response.ok) {
       return { results: [], error: `iTunes API error: ${response.status}` };
