@@ -31,6 +31,12 @@
 				<string>com.kalel.KalelViralCut</string>
 			</array>
 		</dict>
+		<dict>
+			<key>CFBundleURLSchemes</key>
+			<array>
+				<string>com.googleusercontent.apps.384305956807-kv2rnvrc34olbbap2j0k6ilo1i445tpi</string>
+			</array>
+		</dict>
 	</array>
 	<key>CFBundleVersion</key>
 	<string>1</string>
