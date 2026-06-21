@@ -135,41 +135,26 @@ Deno.serve(async (req) => {
         updated_at: new Date().toISOString(),
       };
 
-      // Try insert first; if row exists (23505 = unique violation) do update instead
-      const { error: insertError } = await supabase.from('youtube_tokens').insert(tokenRow);
+      // Use direct PostgREST fetch with upsert (ON CONFLICT DO UPDATE)
+      const restUrl = `${supabaseUrl}/rest/v1/youtube_tokens`;
+      const insertRes = await fetch(restUrl, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'apikey': serviceRoleKey,
+          'Authorization': `Bearer ${serviceRoleKey}`,
+          'Prefer': 'resolution=merge-duplicates,return=minimal',
+        },
+        body: JSON.stringify(tokenRow),
+      });
 
-      if (insertError) {
-        if ((insertError as any).code === '23505') {
-          const { error: updateError } = await supabase
-            .from('youtube_tokens')
-            .update({
-              google_user_id: tokenRow.google_user_id,
-              access_token: tokenRow.access_token,
-              refresh_token: tokenRow.refresh_token,
-              expires_at: tokenRow.expires_at,
-              channel_id: tokenRow.channel_id,
-              channel_title: tokenRow.channel_title,
-              channel_thumbnail: tokenRow.channel_thumbnail,
-              updated_at: tokenRow.updated_at,
-            })
-            .eq('user_id', userId);
-
-          if (updateError) {
-            const detail = JSON.stringify({ message: updateError.message, code: (updateError as any).code, details: (updateError as any).details });
-            console.error('[youtube] DB update error:', detail);
-            return new Response(
-              JSON.stringify({ error: `DB update error: ${detail}` }),
-              { status: 500, headers: { ...corsHeaders, 'Content-Type': 'application/json' } },
-            );
-          }
-        } else {
-          const detail = JSON.stringify({ message: insertError.message, code: (insertError as any).code, details: (insertError as any).details });
-          console.error('[youtube] DB insert error:', detail);
-          return new Response(
-            JSON.stringify({ error: `DB insert error: ${detail}` }),
-            { status: 500, headers: { ...corsHeaders, 'Content-Type': 'application/json' } },
-          );
-        }
+      if (!insertRes.ok) {
+        const errText = await insertRes.text();
+        console.error('[youtube] REST insert error:', insertRes.status, errText);
+        return new Response(
+          JSON.stringify({ error: `DB error (${insertRes.status}): ${errText}` }),
+          { status: 500, headers: { ...corsHeaders, 'Content-Type': 'application/json' } },
+        );
       }
 
       return new Response(
