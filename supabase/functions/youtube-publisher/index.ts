@@ -123,25 +123,53 @@ Deno.serve(async (req) => {
       const channelTitle: string = channel?.snippet?.title ?? userInfo.name ?? '';
       const channelThumbnail: string = channel?.snippet?.thumbnails?.default?.url ?? userInfo.picture ?? '';
 
-      const { error: dbError } = await supabase.from('youtube_tokens').upsert({
+      const tokenRow = {
         user_id: userId,
-        google_user_id: googleUserId,
+        google_user_id: googleUserId || 'unknown',
         access_token: accessToken,
-        refresh_token: refreshToken,
+        refresh_token: refreshToken || '',
         expires_at: expiresAt,
-        channel_id: channelId,
-        channel_title: channelTitle,
-        channel_thumbnail: channelThumbnail,
+        channel_id: channelId || '',
+        channel_title: channelTitle || '',
+        channel_thumbnail: channelThumbnail || '',
         updated_at: new Date().toISOString(),
-      }, { onConflict: 'user_id' });
+      };
 
-      if (dbError) {
-        const detail = JSON.stringify({ message: dbError.message, code: (dbError as any).code, details: (dbError as any).details, hint: (dbError as any).hint });
-        console.error('[youtube] DB error:', detail);
-        return new Response(
-          JSON.stringify({ error: `DB error: ${detail}` }),
-          { status: 500, headers: { ...corsHeaders, 'Content-Type': 'application/json' } },
-        );
+      // Try insert first; if row exists (23505 = unique violation) do update instead
+      const { error: insertError } = await supabase.from('youtube_tokens').insert(tokenRow);
+
+      if (insertError) {
+        if ((insertError as any).code === '23505') {
+          const { error: updateError } = await supabase
+            .from('youtube_tokens')
+            .update({
+              google_user_id: tokenRow.google_user_id,
+              access_token: tokenRow.access_token,
+              refresh_token: tokenRow.refresh_token,
+              expires_at: tokenRow.expires_at,
+              channel_id: tokenRow.channel_id,
+              channel_title: tokenRow.channel_title,
+              channel_thumbnail: tokenRow.channel_thumbnail,
+              updated_at: tokenRow.updated_at,
+            })
+            .eq('user_id', userId);
+
+          if (updateError) {
+            const detail = JSON.stringify({ message: updateError.message, code: (updateError as any).code, details: (updateError as any).details });
+            console.error('[youtube] DB update error:', detail);
+            return new Response(
+              JSON.stringify({ error: `DB update error: ${detail}` }),
+              { status: 500, headers: { ...corsHeaders, 'Content-Type': 'application/json' } },
+            );
+          }
+        } else {
+          const detail = JSON.stringify({ message: insertError.message, code: (insertError as any).code, details: (insertError as any).details });
+          console.error('[youtube] DB insert error:', detail);
+          return new Response(
+            JSON.stringify({ error: `DB insert error: ${detail}` }),
+            { status: 500, headers: { ...corsHeaders, 'Content-Type': 'application/json' } },
+          );
+        }
       }
 
       return new Response(
