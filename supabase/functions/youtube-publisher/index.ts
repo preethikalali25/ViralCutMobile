@@ -1,6 +1,5 @@
 import { corsHeaders } from '../_shared/cors.ts';
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
-import { Client } from 'https://deno.land/x/postgres@v0.17.0/mod.ts';
 
 const GOOGLE_TOKEN_URL = 'https://oauth2.googleapis.com/token';
 const YOUTUBE_UPLOAD_URL = 'https://www.googleapis.com/upload/youtube/v3/videos';
@@ -75,18 +74,23 @@ Deno.serve(async (req) => {
     const serviceRoleKey = getEnv('SUPABASE_SERVICE_ROLE_KEY');
     const supabase = createClient(supabaseUrl, serviceRoleKey);
 
-    // ── 0. One-time DB setup ──────────────────────────────────────────────
+    // ── 0. One-time DB setup via pg_meta API ─────────────────────────────
     if (action === 'setup') {
-      const dbUrl = Deno.env.get('SUPABASE_DB_URL') ?? Deno.env.get('DATABASE_URL');
-      if (!dbUrl) {
-        return new Response(
-          JSON.stringify({ error: 'No direct DB URL available (SUPABASE_DB_URL / DATABASE_URL)' }),
-          { status: 500, headers: { ...corsHeaders, 'Content-Type': 'application/json' } },
-        );
-      }
-      const client = new Client(dbUrl);
-      await client.connect();
-      await client.queryObject(`
+      const pgMetaBase = supabaseUrl.replace(/\/$/, '');
+      const runSql = async (query: string) => {
+        const res = await fetch(`${pgMetaBase}/pg-meta/v1/query`, {
+          method: 'POST',
+          headers: {
+            'Authorization': `Bearer ${serviceRoleKey}`,
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({ query }),
+        });
+        const text = await res.text();
+        return { ok: res.ok, status: res.status, body: text };
+      };
+
+      const createTable = await runSql(`
         CREATE TABLE IF NOT EXISTS public.youtube_tokens (
           user_id           uuid        PRIMARY KEY,
           google_user_id    text        NOT NULL DEFAULT '',
@@ -99,8 +103,16 @@ Deno.serve(async (req) => {
           updated_at        timestamptz NOT NULL DEFAULT now()
         )
       `);
-      await client.queryObject(`ALTER TABLE public.youtube_tokens ENABLE ROW LEVEL SECURITY`);
-      await client.queryObject(`
+      if (!createTable.ok) {
+        return new Response(
+          JSON.stringify({ error: `pg_meta create table failed (${createTable.status}): ${createTable.body}` }),
+          { status: 500, headers: { ...corsHeaders, 'Content-Type': 'application/json' } },
+        );
+      }
+
+      await runSql(`ALTER TABLE public.youtube_tokens ENABLE ROW LEVEL SECURITY`);
+
+      const createFn = await runSql(`
         CREATE OR REPLACE FUNCTION public.upsert_youtube_token(
           p_user_id uuid, p_google_user_id text, p_access_token text,
           p_refresh_token text, p_expires_at timestamptz, p_channel_id text,
@@ -126,7 +138,13 @@ Deno.serve(async (req) => {
         END;
         $$
       `);
-      await client.end();
+      if (!createFn.ok) {
+        return new Response(
+          JSON.stringify({ error: `pg_meta create function failed (${createFn.status}): ${createFn.body}` }),
+          { status: 500, headers: { ...corsHeaders, 'Content-Type': 'application/json' } },
+        );
+      }
+
       return new Response(
         JSON.stringify({ success: true, message: 'youtube_tokens table and upsert function created' }),
         { headers: { ...corsHeaders, 'Content-Type': 'application/json' } },
