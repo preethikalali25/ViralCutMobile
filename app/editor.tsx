@@ -26,6 +26,7 @@ import { initYouTubeUpload, uploadVideoToYouTube } from '@/services/youtubeServi
 import { burnHookOverlay, shareToInstagramReels } from '@/services/videoOverlayService';
 import { INSTAGRAM_APP_ID } from '@/constants/instagram';
 import { searchViralAudio, AudioSearchResult } from '@/services/audioSearchService';
+import { SCHEDULE_CONFIG, getNextBestSlot, formatSlot, type SchedulePlatform } from '@/constants/schedulingBestTimes';
 import * as FileSystem from 'expo-file-system';
 import * as Clipboard from 'expo-clipboard';
 import Slider from '@react-native-community/slider';
@@ -175,6 +176,8 @@ export default function EditorScreen() {
   const [showTikTokSheet, setShowTikTokSheet] = useState(false);
   const [showInstagramSheet, setShowInstagramSheet] = useState(false);
   const [showYouTubeSheet, setShowYouTubeSheet] = useState(false);
+  const [showScheduleSheet, setShowScheduleSheet] = useState(false);
+  const [schedulePlatform, setSchedulePlatform] = useState<SchedulePlatform>('instagram');
   const [tiktokPrivacy, setTiktokPrivacy] = useState('SELF_ONLY');
   const [youtubePrivacy, setYoutubePrivacy] = useState('public');
   const [uploadingToStorage, setUploadingToStorage] = useState(false);
@@ -465,16 +468,21 @@ export default function EditorScreen() {
     router.push('/(tabs)/library');
   };
 
-  const handleSchedule = () => {
+  const handleSchedule = () => setShowScheduleSheet(true);
+
+  const confirmSchedule = (platform: SchedulePlatform) => {
     const snap = snapshotEditorState();
-    const tomorrow = new Date();
-    tomorrow.setDate(tomorrow.getDate() + 1);
-    tomorrow.setHours(12, 0, 0, 0);
-    updateVideo(video.id, { ...snap, status: 'scheduled', scheduledAt: tomorrow.toISOString() });
-    showAlert('Scheduled!', 'Your video is scheduled for tomorrow at 12:00 PM.', [
-      { text: 'View Schedule', onPress: () => router.push('/(tabs)/schedule') },
-      { text: 'OK', style: 'cancel' },
-    ]);
+    const slot = getNextBestSlot(platform);
+    updateVideo(video.id, { ...snap, status: 'scheduled', scheduledAt: slot.toISOString() });
+    setShowScheduleSheet(false);
+    showAlert(
+      'Scheduled!',
+      `Your video is scheduled for ${formatSlot(slot)} — the next peak window for ${SCHEDULE_CONFIG[platform].label}.`,
+      [
+        { text: 'View Schedule', onPress: () => router.push('/(tabs)/schedule') },
+        { text: 'OK', style: 'cancel' },
+      ],
+    );
   };
 
   const handlePublish = () => {
@@ -1223,6 +1231,74 @@ export default function EditorScreen() {
           <View style={{ height: Spacing.xl }} />
         </ScrollView>
       </KeyboardAvoidingView>
+
+      {/* ── Schedule Sheet ── */}
+      <Modal
+        visible={showScheduleSheet}
+        animationType="slide"
+        transparent
+        onRequestClose={() => setShowScheduleSheet(false)}
+      >
+        <View style={styles.sheetOverlay}>
+          <Pressable style={StyleSheet.absoluteFillObject} onPress={() => setShowScheduleSheet(false)} />
+          <View style={styles.tiktokSheet}>
+            <View style={styles.sheetHandle} />
+            <View style={styles.sheetHeader}>
+              <View style={[styles.sheetIcon, { backgroundColor: Colors.primary + '22' }]}>
+                <MaterialIcons name="schedule" size={22} color={Colors.primaryLight} />
+              </View>
+              <View style={{ flex: 1 }}>
+                <Text style={styles.sheetTitle}>Schedule Post</Text>
+                <Text style={styles.sheetSub}>Pick a platform — we'll suggest the next peak slot</Text>
+              </View>
+              <Pressable onPress={() => setShowScheduleSheet(false)} hitSlop={8}>
+                <MaterialIcons name="close" size={20} color={Colors.textMuted} />
+              </Pressable>
+            </View>
+
+            {(['instagram', 'tiktok', 'youtube'] as SchedulePlatform[]).map(p => {
+              const cfg = SCHEDULE_CONFIG[p];
+              const slot = getNextBestSlot(p);
+              const isSelected = schedulePlatform === p;
+              return (
+                <Pressable
+                  key={p}
+                  style={[styles.scheduleRow, isSelected && { borderColor: cfg.color, backgroundColor: cfg.color + '12' }]}
+                  onPress={() => setSchedulePlatform(p)}
+                >
+                  <View style={[styles.scheduleIcon, { backgroundColor: cfg.color + '22' }]}>
+                    <MaterialCommunityIcons
+                      name={p === 'instagram' ? 'instagram' : p === 'tiktok' ? 'music-note' : 'youtube'}
+                      size={20}
+                      color={cfg.color}
+                    />
+                  </View>
+                  <View style={{ flex: 1 }}>
+                    <Text style={styles.scheduleLabel}>{cfg.label}</Text>
+                    <Text style={[styles.scheduleSlot, { color: cfg.color }]}>
+                      Next peak: {formatSlot(slot)}
+                    </Text>
+                    <Text style={styles.schedulePeak}>{cfg.peakLabel}</Text>
+                  </View>
+                  {isSelected
+                    ? <MaterialIcons name="check-circle" size={22} color={cfg.color} />
+                    : <View style={styles.scheduleRadio} />}
+                </Pressable>
+              );
+            })}
+
+            <Pressable
+              style={[styles.tiktokPublishBtn, { backgroundColor: SCHEDULE_CONFIG[schedulePlatform].color, marginTop: Spacing.md }]}
+              onPress={() => confirmSchedule(schedulePlatform)}
+            >
+              <MaterialIcons name="schedule" size={18} color="#fff" />
+              <Text style={styles.tiktokPublishBtnText}>
+                Schedule for {SCHEDULE_CONFIG[schedulePlatform].label}
+              </Text>
+            </Pressable>
+          </View>
+        </View>
+      </Modal>
 
       {/* ── Instagram Publish Sheet ── */}
       <Modal
@@ -2010,4 +2086,20 @@ const styles = StyleSheet.create({
   },
   noVideoText: { fontSize: FontSize.lg, fontWeight: FontWeight.bold, color: '#fff', includeFontPadding: false },
   noVideoSub: { fontSize: FontSize.sm, color: 'rgba(255,255,255,0.7)', textAlign: 'center', paddingHorizontal: 32, includeFontPadding: false },
+
+  // Schedule sheet
+  scheduleRow: {
+    flexDirection: 'row', alignItems: 'center', gap: Spacing.sm,
+    backgroundColor: Colors.surfaceElevated, borderRadius: Radius.md,
+    padding: Spacing.sm + 4, borderWidth: 1, borderColor: Colors.surfaceBorder,
+    marginBottom: Spacing.sm,
+  },
+  scheduleIcon: { width: 40, height: 40, borderRadius: Radius.md, alignItems: 'center', justifyContent: 'center' },
+  scheduleLabel: { fontSize: FontSize.sm, fontWeight: FontWeight.semibold, color: Colors.textPrimary, includeFontPadding: false },
+  scheduleSlot: { fontSize: FontSize.xs, fontWeight: FontWeight.medium, includeFontPadding: false, marginTop: 2 },
+  schedulePeak: { fontSize: 10, color: Colors.textMuted, includeFontPadding: false, marginTop: 1 },
+  scheduleRadio: {
+    width: 22, height: 22, borderRadius: 11,
+    borderWidth: 2, borderColor: Colors.surfaceBorder,
+  },
 });
