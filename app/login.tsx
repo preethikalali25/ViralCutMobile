@@ -115,7 +115,7 @@ export default function LoginScreen() {
                 {appleAvailable ? (
                   <AppleAuthentication.AppleAuthenticationButton
                     buttonType={AppleAuthentication.AppleAuthenticationButtonType.SIGN_IN}
-                    buttonStyle={AppleAuthentication.AppleAuthenticationButtonStyle.BLACK}
+                    buttonStyle={AppleAuthentication.AppleAuthenticationButtonStyle.WHITE}
                     cornerRadius={30}
                     style={styles.appleBtn}
                     onPress={handleApple}
