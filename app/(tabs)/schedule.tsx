@@ -46,7 +46,7 @@ const PLATFORM_DATA: Record<BestTimesPlatform, {
     tip: 'Weekdays beat weekends. Reels perform best in the 6–9 p.m. window.',
   },
   tiktok: {
-    color: '#010101',
+    color: '#ee1d52',
     icon: 'music-note',
     label: 'TikTok',
     bestDays: ['Sat', 'Sun', 'Tue', 'Wed', 'Thu'],

@@ -1194,7 +1194,7 @@ export default function EditorScreen() {
             <Pressable
               style={({ pressed }) => [
                 styles.platformPublishBtn,
-                { borderColor: '#010101', backgroundColor: tiktok.status.connected ? '#010101' : Colors.surfaceElevated },
+                { borderColor: '#ee1d52', backgroundColor: tiktok.status.connected ? '#ee1d52' : Colors.surfaceElevated },
                 pressed && { opacity: 0.8 },
                 !tiktok.status.connected && styles.platformPublishBtnDisabled,
               ]}
@@ -1487,7 +1487,7 @@ export default function EditorScreen() {
             <View style={styles.sheetHandle} />
 
             <View style={styles.sheetHeader}>
-              <View style={[styles.sheetIcon, { backgroundColor: '#010101' }]}>
+              <View style={[styles.sheetIcon, { backgroundColor: '#ee1d52' }]}>
                 <MaterialCommunityIcons name="music-note" size={22} color="#fff" />
               </View>
               <View style={{ flex: 1 }}>

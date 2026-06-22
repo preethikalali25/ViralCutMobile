@@ -20,7 +20,7 @@ export const SCHEDULE_CONFIG: Record<SchedulePlatform, PlatformScheduleConfig> =
     peakLabel: 'Tue–Thu, 12–7 p.m.',
   },
   tiktok: {
-    color: '#010101',
+    color: '#ee1d52',
     label: 'TikTok',
     bestDays: [0, 2, 3, 4, 6], // Sun, Tue, Wed, Thu, Sat
     avoidDays: [],

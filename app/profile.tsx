@@ -30,7 +30,7 @@ const PLATFORMS: PlatformMeta[] = [
     id: 'tiktok',
     label: 'TikTok',
     color: '#fff',
-    bgColor: '#010101',
+    bgColor: '#ee1d52',
     iconName: 'music-note',
     iconLib: 'MaterialCommunityIcons',
     handlePrefix: '@',
@@ -344,7 +344,7 @@ export default function ProfileScreen() {
         {/* ── TikTok OAuth Card ─────────────────────────────────────────── */}
         <Text style={styles.sectionLabel}>TikTok</Text>
         <View style={styles.tiktokCard}>
-          <View style={[styles.platformIcon, { backgroundColor: '#010101' }]}>
+          <View style={[styles.platformIcon, { backgroundColor: '#ee1d52' }]}>
             <MaterialCommunityIcons name="music-note" size={20} color="#fff" />
           </View>
 
@@ -767,7 +767,7 @@ const styles = StyleSheet.create({
   tiktokCard: {
     flexDirection: 'row', alignItems: 'center', gap: Spacing.sm,
     backgroundColor: Colors.surfaceElevated, borderRadius: Radius.lg,
-    padding: Spacing.md, borderWidth: 1.5, borderColor: '#010101',
+    padding: Spacing.md, borderWidth: 1.5, borderColor: '#ee1d52',
     marginBottom: Spacing.xs,
   },
   infoNote: {
@@ -777,7 +777,7 @@ const styles = StyleSheet.create({
   infoText: { flex: 1, fontSize: FontSize.xs, color: Colors.textMuted, lineHeight: 16, includeFontPadding: false },
   oauthBtn: {
     flexDirection: 'row', alignItems: 'center', gap: 5,
-    backgroundColor: '#010101', borderRadius: Radius.full,
+    backgroundColor: '#ee1d52', borderRadius: Radius.full,
     paddingHorizontal: 12, paddingVertical: 8, minHeight: 36,
   },
   oauthBtnLoading: { opacity: 0.7 },
