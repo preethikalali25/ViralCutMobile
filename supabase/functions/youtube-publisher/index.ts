@@ -74,23 +74,17 @@ Deno.serve(async (req) => {
     const serviceRoleKey = getEnv('SUPABASE_SERVICE_ROLE_KEY');
     const supabase = createClient(supabaseUrl, serviceRoleKey);
 
-    // ── 0. One-time DB setup via pg_meta API ─────────────────────────────
+    // ── 0. One-time DB setup — probe multiple SQL endpoints ──────────────
     if (action === 'setup') {
-      const pgMetaBase = supabaseUrl.replace(/\/$/, '');
-      const runSql = async (query: string) => {
-        const res = await fetch(`${pgMetaBase}/pg-meta/v1/query`, {
-          method: 'POST',
-          headers: {
-            'Authorization': `Bearer ${serviceRoleKey}`,
-            'Content-Type': 'application/json',
-          },
-          body: JSON.stringify({ query }),
-        });
-        const text = await res.text();
-        return { ok: res.ok, status: res.status, body: text };
-      };
+      const base = supabaseUrl.replace(/\/$/, '');
+      const sqlEndpoints = [
+        `${base}/pg-meta/v1/query`,
+        `${base}/api/v1/query`,
+        `${base}/admin/v1/query`,
+        `${base}/sql`,
+      ];
 
-      const createTable = await runSql(`
+      const createTableSql = `
         CREATE TABLE IF NOT EXISTS public.youtube_tokens (
           user_id           uuid        PRIMARY KEY,
           google_user_id    text        NOT NULL DEFAULT '',
@@ -102,51 +96,28 @@ Deno.serve(async (req) => {
           channel_thumbnail text        NOT NULL DEFAULT '',
           updated_at        timestamptz NOT NULL DEFAULT now()
         )
-      `);
-      if (!createTable.ok) {
-        return new Response(
-          JSON.stringify({ error: `pg_meta create table failed (${createTable.status}): ${createTable.body}` }),
-          { status: 500, headers: { ...corsHeaders, 'Content-Type': 'application/json' } },
-        );
-      }
+      `;
 
-      await runSql(`ALTER TABLE public.youtube_tokens ENABLE ROW LEVEL SECURITY`);
+      const results: Record<string, unknown> = {};
+      let succeeded = false;
 
-      const createFn = await runSql(`
-        CREATE OR REPLACE FUNCTION public.upsert_youtube_token(
-          p_user_id uuid, p_google_user_id text, p_access_token text,
-          p_refresh_token text, p_expires_at timestamptz, p_channel_id text,
-          p_channel_title text, p_channel_thumbnail text
-        ) RETURNS void LANGUAGE plpgsql SECURITY DEFINER SET search_path = public AS $$
-        BEGIN
-          INSERT INTO public.youtube_tokens (
-            user_id, google_user_id, access_token, refresh_token,
-            expires_at, channel_id, channel_title, channel_thumbnail, updated_at
-          ) VALUES (
-            p_user_id, p_google_user_id, p_access_token, p_refresh_token,
-            p_expires_at, p_channel_id, p_channel_title, p_channel_thumbnail, now()
-          )
-          ON CONFLICT (user_id) DO UPDATE SET
-            google_user_id = excluded.google_user_id,
-            access_token = excluded.access_token,
-            refresh_token = excluded.refresh_token,
-            expires_at = excluded.expires_at,
-            channel_id = excluded.channel_id,
-            channel_title = excluded.channel_title,
-            channel_thumbnail = excluded.channel_thumbnail,
-            updated_at = now();
-        END;
-        $$
-      `);
-      if (!createFn.ok) {
-        return new Response(
-          JSON.stringify({ error: `pg_meta create function failed (${createFn.status}): ${createFn.body}` }),
-          { status: 500, headers: { ...corsHeaders, 'Content-Type': 'application/json' } },
-        );
+      for (const endpoint of sqlEndpoints) {
+        try {
+          const res = await fetch(endpoint, {
+            method: 'POST',
+            headers: { 'Authorization': `Bearer ${serviceRoleKey}`, 'Content-Type': 'application/json' },
+            body: JSON.stringify({ query: createTableSql }),
+          });
+          const text = await res.text();
+          results[endpoint] = { status: res.status, body: text.slice(0, 200) };
+          if (res.ok) { succeeded = true; break; }
+        } catch (e) {
+          results[endpoint] = { error: String(e) };
+        }
       }
 
       return new Response(
-        JSON.stringify({ success: true, message: 'youtube_tokens table and upsert function created' }),
+        JSON.stringify({ succeeded, results }),
         { headers: { ...corsHeaders, 'Content-Type': 'application/json' } },
       );
     }
