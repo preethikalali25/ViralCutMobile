@@ -32,9 +32,7 @@
   "submit": {
     "production": {
       "ios": {
-        "appleId": "preethika.kallaguntla@gmail.com",
-        "ascAppId": "",
-        "appleTeamId": ""
+        "appleId": "preethika.kallaguntla@gmail.com"
       }
     }
   }
