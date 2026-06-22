@@ -123,36 +123,22 @@ Deno.serve(async (req) => {
       const channelTitle: string = channel?.snippet?.title ?? userInfo.name ?? '';
       const channelThumbnail: string = channel?.snippet?.thumbnails?.default?.url ?? userInfo.picture ?? '';
 
-      const tokenRow = {
-        user_id: userId,
-        google_user_id: googleUserId || 'unknown',
-        access_token: accessToken,
-        refresh_token: refreshToken || '',
-        expires_at: expiresAt,
-        channel_id: channelId || '',
-        channel_title: channelTitle || '',
-        channel_thumbnail: channelThumbnail || '',
-        updated_at: new Date().toISOString(),
-      };
-
-      // Use direct PostgREST fetch with upsert (ON CONFLICT DO UPDATE)
-      const restUrl = `${supabaseUrl}/rest/v1/youtube_tokens`;
-      const insertRes = await fetch(restUrl, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'apikey': serviceRoleKey,
-          'Authorization': `Bearer ${serviceRoleKey}`,
-          'Prefer': 'resolution=merge-duplicates,return=minimal',
-        },
-        body: JSON.stringify(tokenRow),
+      // Use a SECURITY DEFINER function to bypass PostgREST restrictions
+      const { error: rpcError } = await supabase.rpc('upsert_youtube_token', {
+        p_user_id: userId,
+        p_google_user_id: googleUserId || 'unknown',
+        p_access_token: accessToken,
+        p_refresh_token: refreshToken || '',
+        p_expires_at: expiresAt,
+        p_channel_id: channelId || '',
+        p_channel_title: channelTitle || '',
+        p_channel_thumbnail: channelThumbnail || '',
       });
 
-      if (!insertRes.ok) {
-        const errText = await insertRes.text();
-        console.error('[youtube] REST insert error:', insertRes.status, errText);
+      if (rpcError) {
+        console.error('[youtube] RPC error:', JSON.stringify(rpcError));
         return new Response(
-          JSON.stringify({ error: `DB error (${insertRes.status}): ${errText}` }),
+          JSON.stringify({ error: `DB error: ${rpcError.message}` }),
           { status: 500, headers: { ...corsHeaders, 'Content-Type': 'application/json' } },
         );
       }
