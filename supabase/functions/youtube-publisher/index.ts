@@ -1,5 +1,6 @@
 import { corsHeaders } from '../_shared/cors.ts';
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
+import postgres from 'https://deno.land/x/postgres@v0.17.0/mod.ts';
 
 const GOOGLE_TOKEN_URL = 'https://oauth2.googleapis.com/token';
 const YOUTUBE_UPLOAD_URL = 'https://www.googleapis.com/upload/youtube/v3/videos';
@@ -73,6 +74,64 @@ Deno.serve(async (req) => {
     const supabaseUrl = getEnv('SUPABASE_URL');
     const serviceRoleKey = getEnv('SUPABASE_SERVICE_ROLE_KEY');
     const supabase = createClient(supabaseUrl, serviceRoleKey);
+
+    // ── 0. One-time DB setup ──────────────────────────────────────────────
+    if (action === 'setup') {
+      const dbUrl = Deno.env.get('SUPABASE_DB_URL') ?? Deno.env.get('DATABASE_URL');
+      if (!dbUrl) {
+        return new Response(
+          JSON.stringify({ error: 'No direct DB URL available (SUPABASE_DB_URL / DATABASE_URL)' }),
+          { status: 500, headers: { ...corsHeaders, 'Content-Type': 'application/json' } },
+        );
+      }
+      const client = new postgres.Client(dbUrl);
+      await client.connect();
+      await client.queryObject(`
+        CREATE TABLE IF NOT EXISTS public.youtube_tokens (
+          user_id           uuid        PRIMARY KEY,
+          google_user_id    text        NOT NULL DEFAULT '',
+          access_token      text        NOT NULL,
+          refresh_token     text        NOT NULL DEFAULT '',
+          expires_at        timestamptz NOT NULL,
+          channel_id        text        NOT NULL DEFAULT '',
+          channel_title     text        NOT NULL DEFAULT '',
+          channel_thumbnail text        NOT NULL DEFAULT '',
+          updated_at        timestamptz NOT NULL DEFAULT now()
+        )
+      `);
+      await client.queryObject(`ALTER TABLE public.youtube_tokens ENABLE ROW LEVEL SECURITY`);
+      await client.queryObject(`
+        CREATE OR REPLACE FUNCTION public.upsert_youtube_token(
+          p_user_id uuid, p_google_user_id text, p_access_token text,
+          p_refresh_token text, p_expires_at timestamptz, p_channel_id text,
+          p_channel_title text, p_channel_thumbnail text
+        ) RETURNS void LANGUAGE plpgsql SECURITY DEFINER SET search_path = public AS $$
+        BEGIN
+          INSERT INTO public.youtube_tokens (
+            user_id, google_user_id, access_token, refresh_token,
+            expires_at, channel_id, channel_title, channel_thumbnail, updated_at
+          ) VALUES (
+            p_user_id, p_google_user_id, p_access_token, p_refresh_token,
+            p_expires_at, p_channel_id, p_channel_title, p_channel_thumbnail, now()
+          )
+          ON CONFLICT (user_id) DO UPDATE SET
+            google_user_id = excluded.google_user_id,
+            access_token = excluded.access_token,
+            refresh_token = excluded.refresh_token,
+            expires_at = excluded.expires_at,
+            channel_id = excluded.channel_id,
+            channel_title = excluded.channel_title,
+            channel_thumbnail = excluded.channel_thumbnail,
+            updated_at = now();
+        END;
+        $$
+      `);
+      await client.end();
+      return new Response(
+        JSON.stringify({ success: true, message: 'youtube_tokens table and upsert function created' }),
+        { headers: { ...corsHeaders, 'Content-Type': 'application/json' } },
+      );
+    }
 
     // ── 1. Exchange authorization code for tokens ─────────────────────────
     if (action === 'exchange_token') {
