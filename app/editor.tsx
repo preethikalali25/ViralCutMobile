@@ -177,7 +177,7 @@ export default function EditorScreen() {
   const [showInstagramSheet, setShowInstagramSheet] = useState(false);
   const [showYouTubeSheet, setShowYouTubeSheet] = useState(false);
   const [showScheduleSheet, setShowScheduleSheet] = useState(false);
-  const [schedulePlatform, setSchedulePlatform] = useState<SchedulePlatform>('instagram');
+  const [scheduledPlatforms, setScheduledPlatforms] = useState<Set<SchedulePlatform>>(new Set(['instagram', 'tiktok', 'youtube']));
   const [tiktokPrivacy, setTiktokPrivacy] = useState('SELF_ONLY');
   const [youtubePrivacy, setYoutubePrivacy] = useState('public');
   const [uploadingToStorage, setUploadingToStorage] = useState(false);
@@ -470,19 +470,42 @@ export default function EditorScreen() {
 
   const handleSchedule = () => setShowScheduleSheet(true);
 
-  const confirmSchedule = (platform: SchedulePlatform) => {
+  const toggleSchedulePlatform = (p: SchedulePlatform) => {
+    setScheduledPlatforms(prev => {
+      const next = new Set(prev);
+      if (next.has(p)) { if (next.size > 1) next.delete(p); }
+      else next.add(p);
+      return next;
+    });
+  };
+
+  const confirmSchedule = () => {
+    if (scheduledPlatforms.size === 0) return;
     const snap = snapshotEditorState();
-    const slot = getNextBestSlot(platform);
-    updateVideo(video.id, { ...snap, status: 'scheduled', scheduledAt: slot.toISOString() });
+    const platformSchedules: Record<string, string> = {};
+    let earliest: Date | null = null;
+
+    scheduledPlatforms.forEach(p => {
+      const slot = getNextBestSlot(p);
+      platformSchedules[p] = slot.toISOString();
+      if (!earliest || slot < earliest) earliest = slot;
+    });
+
+    updateVideo(video.id, {
+      ...snap,
+      status: 'scheduled',
+      scheduledAt: earliest!.toISOString(),
+      platformSchedules,
+    });
     setShowScheduleSheet(false);
-    showAlert(
-      'Scheduled!',
-      `Your video is scheduled for ${formatSlot(slot)} — the next peak window for ${SCHEDULE_CONFIG[platform].label}.`,
-      [
-        { text: 'View Schedule', onPress: () => router.push('/(tabs)/schedule') },
-        { text: 'OK', style: 'cancel' },
-      ],
-    );
+
+    const lines = Array.from(scheduledPlatforms)
+      .map(p => `${SCHEDULE_CONFIG[p].label}: ${formatSlot(new Date(platformSchedules[p]))}`)
+      .join('\n');
+    showAlert('Scheduled!', lines, [
+      { text: 'View Schedule', onPress: () => router.push('/(tabs)/schedule') },
+      { text: 'OK', style: 'cancel' },
+    ]);
   };
 
   const handlePublish = () => {
@@ -1259,12 +1282,12 @@ export default function EditorScreen() {
             {(['instagram', 'tiktok', 'youtube'] as SchedulePlatform[]).map(p => {
               const cfg = SCHEDULE_CONFIG[p];
               const slot = getNextBestSlot(p);
-              const isSelected = schedulePlatform === p;
+              const isSelected = scheduledPlatforms.has(p);
               return (
                 <Pressable
                   key={p}
                   style={[styles.scheduleRow, isSelected && { borderColor: cfg.color, backgroundColor: cfg.color + '12' }]}
-                  onPress={() => setSchedulePlatform(p)}
+                  onPress={() => toggleSchedulePlatform(p)}
                 >
                   <View style={[styles.scheduleIcon, { backgroundColor: cfg.color + '22' }]}>
                     <MaterialCommunityIcons
@@ -1275,25 +1298,35 @@ export default function EditorScreen() {
                   </View>
                   <View style={{ flex: 1 }}>
                     <Text style={styles.scheduleLabel}>{cfg.label}</Text>
-                    <Text style={[styles.scheduleSlot, { color: cfg.color }]}>
-                      Next peak: {formatSlot(slot)}
+                    <Text style={[styles.scheduleSlot, { color: isSelected ? cfg.color : Colors.textMuted }]}>
+                      {formatSlot(slot)}
                     </Text>
                     <Text style={styles.schedulePeak}>{cfg.peakLabel}</Text>
                   </View>
-                  {isSelected
-                    ? <MaterialIcons name="check-circle" size={22} color={cfg.color} />
-                    : <View style={styles.scheduleRadio} />}
+                  <View style={[
+                    styles.scheduleCheckbox,
+                    isSelected && { backgroundColor: cfg.color, borderColor: cfg.color },
+                  ]}>
+                    {isSelected && <MaterialIcons name="check" size={14} color="#fff" />}
+                  </View>
                 </Pressable>
               );
             })}
 
+            <View style={styles.scheduleNote}>
+              <MaterialIcons name="info-outline" size={13} color={Colors.textMuted} />
+              <Text style={styles.scheduleNoteText}>
+                Each platform posts at its own peak time. Auto-posting requires the app to be open at the scheduled time.
+              </Text>
+            </View>
+
             <Pressable
-              style={[styles.tiktokPublishBtn, { backgroundColor: SCHEDULE_CONFIG[schedulePlatform].color, marginTop: Spacing.md }]}
-              onPress={() => confirmSchedule(schedulePlatform)}
+              style={[styles.tiktokPublishBtn, { backgroundColor: Colors.primary, marginTop: Spacing.sm }]}
+              onPress={confirmSchedule}
             >
               <MaterialIcons name="schedule" size={18} color="#fff" />
               <Text style={styles.tiktokPublishBtnText}>
-                Schedule for {SCHEDULE_CONFIG[schedulePlatform].label}
+                Schedule {scheduledPlatforms.size} Platform{scheduledPlatforms.size !== 1 ? 's' : ''}
               </Text>
             </Pressable>
           </View>
@@ -2098,8 +2131,18 @@ const styles = StyleSheet.create({
   scheduleLabel: { fontSize: FontSize.sm, fontWeight: FontWeight.semibold, color: Colors.textPrimary, includeFontPadding: false },
   scheduleSlot: { fontSize: FontSize.xs, fontWeight: FontWeight.medium, includeFontPadding: false, marginTop: 2 },
   schedulePeak: { fontSize: 10, color: Colors.textMuted, includeFontPadding: false, marginTop: 1 },
-  scheduleRadio: {
-    width: 22, height: 22, borderRadius: 11,
+  scheduleCheckbox: {
+    width: 22, height: 22, borderRadius: 5,
     borderWidth: 2, borderColor: Colors.surfaceBorder,
+    alignItems: 'center', justifyContent: 'center',
+  },
+  scheduleNote: {
+    flexDirection: 'row', alignItems: 'flex-start', gap: 6,
+    backgroundColor: Colors.surface, borderRadius: Radius.md,
+    padding: Spacing.sm, borderWidth: 1, borderColor: Colors.surfaceBorder,
+  },
+  scheduleNoteText: {
+    fontSize: FontSize.xs, color: Colors.textMuted, flex: 1,
+    lineHeight: 16, includeFontPadding: false,
   },
 });

@@ -319,9 +319,11 @@ export default function ScheduleScreen() {
                 <View style={styles.videoMeta}>
                   <MaterialIcons name="schedule" size={11} color={Colors.amber} />
                   <Text style={styles.videoDate}>
-                    {v.scheduledAt ? new Date(v.scheduledAt).toLocaleDateString('en', {
-                      month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit',
-                    }) : ''}
+                    {v.platformSchedules
+                      ? Object.entries(v.platformSchedules)
+                          .map(([p, t]) => `${p.charAt(0).toUpperCase() + p.slice(1)}: ${new Date(t).toLocaleDateString('en', { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' })}`)
+                          .join('  ·  ')
+                      : v.scheduledAt ? new Date(v.scheduledAt).toLocaleDateString('en', { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' }) : ''}
                   </Text>
                 </View>
                 <View style={styles.platforms}>
