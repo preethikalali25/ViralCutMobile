@@ -1,6 +1,6 @@
 import { corsHeaders } from '../_shared/cors.ts';
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
-import postgres from 'https://deno.land/x/postgres@v0.17.0/mod.ts';
+import { Client } from 'https://deno.land/x/postgres@v0.17.0/mod.ts';
 
 const GOOGLE_TOKEN_URL = 'https://oauth2.googleapis.com/token';
 const YOUTUBE_UPLOAD_URL = 'https://www.googleapis.com/upload/youtube/v3/videos';
@@ -84,7 +84,7 @@ Deno.serve(async (req) => {
           { status: 500, headers: { ...corsHeaders, 'Content-Type': 'application/json' } },
         );
       }
-      const client = new postgres.Client(dbUrl);
+      const client = new Client(dbUrl);
       await client.connect();
       await client.queryObject(`
         CREATE TABLE IF NOT EXISTS public.youtube_tokens (
