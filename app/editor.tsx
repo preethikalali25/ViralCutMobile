@@ -622,7 +622,14 @@ export default function EditorScreen() {
     if (!user?.id) { showAlert('Not logged in', 'Please sign in first.'); return; }
 
     youtube.setPublishState({ phase: 'burning' });
-    const { outputUri } = await burnOverlayLocally(video.videoUri, snap.hook?.text ?? '');
+    let outputUri: string;
+    try {
+      const burned = await burnOverlayLocally(video.videoUri, snap.hook?.text ?? '');
+      outputUri = burned.outputUri;
+    } catch (err) {
+      youtube.setPublishState({ phase: 'error', errorMessage: `Burn failed: ${String(err)}` });
+      return;
+    }
 
     const FS = await import('expo-file-system');
     const info = await FS.getInfoAsync(outputUri, { size: true });

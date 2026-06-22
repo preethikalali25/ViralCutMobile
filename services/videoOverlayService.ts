@@ -39,13 +39,17 @@ export async function burnHookOverlay(
   }
 
   try {
-    const outputUri: string = await VideoTextOverlay.burnText(
+    const burnPromise = VideoTextOverlay.burnText(
       videoUri,
       hookText.trim(),
       backgroundAudioUri ?? '',
       originalVolume ?? 0.6,
       bgVolume ?? 0.8,
+    ) as Promise<string>;
+    const timeoutPromise = new Promise<string>((_, reject) =>
+      setTimeout(() => reject(new Error('burn timeout after 90s')), 90_000),
     );
+    const outputUri = await Promise.race([burnPromise, timeoutPromise]);
     return { outputUri };
   } catch (e: any) {
     console.warn('[burnHookOverlay] Native overlay failed, using original:', e?.message);
