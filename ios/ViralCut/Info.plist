@@ -51,9 +51,11 @@
 		<true/>
 	</dict>
 	<key>NSCalendarsFullAccessUsageDescription</key>
-	<string>This app needs access to your calendar.</string>
+	<string>ViralCut uses calendar access to schedule your video posts at the right time.</string>
 	<key>NSCalendarsUsageDescription</key>
-	<string>This app needs access to your calendar.</string>
+	<string>ViralCut uses calendar access to schedule your video posts at the right time.</string>
+	<key>NSContactsUsageDescription</key>
+	<string>ViralCut uses your contacts to help you tag and share videos with people you know.</string>
 	<key>NSCameraUsageDescription</key>
 	<string>ViralCut needs access to your camera to record videos directly.</string>
 	<key>NSMicrophoneUsageDescription</key>
@@ -63,7 +65,7 @@
 	<key>NSPhotoLibraryAddUsageDescription</key>
 	<string>ViralCut needs permission to save your edited video before opening Instagram.</string>
 	<key>NSRemindersFullAccessUsageDescription</key>
-	<string>This app needs access to your reminders.</string>
+	<string>ViralCut uses reminders to notify you when it's time to post your scheduled videos.</string>
 	<key>NSUserActivityTypes</key>
 	<array>
 		<string>$(PRODUCT_BUNDLE_IDENTIFIER).expo.index_route</string>
