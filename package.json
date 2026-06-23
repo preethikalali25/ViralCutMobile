@@ -5,7 +5,10 @@
       "protobufjs",
       "react-native-elements",
       "unrs-resolver"
-    ]
+    ],
+    "overrides": {
+      "ajv": "^8.0.0"
+    }
   },
   "main": "expo-router/entry",
   "version": "1.0.0",
