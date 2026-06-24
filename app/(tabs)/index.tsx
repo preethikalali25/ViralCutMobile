@@ -9,6 +9,7 @@ import { useRouter } from 'expo-router';
 import { Colors, Spacing, Radius, FontSize, FontWeight } from '@/constants/theme';
 import { useAuth } from '@/template';
 import { useVideos } from '@/hooks/useVideos';
+import { useAnalytics } from '@/hooks/useAnalytics';
 import { formatNumber, getRelativeTime } from '@/services/formatters';
 import PlatformBadge from '@/components/ui/PlatformBadge';
 import StatsCard from '@/components/ui/StatsCard';
@@ -26,20 +27,27 @@ export default function DashboardScreen() {
   const { videos } = useVideos();
   const initials = user?.email ? getInitials(user.email) : 'U';
 
+  const { data: analytics } = useAnalytics();
+
   const published = videos.filter(v => v.status === 'published');
   const scheduled = videos.filter(v => v.status === 'scheduled');
   const ready = videos.filter(v => v.status === 'ready');
   const processing = videos.filter(v => v.status === 'processing' || v.status === 'uploading');
 
+  const hasRealAnalytics = !!analytics && analytics.platforms.some(p => p.connected && p.posts > 0);
+  const totalViews = hasRealAnalytics ? analytics!.totalViews : 0;
+  const totalLikes = hasRealAnalytics ? analytics!.totalLikes : 0;
+
   const publishedWithMetrics = published.filter(v => v.metrics);
-  const totalViews = publishedWithMetrics.reduce((s, v) => s + (v.metrics?.views ?? 0), 0);
   const avgRetention = publishedWithMetrics.length > 0
     ? Math.round(publishedWithMetrics.reduce((s, v) => s + (v.metrics?.retention ?? 0), 0) / publishedWithMetrics.length)
     : 0;
 
-  const recentPublished = [...publishedWithMetrics]
-    .sort((a, b) => new Date(b.publishedAt!).getTime() - new Date(a.publishedAt!).getTime())
-    .slice(0, 3);
+  const recentPublished = hasRealAnalytics
+    ? analytics!.topVideos.slice(0, 3)
+    : [...publishedWithMetrics]
+        .sort((a, b) => new Date(b.publishedAt!).getTime() - new Date(a.publishedAt!).getTime())
+        .slice(0, 3);
 
   return (
     <SafeAreaView style={styles.safe} edges={['top']}>
@@ -90,18 +98,18 @@ export default function DashboardScreen() {
         <View style={styles.statsGrid}>
           <View style={styles.statsRow}>
             <View style={{ flex: 1 }}>
-              <StatsCard label="Videos" value={String(published.length + ready.length)} change="+4 this week" changeType="up" accentColor={Colors.primary} />
+              <StatsCard label="Videos" value={String(published.length + ready.length)} change={`${scheduled.length} scheduled`} changeType="neutral" accentColor={Colors.primary} />
             </View>
             <View style={{ flex: 1 }}>
-              <StatsCard label="Scheduled" value={String(scheduled.length)} change="Next: Tomorrow" changeType="neutral" accentColor={Colors.amber} />
+              <StatsCard label="Total Views" value={formatNumber(totalViews)} change={hasRealAnalytics ? 'Live data' : 'Connect platforms'} changeType={hasRealAnalytics ? 'up' : 'neutral'} accentColor={Colors.sky} />
             </View>
           </View>
           <View style={styles.statsRow}>
             <View style={{ flex: 1 }}>
-              <StatsCard label="Total Views" value={formatNumber(totalViews)} change="+28% vs last week" changeType="up" accentColor={Colors.sky} />
+              <StatsCard label="Total Likes" value={formatNumber(totalLikes)} change={hasRealAnalytics ? 'Across platforms' : 'Connect platforms'} changeType={hasRealAnalytics ? 'up' : 'neutral'} accentColor={Colors.pink} />
             </View>
             <View style={{ flex: 1 }}>
-              <StatsCard label="Avg. Retention" value={`${avgRetention}%`} change="+3.2% vs last week" changeType="up" accentColor={Colors.emerald} />
+              <StatsCard label="Avg. Retention" value={avgRetention > 0 ? `${avgRetention}%` : '--'} change={avgRetention > 0 ? 'From local data' : 'No data yet'} changeType={avgRetention > 0 ? 'up' : 'neutral'} accentColor={Colors.emerald} />
             </View>
           </View>
         </View>
@@ -148,26 +156,56 @@ export default function DashboardScreen() {
           </Pressable>
         </View>
         <View style={styles.performersList}>
-          {recentPublished.map((v, i) => (
-            <Pressable
-              key={v.id}
-              style={({ pressed }) => [styles.performerRow, pressed && { opacity: 0.8 }]}
-              onPress={() => router.push({ pathname: '/editor', params: { id: v.id } })}
-            >
-              <Text style={styles.rank}>#{i + 1}</Text>
-              <Image source={{ uri: v.thumbnail }} style={styles.performerThumb} contentFit="cover" transition={200} />
-              <View style={styles.performerInfo}>
-                <Text style={styles.performerTitle} numberOfLines={1}>{v.title}</Text>
-                <View style={styles.performerMeta}>
-                  <MaterialIcons name="visibility" size={11} color={Colors.textMuted} />
-                  <Text style={styles.performerViews}>{formatNumber(v.metrics!.views)}</Text>
-                  <MaterialIcons name="trending-up" size={11} color={Colors.emerald} />
-                  <Text style={styles.performerRetention}>{v.metrics!.retention}%</Text>
+          {recentPublished.length === 0 ? (
+            <View style={styles.emptyUpcoming}>
+              <MaterialIcons name="bar-chart" size={32} color={Colors.textMuted} />
+              <Text style={styles.emptyText}>No published videos yet</Text>
+            </View>
+          ) : recentPublished.map((v, i) => {
+            const views = 'metrics' in v ? (v as any).metrics?.views ?? 0 : (v as any).views ?? 0;
+            const likes = 'metrics' in v ? (v as any).metrics?.likes ?? 0 : (v as any).likes ?? 0;
+            const retention = 'metrics' in v ? (v as any).metrics?.retention : undefined;
+            const platform = 'platform' in v ? (v as any).platform : undefined;
+            return (
+              <View
+                key={`${(v as any).platform ?? ''}-${v.id}`}
+                style={styles.performerRow}
+              >
+                <Text style={styles.rank}>#{i + 1}</Text>
+                {v.thumbnail ? (
+                  <Image source={{ uri: v.thumbnail }} style={styles.performerThumb} contentFit="cover" transition={200} />
+                ) : (
+                  <View style={[styles.performerThumb, { backgroundColor: Colors.surfaceBorder, borderRadius: Radius.sm, alignItems: 'center', justifyContent: 'center' }]}>
+                    <MaterialIcons name="play-circle-outline" size={18} color={Colors.textMuted} />
+                  </View>
+                )}
+                <View style={styles.performerInfo}>
+                  <Text style={styles.performerTitle} numberOfLines={1}>{v.title}</Text>
+                  <View style={styles.performerMeta}>
+                    {platform && <PlatformBadge platform={platform} size="sm" />}
+                    {views > 0 && (
+                      <>
+                        <MaterialIcons name="visibility" size={11} color={Colors.textMuted} />
+                        <Text style={styles.performerViews}>{formatNumber(views)}</Text>
+                      </>
+                    )}
+                    {likes > 0 && (
+                      <>
+                        <MaterialIcons name="favorite" size={11} color={Colors.pink} />
+                        <Text style={styles.performerViews}>{formatNumber(likes)}</Text>
+                      </>
+                    )}
+                    {retention !== undefined && (
+                      <>
+                        <MaterialIcons name="trending-up" size={11} color={Colors.emerald} />
+                        <Text style={styles.performerRetention}>{retention}%</Text>
+                      </>
+                    )}
+                  </View>
                 </View>
               </View>
-              <MaterialIcons name="chevron-right" size={18} color={Colors.textMuted} />
-            </Pressable>
-          ))}
+            );
+          })}
         </View>
 
         <View style={{ height: Spacing.xl }} />
