@@ -11,20 +11,18 @@ import { useAuth, useAlert } from '@/template';
 import { getSharedSupabaseClient } from '@/template/core/client';
 import { Colors, Spacing, Radius, FontSize, FontWeight } from '@/constants/theme';
 
-type Mode = 'landing' | 'email-login' | 'email-signup' | 'otp';
+type Mode = 'landing' | 'email' | 'otp';
 
 export default function LoginScreen() {
-  const { signInWithGoogle, signInWithPassword, sendOTP, verifyOTPAndLogin, operationLoading } = useAuth();
+  const { signInWithGoogle, operationLoading } = useAuth();
   const { showAlert } = useAlert();
 
   const [mode, setMode] = useState<Mode>('landing');
   const [email, setEmail] = useState('');
-  const [password, setPassword] = useState('');
-  const [confirmPassword, setConfirmPassword] = useState('');
   const [otp, setOtp] = useState('');
-  const [pendingEmail, setPendingEmail] = useState('');
-  const [pendingPassword, setPendingPassword] = useState('');
-  const [showPass, setShowPass] = useState(false);
+  const [loading, setLoading] = useState(false);
+
+  const isBusy = operationLoading || loading;
 
   const handleGoogle = async () => {
     const { error } = await signInWithGoogle();
@@ -39,6 +37,7 @@ export default function LoginScreen() {
           AppleAuthentication.AppleAuthenticationScope.EMAIL,
         ],
       });
+      setLoading(true);
       const supabase = getSharedSupabaseClient();
       const { error } = await supabase.auth.signInWithIdToken({
         provider: 'apple',
@@ -49,49 +48,51 @@ export default function LoginScreen() {
       if (e?.code !== 'ERR_REQUEST_CANCELED') {
         showAlert('Apple Sign-In Failed', e?.message ?? 'Unknown error');
       }
+    } finally {
+      setLoading(false);
     }
-  };
-
-  const handleEmailLogin = async () => {
-    if (!email.trim() || !password) {
-      showAlert('Missing Fields', 'Please enter your email and password.');
-      return;
-    }
-    const { error } = await signInWithPassword(email.trim(), password);
-    if (error) showAlert('Login Failed', error);
   };
 
   const handleSendOTP = async () => {
     if (!email.trim()) {
-      showAlert('Missing Email', 'Please enter your email address.');
+      showAlert('Enter Email', 'Please enter your email address.');
       return;
     }
-    if (!password || password.length < 6) {
-      showAlert('Weak Password', 'Password must be at least 6 characters.');
-      return;
+    setLoading(true);
+    try {
+      const supabase = getSharedSupabaseClient();
+      const { error } = await supabase.auth.signInWithOtp({
+        email: email.trim(),
+        options: { shouldCreateUser: true },
+      });
+      if (error) {
+        showAlert('Failed to Send Code', error.message);
+      } else {
+        setOtp('');
+        setMode('otp');
+      }
+    } finally {
+      setLoading(false);
     }
-    if (password !== confirmPassword) {
-      showAlert('Password Mismatch', 'Passwords do not match.');
-      return;
-    }
-    const { error } = await sendOTP(email.trim());
-    if (error) {
-      showAlert('Failed to Send OTP', error);
-      return;
-    }
-    setPendingEmail(email.trim());
-    setPendingPassword(password);
-    setMode('otp');
-    showAlert('Check Your Email', 'A verification code has been sent to your email.');
   };
 
   const handleVerifyOTP = async () => {
     if (!otp.trim()) {
-      showAlert('Enter Code', 'Please enter the verification code.');
+      showAlert('Enter Code', 'Please enter the verification code from your email.');
       return;
     }
-    const { error } = await verifyOTPAndLogin(pendingEmail, otp.trim(), { password: pendingPassword });
-    if (error) showAlert('Verification Failed', error);
+    setLoading(true);
+    try {
+      const supabase = getSharedSupabaseClient();
+      const { error } = await supabase.auth.verifyOtp({
+        email: email.trim(),
+        token: otp.trim(),
+        type: 'email',
+      });
+      if (error) showAlert('Verification Failed', error.message);
+    } finally {
+      setLoading(false);
+    }
   };
 
   return (
@@ -99,7 +100,7 @@ export default function LoginScreen() {
       <KeyboardAvoidingView style={{ flex: 1 }} behavior={Platform.OS === 'ios' ? 'padding' : 'height'}>
         <ScrollView contentContainerStyle={styles.scrollContent} showsVerticalScrollIndicator={false} keyboardShouldPersistTaps="handled">
 
-          {/* Hero Image */}
+          {/* Hero */}
           <View style={styles.heroWrapper}>
             <Image
               source={require('@/assets/images/login-bg.png')}
@@ -117,11 +118,11 @@ export default function LoginScreen() {
           {/* Card */}
           <View style={styles.card}>
 
-            {/* Landing */}
-            {mode === 'landing' ? (
+            {/* ── Landing ── */}
+            {mode === 'landing' && (
               <>
                 <Text style={styles.cardTitle}>Get Started</Text>
-                <Text style={styles.cardSub}>Sign in to manage your videos</Text>
+                <Text style={styles.cardSub}>Sign in or create an account</Text>
 
                 {/* Apple */}
                 <AppleAuthentication.AppleAuthenticationButton
@@ -134,16 +135,16 @@ export default function LoginScreen() {
 
                 {/* Google */}
                 <Pressable
-                  style={({ pressed }) => [styles.googleBtn, pressed && { opacity: 0.85 }]}
+                  style={({ pressed }) => [styles.socialBtn, pressed && { opacity: 0.85 }]}
                   onPress={handleGoogle}
-                  disabled={operationLoading}
+                  disabled={isBusy}
                 >
-                  {operationLoading ? (
+                  {isBusy ? (
                     <ActivityIndicator color={Colors.textPrimary} size="small" />
                   ) : (
                     <>
                       <MaterialCommunityIcons name="google" size={20} color="#EA4335" />
-                      <Text style={styles.googleBtnText}>Continue with Google</Text>
+                      <Text style={styles.socialBtnText}>Continue with Google</Text>
                     </>
                   )}
                 </Pressable>
@@ -155,32 +156,29 @@ export default function LoginScreen() {
                   <View style={styles.dividerLine} />
                 </View>
 
-                {/* Email options */}
+                {/* Email OTP */}
                 <Pressable
                   style={({ pressed }) => [styles.emailBtn, pressed && { opacity: 0.85 }]}
-                  onPress={() => setMode('email-login')}
+                  onPress={() => setMode('email')}
                 >
                   <MaterialIcons name="email" size={18} color={Colors.textSecondary} />
                   <Text style={styles.emailBtnText}>Continue with Email</Text>
                 </Pressable>
-
-                <Pressable onPress={() => setMode('email-signup')}>
-                  <Text style={styles.switchText}>
-                    New here? <Text style={styles.switchLink}>Create an account</Text>
-                  </Text>
-                </Pressable>
               </>
-            ) : null}
+            )}
 
-            {/* Email Login */}
-            {mode === 'email-login' ? (
+            {/* ── Email entry ── */}
+            {mode === 'email' && (
               <>
                 <Pressable style={styles.backRow} onPress={() => setMode('landing')}>
                   <MaterialIcons name="arrow-back" size={16} color={Colors.textSecondary} />
                   <Text style={styles.backText}>Back</Text>
                 </Pressable>
-                <Text style={styles.cardTitle}>Welcome Back</Text>
-                <Text style={styles.cardSub}>Sign in with your email</Text>
+
+                <Text style={styles.cardTitle}>Enter Your Email</Text>
+                <Text style={styles.cardSub}>
+                  We'll send a 6-digit code to sign you in or create your account — no password needed.
+                </Text>
 
                 <View style={styles.inputGroup}>
                   <Text style={styles.inputLabel}>Email</Text>
@@ -193,130 +191,34 @@ export default function LoginScreen() {
                     keyboardType="email-address"
                     autoCapitalize="none"
                     autoComplete="email"
-                  />
-                </View>
-
-                <View style={styles.inputGroup}>
-                  <Text style={styles.inputLabel}>Password</Text>
-                  <View style={styles.inputRow}>
-                    <TextInput
-                      style={[styles.input, { flex: 1, borderWidth: 0, padding: 0 }]}
-                      value={password}
-                      onChangeText={setPassword}
-                      placeholder="••••••••"
-                      placeholderTextColor={Colors.textMuted}
-                      secureTextEntry={!showPass}
-                      autoComplete="password"
-                    />
-                    <Pressable onPress={() => setShowPass(p => !p)} hitSlop={8}>
-                      <MaterialIcons name={showPass ? 'visibility-off' : 'visibility'} size={18} color={Colors.textMuted} />
-                    </Pressable>
-                  </View>
-                </View>
-
-                <Pressable
-                  style={({ pressed }) => [styles.primaryBtn, pressed && { opacity: 0.85 }]}
-                  onPress={handleEmailLogin}
-                  disabled={operationLoading}
-                >
-                  {operationLoading ? (
-                    <ActivityIndicator color="#fff" size="small" />
-                  ) : (
-                    <Text style={styles.primaryBtnText}>Sign In</Text>
-                  )}
-                </Pressable>
-
-                <Pressable onPress={() => setMode('email-signup')}>
-                  <Text style={styles.switchText}>
-                    No account? <Text style={styles.switchLink}>Sign up</Text>
-                  </Text>
-                </Pressable>
-              </>
-            ) : null}
-
-            {/* Email Sign Up */}
-            {mode === 'email-signup' ? (
-              <>
-                <Pressable style={styles.backRow} onPress={() => setMode('landing')}>
-                  <MaterialIcons name="arrow-back" size={16} color={Colors.textSecondary} />
-                  <Text style={styles.backText}>Back</Text>
-                </Pressable>
-                <Text style={styles.cardTitle}>Create Account</Text>
-                <Text style={styles.cardSub}>Join thousands of creators</Text>
-
-                <View style={styles.inputGroup}>
-                  <Text style={styles.inputLabel}>Email</Text>
-                  <TextInput
-                    style={styles.input}
-                    value={email}
-                    onChangeText={setEmail}
-                    placeholder="you@example.com"
-                    placeholderTextColor={Colors.textMuted}
-                    keyboardType="email-address"
-                    autoCapitalize="none"
-                    autoComplete="email"
-                  />
-                </View>
-
-                <View style={styles.inputGroup}>
-                  <Text style={styles.inputLabel}>Password</Text>
-                  <View style={styles.inputRow}>
-                    <TextInput
-                      style={[styles.input, { flex: 1, borderWidth: 0, padding: 0 }]}
-                      value={password}
-                      onChangeText={setPassword}
-                      placeholder="Min 6 characters"
-                      placeholderTextColor={Colors.textMuted}
-                      secureTextEntry={!showPass}
-                    />
-                    <Pressable onPress={() => setShowPass(p => !p)} hitSlop={8}>
-                      <MaterialIcons name={showPass ? 'visibility-off' : 'visibility'} size={18} color={Colors.textMuted} />
-                    </Pressable>
-                  </View>
-                </View>
-
-                <View style={styles.inputGroup}>
-                  <Text style={styles.inputLabel}>Confirm Password</Text>
-                  <TextInput
-                    style={styles.input}
-                    value={confirmPassword}
-                    onChangeText={setConfirmPassword}
-                    placeholder="Re-enter password"
-                    placeholderTextColor={Colors.textMuted}
-                    secureTextEntry
+                    autoFocus
                   />
                 </View>
 
                 <Pressable
                   style={({ pressed }) => [styles.primaryBtn, pressed && { opacity: 0.85 }]}
                   onPress={handleSendOTP}
-                  disabled={operationLoading}
+                  disabled={isBusy}
                 >
-                  {operationLoading ? (
+                  {isBusy ? (
                     <ActivityIndicator color="#fff" size="small" />
                   ) : (
-                    <Text style={styles.primaryBtnText}>Send Verification Code</Text>
+                    <Text style={styles.primaryBtnText}>Send Code</Text>
                   )}
                 </Pressable>
-
-                <Pressable onPress={() => setMode('email-login')}>
-                  <Text style={styles.switchText}>
-                    Have an account? <Text style={styles.switchLink}>Sign in</Text>
-                  </Text>
-                </Pressable>
               </>
-            ) : null}
+            )}
 
-            {/* OTP Verification */}
-            {mode === 'otp' ? (
+            {/* ── OTP verify ── */}
+            {mode === 'otp' && (
               <>
                 <View style={styles.otpIcon}>
                   <MaterialIcons name="mark-email-read" size={32} color={Colors.primaryLight} />
                 </View>
                 <Text style={styles.cardTitle}>Check Your Email</Text>
                 <Text style={styles.cardSub}>
-                  We sent a code to{'\n'}
-                  <Text style={{ color: Colors.primaryLight }}>{pendingEmail}</Text>
+                  We sent a 6-digit code to{'\n'}
+                  <Text style={{ color: Colors.primaryLight }}>{email}</Text>
                 </Text>
 
                 <View style={styles.inputGroup}>
@@ -325,49 +227,45 @@ export default function LoginScreen() {
                     style={[styles.input, styles.otpInput]}
                     value={otp}
                     onChangeText={setOtp}
-                    placeholder="Enter 4-digit code"
+                    placeholder="••••••"
                     placeholderTextColor={Colors.textMuted}
                     keyboardType="number-pad"
-                    maxLength={4}
+                    maxLength={6}
+                    autoFocus
                   />
                 </View>
 
                 <Pressable
                   style={({ pressed }) => [styles.primaryBtn, pressed && { opacity: 0.85 }]}
                   onPress={handleVerifyOTP}
-                  disabled={operationLoading}
+                  disabled={isBusy}
                 >
-                  {operationLoading ? (
+                  {isBusy ? (
                     <ActivityIndicator color="#fff" size="small" />
                   ) : (
-                    <Text style={styles.primaryBtnText}>Verify & Create Account</Text>
+                    <Text style={styles.primaryBtnText}>Verify & Continue</Text>
                   )}
                 </Pressable>
 
                 <Pressable
-                  onPress={async () => {
-                    const { error } = await sendOTP(pendingEmail);
-                    if (!error) showAlert('Code Resent', 'A new verification code has been sent.');
-                    else showAlert('Failed', error);
-                  }}
-                  disabled={operationLoading}
+                  onPress={handleSendOTP}
+                  disabled={isBusy}
                 >
                   <Text style={styles.switchText}>
                     Didn't get it? <Text style={styles.switchLink}>Resend code</Text>
                   </Text>
                 </Pressable>
 
-                <Pressable style={{ marginTop: 4 }} onPress={() => setMode('email-signup')}>
+                <Pressable onPress={() => setMode('email')}>
                   <Text style={styles.switchText}>
                     <Text style={styles.switchLink}>← Change email</Text>
                   </Text>
                 </Pressable>
               </>
-            ) : null}
+            )}
 
           </View>
 
-          {/* Footer */}
           <Text style={styles.footer}>
             By continuing you agree to our Terms & Privacy Policy
           </Text>
@@ -395,7 +293,6 @@ const styles = StyleSheet.create({
   },
   heroOverlay: {
     position: 'absolute',
-    inset: 0,
     top: 0, left: 0, right: 0, bottom: 0,
     alignItems: 'center',
     justifyContent: 'center',
@@ -441,7 +338,7 @@ const styles = StyleSheet.create({
     height: 50,
     borderRadius: 50,
   },
-  googleBtn: {
+  socialBtn: {
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'center',
@@ -453,7 +350,7 @@ const styles = StyleSheet.create({
     borderColor: Colors.surfaceBorder,
     minHeight: 50,
   },
-  googleBtnText: {
+  socialBtnText: {
     fontSize: FontSize.md,
     fontWeight: FontWeight.semibold,
     color: Colors.textPrimary,
@@ -492,16 +389,6 @@ const styles = StyleSheet.create({
     color: Colors.textSecondary,
     includeFontPadding: false,
   },
-  switchText: {
-    textAlign: 'center',
-    fontSize: FontSize.sm,
-    color: Colors.textSecondary,
-    includeFontPadding: false,
-  },
-  switchLink: {
-    color: Colors.primaryLight,
-    fontWeight: FontWeight.semibold,
-  },
   backRow: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -533,17 +420,6 @@ const styles = StyleSheet.create({
     minHeight: 48,
     includeFontPadding: false,
   },
-  inputRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    backgroundColor: Colors.surface,
-    borderRadius: Radius.md,
-    borderWidth: 1,
-    borderColor: Colors.surfaceBorder,
-    paddingHorizontal: Spacing.sm + 4,
-    minHeight: 48,
-    gap: 8,
-  },
   primaryBtn: {
     backgroundColor: Colors.primary,
     borderRadius: Radius.full,
@@ -574,6 +450,16 @@ const styles = StyleSheet.create({
     fontSize: FontSize.xxl,
     fontWeight: FontWeight.bold,
     letterSpacing: 8,
+  },
+  switchText: {
+    textAlign: 'center',
+    fontSize: FontSize.sm,
+    color: Colors.textSecondary,
+    includeFontPadding: false,
+  },
+  switchLink: {
+    color: Colors.primaryLight,
+    fontWeight: FontWeight.semibold,
   },
   footer: {
     textAlign: 'center',
