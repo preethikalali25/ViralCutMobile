@@ -6,7 +6,9 @@ import {
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Image } from 'expo-image';
 import { MaterialIcons, MaterialCommunityIcons } from '@expo/vector-icons';
+import * as AppleAuthentication from 'expo-apple-authentication';
 import { useAuth, useAlert } from '@/template';
+import { getSharedSupabaseClient } from '@/template/core/client';
 import { Colors, Spacing, Radius, FontSize, FontWeight } from '@/constants/theme';
 
 type Mode = 'landing' | 'email-login' | 'email-signup' | 'otp';
@@ -27,6 +29,27 @@ export default function LoginScreen() {
   const handleGoogle = async () => {
     const { error } = await signInWithGoogle();
     if (error) showAlert('Google Sign-In Failed', error);
+  };
+
+  const handleApple = async () => {
+    try {
+      const credential = await AppleAuthentication.signInAsync({
+        requestedScopes: [
+          AppleAuthentication.AppleAuthenticationScope.FULL_NAME,
+          AppleAuthentication.AppleAuthenticationScope.EMAIL,
+        ],
+      });
+      const supabase = getSharedSupabaseClient();
+      const { error } = await supabase.auth.signInWithIdToken({
+        provider: 'apple',
+        token: credential.identityToken!,
+      });
+      if (error) showAlert('Apple Sign-In Failed', error.message);
+    } catch (e: any) {
+      if (e?.code !== 'ERR_REQUEST_CANCELED') {
+        showAlert('Apple Sign-In Failed', e?.message ?? 'Unknown error');
+      }
+    }
   };
 
   const handleEmailLogin = async () => {
@@ -99,6 +122,15 @@ export default function LoginScreen() {
               <>
                 <Text style={styles.cardTitle}>Get Started</Text>
                 <Text style={styles.cardSub}>Sign in to manage your videos</Text>
+
+                {/* Apple */}
+                <AppleAuthentication.AppleAuthenticationButton
+                  buttonType={AppleAuthentication.AppleAuthenticationButtonType.SIGN_IN}
+                  buttonStyle={AppleAuthentication.AppleAuthenticationButtonStyle.WHITE}
+                  cornerRadius={50}
+                  style={styles.appleBtn}
+                  onPress={handleApple}
+                />
 
                 {/* Google */}
                 <Pressable
@@ -403,6 +435,11 @@ const styles = StyleSheet.create({
     lineHeight: 20,
     includeFontPadding: false,
     marginTop: -Spacing.sm,
+  },
+  appleBtn: {
+    width: '100%',
+    height: 50,
+    borderRadius: 50,
   },
   googleBtn: {
     flexDirection: 'row',
