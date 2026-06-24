@@ -74,7 +74,7 @@ Deno.serve(async (req) => {
       const params = new URLSearchParams({
         client_key: clientKey,
         response_type: 'code',
-        scope: 'user.info.basic,video.publish,video.upload',
+        scope: 'user.info.basic,video.publish,video.upload,video.list',
         redirect_uri: redirectUri,
         state,
         code_challenge: codeChallenge,
@@ -393,7 +393,83 @@ Deno.serve(async (req) => {
       );
     }
 
-    // ─── 7. Check publish status ──────────────────────────────────────────────
+    // ─── 7. Get analytics ─────────────────────────────────────────────────────
+    if (action === 'get_analytics') {
+      const { userId } = body as { userId: string };
+
+      const { data: tokenRow } = await supabase
+        .from('tiktok_tokens')
+        .select('access_token, expires_at, creator_name, scope')
+        .eq('user_id', userId)
+        .maybeSingle();
+
+      if (!tokenRow) {
+        return new Response(
+          JSON.stringify({ error: 'TikTok not connected' }),
+          { status: 401, headers: { ...corsHeaders, 'Content-Type': 'application/json' } },
+        );
+      }
+
+      if (new Date(tokenRow.expires_at as string) < new Date()) {
+        return new Response(
+          JSON.stringify({ error: 'TikTok token expired' }),
+          { status: 401, headers: { ...corsHeaders, 'Content-Type': 'application/json' } },
+        );
+      }
+
+      const scope = (tokenRow.scope ?? '') as string;
+      if (!scope.includes('video.list')) {
+        return new Response(
+          JSON.stringify({ error: 'Reconnect TikTok to enable analytics', needsReconnect: true }),
+          { status: 403, headers: { ...corsHeaders, 'Content-Type': 'application/json' } },
+        );
+      }
+
+      try {
+        const listRes = await fetch(
+          'https://open.tiktokapis.com/v2/video/list/?fields=id,title,cover_image_url,create_time,like_count,comment_count,share_count,view_count',
+          {
+            method: 'POST',
+            headers: {
+              Authorization: `Bearer ${tokenRow.access_token}`,
+              'Content-Type': 'application/json; charset=UTF-8',
+            },
+            body: JSON.stringify({ max_count: 20 }),
+          },
+        );
+
+        const listData = await listRes.json();
+        const videos = ((listData.data?.videos ?? []) as Record<string, unknown>[]).map((v) => ({
+          id: v.id as string,
+          title: (v.title ?? '') as string,
+          thumbnail: (v.cover_image_url ?? '') as string,
+          publishedAt: new Date((v.create_time as number) * 1000).toISOString(),
+          views: (v.view_count ?? 0) as number,
+          likes: (v.like_count ?? 0) as number,
+          shares: (v.share_count ?? 0) as number,
+          comments: (v.comment_count ?? 0) as number,
+        }));
+
+        return new Response(
+          JSON.stringify({
+            creatorName: tokenRow.creator_name,
+            posts: videos.length,
+            totalViews: videos.reduce((s, v) => s + v.views, 0),
+            totalLikes: videos.reduce((s, v) => s + v.likes, 0),
+            totalShares: videos.reduce((s, v) => s + v.shares, 0),
+            videos,
+          }),
+          { headers: { ...corsHeaders, 'Content-Type': 'application/json' } },
+        );
+      } catch (e) {
+        return new Response(
+          JSON.stringify({ error: `TikTok API error: ${String(e)}` }),
+          { status: 502, headers: { ...corsHeaders, 'Content-Type': 'application/json' } },
+        );
+      }
+    }
+
+    // ─── 8. Check publish status ──────────────────────────────────────────────
     if (action === 'publish_status') {
       const { userId, publishId } = body as { userId: string; publishId: string };
 
