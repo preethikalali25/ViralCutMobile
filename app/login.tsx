@@ -186,7 +186,7 @@ export default function LoginScreen() {
 
                 <Text style={styles.cardTitle}>Enter Your Email</Text>
                 <Text style={styles.cardSub}>
-                  We'll send a 6-digit code to sign you in or create your account — no password needed.
+                  We'll send a 4-digit code to sign you in or create your account — no password needed.
                 </Text>
 
                 <View style={styles.inputGroup}>
@@ -226,7 +226,7 @@ export default function LoginScreen() {
                 </View>
                 <Text style={styles.cardTitle}>Check Your Email</Text>
                 <Text style={styles.cardSub}>
-                  We sent a 6-digit code to{'\n'}
+                  We sent a 4-digit code to{'\n'}
                   <Text style={{ color: Colors.primaryLight }}>{email}</Text>
                 </Text>
 
@@ -236,10 +236,10 @@ export default function LoginScreen() {
                     style={[styles.input, styles.otpInput]}
                     value={otp}
                     onChangeText={setOtp}
-                    placeholder="••••••"
+                    placeholder="••••"
                     placeholderTextColor={Colors.textMuted}
                     keyboardType="number-pad"
-                    maxLength={6}
+                    maxLength={4}
                     autoFocus
                   />
                 </View>
