@@ -22,4 +22,7 @@ config.resolver.resolveRequest = (context, moduleName, platform) => {
   return context.resolveRequest(context, moduleName, platform);
 };
 
+// Ensure the server/web bundler can find expo-modules-core
+config.resolver.unstable_enablePackageExports = false;
+
 module.exports = config;
