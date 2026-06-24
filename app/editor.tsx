@@ -20,11 +20,15 @@ import { formatDuration } from '@/services/formatters';
 import { FunctionsHttpError } from '@supabase/supabase-js';
 import { useTikTok } from '@/hooks/useTikTok';
 import { useInstagram } from '@/hooks/useInstagram';
-import { uploadVideoToStorage } from '@/services/tiktokService';
+import { useYouTube } from '@/hooks/useYouTube';
+import { uploadVideoToStorage, initTikTokPublish, uploadVideoToTikTok } from '@/services/tiktokService';
+import { initYouTubeUpload, uploadVideoToYouTube } from '@/services/youtubeService';
 import { burnHookOverlay, shareToInstagramReels } from '@/services/videoOverlayService';
 import { INSTAGRAM_APP_ID } from '@/constants/instagram';
 import { searchViralAudio, AudioSearchResult } from '@/services/audioSearchService';
+import { SCHEDULE_CONFIG, getNextBestSlot, formatSlot, type SchedulePlatform } from '@/constants/schedulingBestTimes';
 import * as FileSystem from 'expo-file-system';
+import * as Clipboard from 'expo-clipboard';
 import Slider from '@react-native-community/slider';
 
 type Tab = 'hook' | 'caption' | 'audio' | 'platforms';
@@ -161,12 +165,21 @@ export default function EditorScreen() {
   const [originalVolume, setOriginalVolume] = useState(0.6);
   const [bgVolume, setBgVolume] = useState(0.8);
 
+  const resolveAudioSource = (id: string) =>
+    aiPickedSong?.id === id
+      ? aiPickedSong
+      : searchResults.find(r => r.id === id) ?? MOCK_TRENDING_AUDIO.find(a => a.id === id);
+
   const [showPlayer, setShowPlayer] = useState(false);
   const [videoTitle, setVideoTitle] = useState('');
   const [generatingTitle, setGeneratingTitle] = useState(false);
   const [showTikTokSheet, setShowTikTokSheet] = useState(false);
   const [showInstagramSheet, setShowInstagramSheet] = useState(false);
+  const [showYouTubeSheet, setShowYouTubeSheet] = useState(false);
+  const [showScheduleSheet, setShowScheduleSheet] = useState(false);
+  const [scheduledPlatforms, setScheduledPlatforms] = useState<Set<SchedulePlatform>>(new Set(['instagram', 'tiktok', 'youtube']));
   const [tiktokPrivacy, setTiktokPrivacy] = useState('SELF_ONLY');
+  const [youtubePrivacy, setYoutubePrivacy] = useState('public');
   const [uploadingToStorage, setUploadingToStorage] = useState(false);
   const [uploadProgress, setUploadProgress] = useState(0);
   const [burningOverlay, setBurningOverlay] = useState(false);
@@ -220,6 +233,7 @@ export default function EditorScreen() {
   const frameCache = useRef<{ base64: string; mime: string } | null | 'pending'>('pending');
   const tiktok = useTikTok();
   const instagram = useInstagram();
+  const youtube = useYouTube();
 
   const videoPlayer = useVideoPlayer(
     { uri: video?.videoUri ?? '' },
@@ -301,11 +315,7 @@ export default function EditorScreen() {
   // below has actual audio to mix instead of just a title/artist label.
   useEffect(() => {
     if (!selectedAudioId || previewCache[selectedAudioId]) return;
-    const source: { title: string; artist: string } | undefined =
-      aiPickedSong?.id === selectedAudioId
-        ? aiPickedSong
-        : searchResults.find(r => r.id === selectedAudioId) ??
-          MOCK_TRENDING_AUDIO.find(a => a.id === selectedAudioId);
+    const source = resolveAudioSource(selectedAudioId);
     if (!source) return;
     let cancelled = false;
     (async () => {
@@ -335,6 +345,31 @@ export default function EditorScreen() {
     }
     const frame = frameCache.current !== 'pending' ? frameCache.current : null;
     return frame ? { videoFrameBase64: frame.base64, videoFrameMime: frame.mime } : {};
+  };
+
+  // The background-audio `useEffect` resolves the preview clip lazily and may
+  // not have finished by the time the user taps a burn/share action — so the
+  // burn step can't just read `previewCache` synchronously, it has to await
+  // the same lookup itself or the selected song silently gets dropped.
+  const ensureAudioPreviewUrl = async (): Promise<string | undefined> => {
+    if (!selectedAudioId) return undefined;
+    if (previewCache[selectedAudioId]) return previewCache[selectedAudioId];
+    const source = resolveAudioSource(selectedAudioId);
+    if (!source) return undefined;
+
+    // The AI's "best song" pick is a free-text guess, not a verified catalog
+    // entry — an exact "title artist" search often misses, so fall back to
+    // looser queries before giving up on finding a real preview clip.
+    const queries = [`${source.title} ${source.artist}`, source.title, source.artist].filter(Boolean);
+    for (const q of queries) {
+      const { results } = await searchViralAudio(q);
+      const previewUrl = results.find(r => r.previewUrl)?.previewUrl;
+      if (previewUrl) {
+        setPreviewCache(prev => ({ ...prev, [selectedAudioId]: previewUrl }));
+        return previewUrl;
+      }
+    }
+    return undefined;
   };
 
   const handleGenerateHook = async () => {
@@ -411,9 +446,7 @@ export default function EditorScreen() {
   }, [video, showAlert, updateVideo]);
 
   const snapshotEditorState = () => {
-    const audioSource = aiPickedSong && selectedAudioId === aiPickedSong.id
-      ? aiPickedSong
-      : searchResults.find(a => a.id === selectedAudioId) ?? MOCK_TRENDING_AUDIO.find(a => a.id === selectedAudioId);
+    const audioSource = resolveAudioSource(selectedAudioId);
     return {
       hook: { type: hookType, text: hookText },
       caption,
@@ -435,13 +468,41 @@ export default function EditorScreen() {
     router.push('/(tabs)/library');
   };
 
-  const handleSchedule = () => {
+  const handleSchedule = () => setShowScheduleSheet(true);
+
+  const toggleSchedulePlatform = (p: SchedulePlatform) => {
+    setScheduledPlatforms(prev => {
+      const next = new Set(prev);
+      if (next.has(p)) { if (next.size > 1) next.delete(p); }
+      else next.add(p);
+      return next;
+    });
+  };
+
+  const confirmSchedule = () => {
+    if (scheduledPlatforms.size === 0) return;
     const snap = snapshotEditorState();
-    const tomorrow = new Date();
-    tomorrow.setDate(tomorrow.getDate() + 1);
-    tomorrow.setHours(12, 0, 0, 0);
-    updateVideo(video.id, { ...snap, status: 'scheduled', scheduledAt: tomorrow.toISOString() });
-    showAlert('Scheduled!', 'Your video is scheduled for tomorrow at 12:00 PM.', [
+    const platformSchedules: Record<string, string> = {};
+    let earliest: Date | null = null;
+
+    scheduledPlatforms.forEach(p => {
+      const slot = getNextBestSlot(p);
+      platformSchedules[p] = slot.toISOString();
+      if (!earliest || slot < earliest) earliest = slot;
+    });
+
+    updateVideo(video.id, {
+      ...snap,
+      status: 'scheduled',
+      scheduledAt: earliest!.toISOString(),
+      platformSchedules,
+    });
+    setShowScheduleSheet(false);
+
+    const lines = Array.from(scheduledPlatforms)
+      .map(p => `${SCHEDULE_CONFIG[p].label}: ${formatSlot(new Date(platformSchedules[p]))}`)
+      .join('\n');
+    showAlert('Scheduled!', lines, [
       { text: 'View Schedule', onPress: () => router.push('/(tabs)/schedule') },
       { text: 'OK', style: 'cancel' },
     ]);
@@ -484,29 +545,35 @@ export default function EditorScreen() {
   const burnOverlayLocally = async (
     videoUri: string,
     hookText: string,
-  ): Promise<{ outputUri: string }> => {
+  ): Promise<{ outputUri: string; audioMixed: boolean }> => {
     const resolved = await resolveVideoUri(videoUri);
 
     setBurningOverlay(true);
 
     let bgLocalPath: string | undefined;
-    const previewUrl = previewCache[selectedAudioId];
+    const previewUrl = await ensureAudioPreviewUrl();
     if (previewUrl) {
       try {
         const dest = FileSystem.cacheDirectory + `bg_audio_${Date.now()}.m4a`;
         const downloadTimeout = new Promise<never>((_, reject) =>
-          setTimeout(() => reject(new Error('bg audio download timeout')), 10000),
+          setTimeout(() => reject(new Error('bg audio download timeout')), 15000),
         );
-        const dl = await Promise.race([FileSystem.downloadAsync(previewUrl, dest), downloadTimeout]);
-        bgLocalPath = dl.uri;
+        const dl = await Promise.race([FileSystem.downloadAsync(previewUrl, dest), downloadTimeout]) as { uri: string; status: number };
+        if (dl.status >= 200 && dl.status < 300) {
+          bgLocalPath = dl.uri;
+        } else {
+          console.warn('[burnOverlayLocally] Audio download HTTP error:', dl.status, previewUrl);
+        }
       } catch (e) {
-        console.warn('[burnOverlayLocally] bg audio download failed or timed out, continuing without it:', e);
+        console.warn('[burnOverlayLocally] bg audio download failed or timed out:', e);
       }
+    } else {
+      console.warn('[burnOverlayLocally] No audio preview URL found for selectedAudioId:', selectedAudioId);
     }
 
     const { outputUri } = await burnHookOverlay(resolved, hookText, bgLocalPath, originalVolume, bgVolume);
     setBurningOverlay(false);
-    return { outputUri };
+    return { outputUri, audioMixed: !!bgLocalPath };
   };
 
   const prepareVideoForPublish = async (
@@ -531,15 +598,39 @@ export default function EditorScreen() {
   const handleTikTokPublish = async () => {
     const snap = snapshotEditorState();
     if (!video?.videoUri) { showAlert('No Video File', 'Select a video before publishing to TikTok.'); return; }
+    if (!user?.id) { showAlert('Not logged in', 'Please sign in first.'); return; }
 
-    const { videoUrl, error: prepError } = await prepareVideoForPublish(video.videoUri, snap.hook?.text ?? '');
-    if (prepError || !videoUrl) { showAlert('Upload Failed', prepError ?? 'Could not upload video.'); return; }
+    // Step 1: burn hook overlay locally
+    const { outputUri } = await burnOverlayLocally(video.videoUri, snap.hook?.text ?? '');
+
+    // Step 2: get file size
+    const FileSystem = await import('expo-file-system');
+    const info = await FileSystem.getInfoAsync(outputUri, { size: true });
+    const videoSize = (info as any).size as number;
+    if (!videoSize) { showAlert('Upload Failed', 'Could not read video file size.'); return; }
+
+    // Step 3: init TikTok FILE_UPLOAD — get upload URL
+    setUploadingToStorage(true);
+    const title = videoTitle || snap.hook?.text || 'KalELConnect video';
+    const { publishId, uploadUrl, error: initError } = await initTikTokPublish(
+      user.id, videoSize, title, tiktokPrivacy,
+    );
+    if (initError || !publishId || !uploadUrl) {
+      setUploadingToStorage(false);
+      showAlert('TikTok Error', initError ?? 'Could not initialize upload.');
+      return;
+    }
+
+    // Step 4: upload binary directly to TikTok
+    const { error: uploadError } = await uploadVideoToTikTok(outputUri, uploadUrl, videoSize, setUploadProgress);
+    setUploadingToStorage(false);
+    setUploadProgress(0);
+    if (uploadError) { showAlert('Upload Failed', uploadError); return; }
 
     updateVideo(video.id, { ...snap, title: videoTitle });
-    const { error } = await tiktok.publish(
-      videoUrl, videoTitle || snap.hook.text || 'ViralCut video', tiktokPrivacy,
-    );
-    if (error) showAlert('TikTok Error', error);
+
+    // Step 5: start polling
+    tiktok.startPollingById(publishId);
   };
 
   const handleInstagramPublish = async () => {
@@ -556,12 +647,66 @@ export default function EditorScreen() {
     if (error) showAlert('Instagram Error', error);
   };
 
+  const handleYouTubePublish = async () => {
+    const snap = snapshotEditorState();
+    if (!video?.videoUri) { showAlert('No Video File', 'Select a video before publishing to YouTube.'); return; }
+    if (!user?.id) { showAlert('Not logged in', 'Please sign in first.'); return; }
+
+    youtube.setPublishState({ phase: 'burning' });
+    let outputUri: string;
+    try {
+      const burned = await burnOverlayLocally(video.videoUri, snap.hook?.text ?? '');
+      outputUri = burned.outputUri;
+    } catch (err) {
+      youtube.setPublishState({ phase: 'error', errorMessage: `Burn failed: ${String(err)}` });
+      return;
+    }
+
+    const FS = await import('expo-file-system');
+    const info = await FS.getInfoAsync(outputUri, { size: true });
+    const videoSize = (info as any).size as number;
+    if (!videoSize) {
+      youtube.setPublishState({ phase: 'error', errorMessage: 'Could not read video file size.' });
+      return;
+    }
+
+    youtube.setPublishState({ phase: 'uploading', progress: 0 });
+    const title = videoTitle || snap.hook?.text || 'KalELConnect Short';
+    const description = [snap.caption, snap.hashtags.join(' ')].filter(Boolean).join('\n\n');
+
+    const initResult = await initYouTubeUpload(user.id, title, videoSize, description, youtubePrivacy);
+    if ('error' in initResult) {
+      youtube.setPublishState({ phase: 'error', errorMessage: initResult.error });
+      return;
+    }
+
+    const { error: uploadError } = await uploadVideoToYouTube(
+      outputUri, initResult.uploadUrl, videoSize,
+      (pct) => youtube.setPublishState({ phase: 'uploading', progress: pct }),
+    );
+    if (uploadError) {
+      youtube.setPublishState({ phase: 'error', errorMessage: uploadError });
+      return;
+    }
+
+    updateVideo(video.id, { ...snap, title: videoTitle });
+    youtube.setPublishState({ phase: 'success' });
+  };
+
   const handleOpenInInstagram = async () => {
     const snap = snapshotEditorState();
     if (!video?.videoUri) { showAlert('No Video File', 'Select a video first.'); return; }
 
-    const { outputUri } = await burnOverlayLocally(video.videoUri, snap.hook?.text ?? '');
+    const { outputUri, audioMixed } = await burnOverlayLocally(video.videoUri, snap.hook?.text ?? '');
     updateVideo(video.id, { ...snap, title: videoTitle });
+
+    // Instagram's Reels sharing-to-stories pasteboard handoff has no field
+    // for a pre-filled caption (Meta blocks this on purpose to stop spam),
+    // so the closest we can do is put it on the clipboard for a quick paste.
+    const captionText = [snap.hook?.text, snap.caption, snap.hashtags.join(' ')].filter(Boolean).join('\n\n');
+    if (captionText) {
+      await Clipboard.setStringAsync(captionText);
+    }
 
     // Meta's documented Sharing-to-Reels handoff: the video goes on the
     // pasteboard (not the Photos library), then instagram-reels://share
@@ -575,9 +720,27 @@ export default function EditorScreen() {
     }
     setShowInstagramSheet(false);
 
-    const opened = await Linking.openURL('instagram-reels://share').then(() => true).catch(() => false);
-    if (!opened) {
-      showAlert('Instagram Not Installed', 'Please install Instagram to use this feature.');
+    const openInstagram = async () => {
+      const opened = await Linking.openURL('instagram-reels://share').then(() => true).catch(() => false);
+      if (!opened) {
+        showAlert('Instagram Not Installed', 'Please install Instagram to use this feature.');
+      }
+    };
+
+    // Show this BEFORE switching to Instagram — once the app backgrounds,
+    // an alert fired after the fact is easy to miss entirely.
+    const notes: string[] = [];
+    if (captionText) {
+      notes.push("Instagram doesn't let apps pre-fill the caption on Reels drafts, so we copied your caption and hashtags to the clipboard — paste them into the caption field once Instagram opens.");
+    }
+    if (snap.audio && !audioMixed) {
+      notes.push(`We couldn't find a matching preview clip for "${snap.audio.title}", so the original clip audio was kept instead of that song.`);
+    }
+
+    if (notes.length) {
+      showAlert('Before You Continue', notes.join('\n\n'), [{ text: 'Open Instagram', onPress: openInstagram }]);
+    } else {
+      await openInstagram();
     }
   };
 
@@ -1023,15 +1186,152 @@ export default function EditorScreen() {
               <MaterialIcons name="schedule" size={18} color={Colors.primaryLight} />
               <Text style={styles.scheduleBtnText}>Schedule</Text>
             </Pressable>
-            <Pressable style={({ pressed }) => [styles.publishBtn, pressed && { opacity: 0.8 }]} onPress={handlePublish}>
-              <MaterialIcons name="send" size={18} color="#fff" />
-              <Text style={styles.publishBtnText}>Publish Now</Text>
+          </View>
+
+          {/* Platform Publish Buttons */}
+          <View style={styles.publishSection}>
+            <Text style={styles.publishSectionLabel}>Publish to</Text>
+            <Pressable
+              style={({ pressed }) => [
+                styles.platformPublishBtn,
+                { borderColor: '#ee1d52', backgroundColor: tiktok.status.connected ? '#ee1d52' : Colors.surfaceElevated },
+                pressed && { opacity: 0.8 },
+                !tiktok.status.connected && styles.platformPublishBtnDisabled,
+              ]}
+              onPress={() => tiktok.status.connected ? setShowTikTokSheet(true) : showAlert('TikTok Not Connected', 'Connect your TikTok account in Settings to publish here.')}
+            >
+              <MaterialCommunityIcons name="music-note" size={20} color={tiktok.status.connected ? '#fff' : Colors.textMuted} />
+              <View style={{ flex: 1 }}>
+                <Text style={[styles.platformPublishName, { color: tiktok.status.connected ? '#fff' : Colors.textMuted }]}>TikTok</Text>
+                <Text style={[styles.platformPublishSub, { color: tiktok.status.connected ? 'rgba(255,255,255,0.6)' : Colors.textMuted }]}>
+                  {tiktok.status.connected ? `@${tiktok.status.creatorName || 'your account'}` : 'Not connected'}
+                </Text>
+              </View>
+              <MaterialIcons name={tiktok.status.connected ? 'arrow-forward-ios' : 'lock-outline'} size={16} color={tiktok.status.connected ? 'rgba(255,255,255,0.6)' : Colors.textMuted} />
+            </Pressable>
+
+            <Pressable
+              style={({ pressed }) => [
+                styles.platformPublishBtn,
+                { borderColor: '#e1306c', backgroundColor: instagram.status.connected ? '#e1306c' : Colors.surfaceElevated },
+                pressed && { opacity: 0.8 },
+                !instagram.status.connected && styles.platformPublishBtnDisabled,
+              ]}
+              onPress={() => instagram.status.connected ? setShowInstagramSheet(true) : showAlert('Instagram Not Connected', 'Connect your Instagram account in Settings to publish here.')}
+            >
+              <MaterialCommunityIcons name="instagram" size={20} color={instagram.status.connected ? '#fff' : Colors.textMuted} />
+              <View style={{ flex: 1 }}>
+                <Text style={[styles.platformPublishName, { color: instagram.status.connected ? '#fff' : Colors.textMuted }]}>Instagram Reels</Text>
+                <Text style={[styles.platformPublishSub, { color: instagram.status.connected ? 'rgba(255,255,255,0.6)' : Colors.textMuted }]}>
+                  {instagram.status.connected ? `@${instagram.status.username || 'your account'}` : 'Not connected'}
+                </Text>
+              </View>
+              <MaterialIcons name={instagram.status.connected ? 'arrow-forward-ios' : 'lock-outline'} size={16} color={instagram.status.connected ? 'rgba(255,255,255,0.6)' : Colors.textMuted} />
+            </Pressable>
+
+            <Pressable
+              style={({ pressed }) => [
+                styles.platformPublishBtn,
+                { borderColor: '#ff0000', backgroundColor: youtube.status.connected ? '#ff0000' : Colors.surfaceElevated },
+                pressed && { opacity: 0.8 },
+                !youtube.status.connected && styles.platformPublishBtnDisabled,
+              ]}
+              onPress={() => youtube.status.connected
+                ? setShowYouTubeSheet(true)
+                : showAlert('YouTube Not Connected', 'Connect your YouTube account in Settings to publish here.')}
+            >
+              <MaterialCommunityIcons name="youtube" size={20} color={youtube.status.connected ? '#fff' : Colors.textMuted} />
+              <View style={{ flex: 1 }}>
+                <Text style={[styles.platformPublishName, { color: youtube.status.connected ? '#fff' : Colors.textMuted }]}>YouTube Shorts</Text>
+                <Text style={[styles.platformPublishSub, { color: youtube.status.connected ? 'rgba(255,255,255,0.6)' : Colors.textMuted }]}>
+                  {youtube.status.connected ? youtube.status.channelTitle || 'your channel' : 'Not connected'}
+                </Text>
+              </View>
+              <MaterialIcons name={youtube.status.connected ? 'arrow-forward-ios' : 'lock-outline'} size={16} color={youtube.status.connected ? 'rgba(255,255,255,0.6)' : Colors.textMuted} />
             </Pressable>
           </View>
 
           <View style={{ height: Spacing.xl }} />
         </ScrollView>
       </KeyboardAvoidingView>
+
+      {/* ── Schedule Sheet ── */}
+      <Modal
+        visible={showScheduleSheet}
+        animationType="slide"
+        transparent
+        onRequestClose={() => setShowScheduleSheet(false)}
+      >
+        <View style={styles.sheetOverlay}>
+          <Pressable style={StyleSheet.absoluteFillObject} onPress={() => setShowScheduleSheet(false)} />
+          <View style={styles.tiktokSheet}>
+            <View style={styles.sheetHandle} />
+            <View style={styles.sheetHeader}>
+              <View style={[styles.sheetIcon, { backgroundColor: Colors.primary + '22' }]}>
+                <MaterialIcons name="schedule" size={22} color={Colors.primaryLight} />
+              </View>
+              <View style={{ flex: 1 }}>
+                <Text style={styles.sheetTitle}>Schedule Post</Text>
+                <Text style={styles.sheetSub}>Pick a platform — we'll suggest the next peak slot</Text>
+              </View>
+              <Pressable onPress={() => setShowScheduleSheet(false)} hitSlop={8}>
+                <MaterialIcons name="close" size={20} color={Colors.textMuted} />
+              </Pressable>
+            </View>
+
+            {(['instagram', 'tiktok', 'youtube'] as SchedulePlatform[]).map(p => {
+              const cfg = SCHEDULE_CONFIG[p];
+              const slot = getNextBestSlot(p);
+              const isSelected = scheduledPlatforms.has(p);
+              return (
+                <Pressable
+                  key={p}
+                  style={[styles.scheduleRow, isSelected && { borderColor: cfg.color, backgroundColor: cfg.color + '12' }]}
+                  onPress={() => toggleSchedulePlatform(p)}
+                >
+                  <View style={[styles.scheduleIcon, { backgroundColor: cfg.color + '22' }]}>
+                    <MaterialCommunityIcons
+                      name={p === 'instagram' ? 'instagram' : p === 'tiktok' ? 'music-note' : 'youtube'}
+                      size={20}
+                      color={cfg.color}
+                    />
+                  </View>
+                  <View style={{ flex: 1 }}>
+                    <Text style={styles.scheduleLabel}>{cfg.label}</Text>
+                    <Text style={[styles.scheduleSlot, { color: isSelected ? cfg.color : Colors.textMuted }]}>
+                      {formatSlot(slot)}
+                    </Text>
+                    <Text style={styles.schedulePeak}>{cfg.peakLabel}</Text>
+                  </View>
+                  <View style={[
+                    styles.scheduleCheckbox,
+                    isSelected && { backgroundColor: cfg.color, borderColor: cfg.color },
+                  ]}>
+                    {isSelected && <MaterialIcons name="check" size={14} color="#fff" />}
+                  </View>
+                </Pressable>
+              );
+            })}
+
+            <View style={styles.scheduleNote}>
+              <MaterialIcons name="info-outline" size={13} color={Colors.textMuted} />
+              <Text style={styles.scheduleNoteText}>
+                Each platform posts at its own peak time. Auto-posting requires the app to be open at the scheduled time.
+              </Text>
+            </View>
+
+            <Pressable
+              style={[styles.tiktokPublishBtn, { backgroundColor: Colors.primary, marginTop: Spacing.sm }]}
+              onPress={confirmSchedule}
+            >
+              <MaterialIcons name="schedule" size={18} color="#fff" />
+              <Text style={styles.tiktokPublishBtnText}>
+                Schedule {scheduledPlatforms.size} Platform{scheduledPlatforms.size !== 1 ? 's' : ''}
+              </Text>
+            </Pressable>
+          </View>
+        </View>
+      </Modal>
 
       {/* ── Instagram Publish Sheet ── */}
       <Modal
@@ -1187,7 +1487,7 @@ export default function EditorScreen() {
             <View style={styles.sheetHandle} />
 
             <View style={styles.sheetHeader}>
-              <View style={[styles.sheetIcon, { backgroundColor: '#010101' }]}>
+              <View style={[styles.sheetIcon, { backgroundColor: '#ee1d52' }]}>
                 <MaterialCommunityIcons name="music-note" size={22} color="#fff" />
               </View>
               <View style={{ flex: 1 }}>
@@ -1221,7 +1521,9 @@ export default function EditorScreen() {
                 ))}
                 <View style={styles.sheetNote}>
                   <MaterialIcons name="info-outline" size={13} color={Colors.textMuted} />
-                  <Text style={styles.sheetNoteText}>Start with "Only Me" to review before making it public.</Text>
+                  <Text style={styles.sheetNoteText}>
+                    {'Start with "Only Me" to review before making it public.\n\nIn TikTok sandbox, only "Only Me" is supported — other privacy levels require production app approval.'}
+                  </Text>
                 </View>
                 <Pressable style={({ pressed }) => [styles.tiktokPublishBtn, pressed && { opacity: 0.85 }]} onPress={handleTikTokPublish}>
                   <MaterialCommunityIcons name="music-note" size={18} color="#fff" />
@@ -1290,6 +1592,126 @@ export default function EditorScreen() {
                 <Pressable
                   style={[styles.tiktokPublishBtn, { marginTop: Spacing.md, backgroundColor: Colors.error }]}
                   onPress={() => tiktok.resetPublish()}
+                >
+                  <Text style={styles.tiktokPublishBtnText}>Try Again</Text>
+                </Pressable>
+              </View>
+            ) : null}
+          </View>
+        </View>
+      </Modal>
+
+      {/* ── YouTube Publish Sheet ── */}
+      <Modal
+        visible={showYouTubeSheet}
+        animationType="slide"
+        transparent
+        onRequestClose={() => { setShowYouTubeSheet(false); youtube.resetPublish(); }}
+      >
+        <View style={styles.sheetOverlay}>
+          <Pressable
+            style={StyleSheet.absoluteFillObject}
+            onPress={() => { if (youtube.publishState.phase === 'idle') setShowYouTubeSheet(false); }}
+          />
+          <View style={styles.tiktokSheet}>
+            <View style={styles.sheetHandle} />
+            <View style={styles.sheetHeader}>
+              <View style={[styles.sheetIcon, { backgroundColor: '#ff0000' }]}>
+                <MaterialCommunityIcons name="youtube" size={22} color="#fff" />
+              </View>
+              <View style={{ flex: 1 }}>
+                <Text style={styles.sheetTitle}>Publish to YouTube Shorts</Text>
+                <Text style={styles.sheetSub}>{youtube.status.channelTitle || 'your channel'}</Text>
+              </View>
+              {youtube.publishState.phase === 'idle' ? (
+                <Pressable onPress={() => setShowYouTubeSheet(false)} hitSlop={8}>
+                  <MaterialIcons name="close" size={20} color={Colors.textMuted} />
+                </Pressable>
+              ) : null}
+            </View>
+
+            {youtube.publishState.phase === 'idle' ? (
+              <>
+                <Text style={styles.sheetSectionLabel}>Privacy</Text>
+                {[
+                  { value: 'private', label: 'Private', icon: 'lock' },
+                  { value: 'unlisted', label: 'Unlisted', icon: 'link' },
+                  { value: 'public', label: 'Public', icon: 'public' },
+                ].map(opt => (
+                  <Pressable
+                    key={opt.value}
+                    style={[styles.privacyRow, youtubePrivacy === opt.value && styles.privacyRowActive]}
+                    onPress={() => setYoutubePrivacy(opt.value)}
+                  >
+                    <MaterialIcons name={opt.icon as any} size={18} color={youtubePrivacy === opt.value ? Colors.primaryLight : Colors.textSecondary} />
+                    <Text style={[styles.privacyLabel, youtubePrivacy === opt.value && styles.privacyLabelActive]}>{opt.label}</Text>
+                    {youtubePrivacy === opt.value ? <MaterialIcons name="check-circle" size={18} color={Colors.primary} /> : null}
+                  </Pressable>
+                ))}
+                <View style={styles.sheetNote}>
+                  <MaterialIcons name="info-outline" size={13} color={Colors.textMuted} />
+                  <Text style={styles.sheetNoteText}>
+                    Videos under 60 seconds in portrait are automatically published as YouTube Shorts.
+                  </Text>
+                </View>
+                <Pressable
+                  style={({ pressed }) => [styles.tiktokPublishBtn, { backgroundColor: '#ff0000' }, pressed && { opacity: 0.85 }]}
+                  onPress={handleYouTubePublish}
+                >
+                  <MaterialCommunityIcons name="youtube" size={18} color="#fff" />
+                  <Text style={styles.tiktokPublishBtnText}>Post to YouTube Shorts</Text>
+                </Pressable>
+              </>
+            ) : null}
+
+            {youtube.publishState.phase === 'burning' ? (
+              <View style={styles.sheetPhase}>
+                <ActivityIndicator size="large" color="#ff0000" />
+                <Text style={styles.sheetPhaseTitle}>Burning hook overlay...</Text>
+                <Text style={styles.sheetPhaseSub}>Adding your hook text to the video.</Text>
+              </View>
+            ) : null}
+
+            {youtube.publishState.phase === 'uploading' ? (
+              <View style={styles.sheetPhase}>
+                <ActivityIndicator size="large" color="#ff0000" />
+                <Text style={styles.sheetPhaseTitle}>Uploading to YouTube...</Text>
+                <Text style={styles.sheetPhaseSub}>This may take a moment depending on file size.</Text>
+                {(youtube.publishState.progress ?? 0) > 0 ? (
+                  <View style={styles.progressBarBg}>
+                    <View style={[styles.progressBarFill, { width: `${youtube.publishState.progress}%` as any, backgroundColor: '#ff0000' }]} />
+                  </View>
+                ) : null}
+              </View>
+            ) : null}
+
+            {youtube.publishState.phase === 'success' ? (
+              <View style={styles.sheetPhase}>
+                <MaterialIcons name="check-circle" size={56} color={Colors.emerald} />
+                <Text style={styles.sheetPhaseTitle}>Posted to YouTube Shorts!</Text>
+                <Text style={styles.sheetPhaseSub}>Your Short is live. It may take a few minutes to appear.</Text>
+                <Pressable
+                  style={[styles.tiktokPublishBtn, { marginTop: Spacing.md, backgroundColor: '#ff0000' }]}
+                  onPress={() => {
+                    youtube.resetPublish();
+                    setShowYouTubeSheet(false);
+                    updateVideo(video!.id, { status: 'published', publishedAt: new Date().toISOString() });
+                    router.push('/(tabs)/library');
+                  }}
+                >
+                  <Text style={styles.tiktokPublishBtnText}>Done</Text>
+                </Pressable>
+              </View>
+            ) : null}
+
+            {youtube.publishState.phase === 'error' ? (
+              <View style={styles.sheetPhase}>
+                <MaterialIcons name="error-outline" size={52} color={Colors.error} />
+                <Text style={styles.sheetPhaseTitle}>Publish Failed</Text>
+                <Text style={styles.sheetPhaseSub}>{youtube.publishState.errorMessage}</Text>
+                <Pressable
+                  style={[styles.tiktokPublishBtn, { marginTop: Spacing.md, backgroundColor: Colors.error }]}
+                  onPress={() => youtube.resetPublish()}
                 >
                   <Text style={styles.tiktokPublishBtnText}>Try Again</Text>
                 </Pressable>
@@ -1574,11 +1996,27 @@ const styles = StyleSheet.create({
     borderWidth: 1.5, borderColor: Colors.primary,
   },
   scheduleBtnText: { fontSize: FontSize.md, fontWeight: FontWeight.bold, color: Colors.primaryLight, includeFontPadding: false },
-  publishBtn: {
-    flex: 1, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 6,
-    backgroundColor: Colors.primary, borderRadius: Radius.full, paddingVertical: 14,
+  publishSection: {
+    paddingHorizontal: Spacing.md, paddingTop: Spacing.md, gap: Spacing.sm,
   },
-  publishBtnText: { fontSize: FontSize.md, fontWeight: FontWeight.bold, color: '#fff', includeFontPadding: false },
+  publishSectionLabel: {
+    fontSize: FontSize.xs, fontWeight: FontWeight.bold, color: Colors.textMuted,
+    textTransform: 'uppercase', letterSpacing: 1, includeFontPadding: false,
+  },
+  platformPublishBtn: {
+    flexDirection: 'row', alignItems: 'center', gap: Spacing.sm,
+    borderRadius: Radius.lg, paddingVertical: Spacing.sm + 4, paddingHorizontal: Spacing.md,
+    borderWidth: 2,
+  },
+  platformPublishBtnDisabled: {
+    backgroundColor: Colors.surfaceElevated, borderColor: Colors.surfaceBorder,
+  },
+  platformPublishName: {
+    fontSize: FontSize.md, fontWeight: FontWeight.bold, includeFontPadding: false,
+  },
+  platformPublishSub: {
+    fontSize: FontSize.xs, includeFontPadding: false, marginTop: 1,
+  },
   emptyTitle: { fontSize: FontSize.lg, fontWeight: FontWeight.bold, color: Colors.textPrimary, includeFontPadding: false },
   uploadBtn: {
     backgroundColor: Colors.primary, borderRadius: Radius.full,
@@ -1681,4 +2119,30 @@ const styles = StyleSheet.create({
   },
   noVideoText: { fontSize: FontSize.lg, fontWeight: FontWeight.bold, color: '#fff', includeFontPadding: false },
   noVideoSub: { fontSize: FontSize.sm, color: 'rgba(255,255,255,0.7)', textAlign: 'center', paddingHorizontal: 32, includeFontPadding: false },
+
+  // Schedule sheet
+  scheduleRow: {
+    flexDirection: 'row', alignItems: 'center', gap: Spacing.sm,
+    backgroundColor: Colors.surfaceElevated, borderRadius: Radius.md,
+    padding: Spacing.sm + 4, borderWidth: 1, borderColor: Colors.surfaceBorder,
+    marginBottom: Spacing.sm,
+  },
+  scheduleIcon: { width: 40, height: 40, borderRadius: Radius.md, alignItems: 'center', justifyContent: 'center' },
+  scheduleLabel: { fontSize: FontSize.sm, fontWeight: FontWeight.semibold, color: Colors.textPrimary, includeFontPadding: false },
+  scheduleSlot: { fontSize: FontSize.xs, fontWeight: FontWeight.medium, includeFontPadding: false, marginTop: 2 },
+  schedulePeak: { fontSize: 10, color: Colors.textMuted, includeFontPadding: false, marginTop: 1 },
+  scheduleCheckbox: {
+    width: 22, height: 22, borderRadius: 5,
+    borderWidth: 2, borderColor: Colors.surfaceBorder,
+    alignItems: 'center', justifyContent: 'center',
+  },
+  scheduleNote: {
+    flexDirection: 'row', alignItems: 'flex-start', gap: 6,
+    backgroundColor: Colors.surface, borderRadius: Radius.md,
+    padding: Spacing.sm, borderWidth: 1, borderColor: Colors.surfaceBorder,
+  },
+  scheduleNoteText: {
+    fontSize: FontSize.xs, color: Colors.textMuted, flex: 1,
+    lineHeight: 16, includeFontPadding: false,
+  },
 });

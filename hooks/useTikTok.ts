@@ -9,6 +9,7 @@ import {
   getTikTokAuthUrl,
   exchangeTikTokCode,
   generateCodeVerifier,
+  refreshTikTokToken,
 } from '@/services/tiktokService';
 import * as WebBrowser from 'expo-web-browser';
 import { Linking } from 'react-native';
@@ -16,7 +17,9 @@ import { Linking } from 'react-native';
 // The redirect URI registered in TikTok Developer portal.
 // TikTok redirects here → backend forwards to viralcut://tiktok-callback.
 // Register exactly this URL in TikTok Developer Portal → your app → Redirect URI.
-export const TIKTOK_REDIRECT_URI = 'https://mrsvovoywukechawmrsv.backend.onspace.ai/functions/v1/tiktok-publisher?action=callback';
+// TikTok does not allow query parameters in registered redirect URIs,
+// so we use the bare function URL and detect the callback by the presence of 'code'.
+export const TIKTOK_REDIRECT_URI = 'https://mrsvovoywukechawmrsv.backend.onspace.ai/functions/v1/tiktok-publisher';
 
 export type PublishPhase =
   | 'idle'
@@ -153,6 +156,14 @@ export function useTikTok() {
     return { error };
   }, [user?.id]);
 
+  // ── Refresh Token ─────────────────────────────────────────────────────────
+  const refreshToken = useCallback(async (): Promise<{ error?: string }> => {
+    if (!user?.id) return { error: 'Not logged in' };
+    const { error } = await refreshTikTokToken(user.id);
+    if (!error) await loadStatus();
+    return { error };
+  }, [user?.id, loadStatus]);
+
   // ── Publish Video ─────────────────────────────────────────────────────────
   /**
    * videoUrl must be a publicly accessible URL.
@@ -179,6 +190,11 @@ export function useTikTok() {
     startPolling(publishId!);
     return { publishId };
   }, [user?.id, status.connected]);
+
+  const startPollingById = useCallback((publishId: string) => {
+    setPublishState({ phase: 'processing', publishId });
+    startPolling(publishId);
+  }, []);
 
   // Poll TikTok status until done or max attempts
   const startPolling = (publishId: string) => {
@@ -224,7 +240,9 @@ export function useTikTok() {
     publishState,
     connect,
     disconnect,
+    refreshToken,
     publish,
+    startPollingById,
     resetPublish,
     loadStatus,
   };

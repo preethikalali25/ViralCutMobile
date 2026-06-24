@@ -8,21 +8,21 @@
       "developmentClient": true,
       "distribution": "internal",
       "ios": {
-        "image": "latest",
+        "image": "macos-tahoe-26.4-xcode-26.4",
         "buildConfiguration": "Debug"
       }
     },
     "preview": {
       "distribution": "internal",
       "ios": {
-        "image": "latest",
+        "image": "macos-tahoe-26.4-xcode-26.4",
         "simulator": false
       }
     },
     "production": {
       "autoIncrement": true,
       "ios": {
-        "image": "latest"
+        "image": "macos-tahoe-26.4-xcode-26.4"
       },
       "android": {
         "buildType": "apk"

@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import {
   View, Text, ScrollView, StyleSheet, Pressable, ActivityIndicator, FlatList,
 } from 'react-native';
@@ -11,10 +11,8 @@ import { Colors, Spacing, Radius, FontSize, FontWeight } from '@/constants/theme
 import { useVideos } from '@/hooks/useVideos';
 import { useAlert } from '@/template';
 import { Platform as PlatformType, Video } from '@/types';
-import PlatformBadge from '@/components/ui/PlatformBadge';
 import { combineMediaToVideo, type MediaItem } from '@/services/videoOverlayService';
-
-const ALL_PLATFORMS: PlatformType[] = ['tiktok', 'reels', 'youtube'];
+import { consumePendingReelItems } from '@/stores/pendingReel';
 
 async function requestPermission(): Promise<boolean> {
   const { status } = await ImagePicker.requestMediaLibraryPermissionsAsync();
@@ -44,19 +42,14 @@ async function getVideoPreviewUri(uri: string): Promise<string> {
 
 export default function UploadScreen() {
   const router = useRouter();
-  const { addVideo } = useVideos();
+  const { addVideo, updateVideo } = useVideos();
   const { showAlert } = useAlert();
 
-  const [platforms, setPlatforms] = useState<PlatformType[]>(['tiktok']);
   const [mediaItems, setMediaItems] = useState<MediaPreviewItem[]>([]);
   const [isProcessing, setIsProcessing] = useState(false);
   const [processingLabel, setProcessingLabel] = useState('');
-
-  const togglePlatform = (p: PlatformType) => {
-    setPlatforms(prev =>
-      prev.includes(p) ? (prev.length > 1 ? prev.filter(x => x !== p) : prev) : [...prev, p]
-    );
-  };
+  const didConsumeRef = useRef(false);
+  const pendingMetaRef = useRef<{ title?: string; hook?: string }>({});
 
   const handleBrowse = async () => {
     if (!(await requestPermission())) {
@@ -108,8 +101,25 @@ export default function UploadScreen() {
     return sum + Math.min(item.durationSec ?? 15, 15);
   }, 0);
 
-  const handleEdit = async () => {
-    if (mediaItems.length === 0) {
+  // Consume pending items from the Suggest screen on first mount and auto-proceed
+  useEffect(() => {
+    if (didConsumeRef.current) return;
+    didConsumeRef.current = true;
+    const { items, autoOpen, meta } = consumePendingReelItems();
+    if (!items.length) return;
+    pendingMetaRef.current = meta;
+    const loaded: MediaPreviewItem[] = items.map(item => ({
+      uri: item.uri, type: item.type,
+      previewUri: item.previewUri ?? '', durationSec: item.durationSec,
+    }));
+    setMediaItems(loaded);
+    if (autoOpen) handleEdit(loaded);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  const handleEdit = async (overrideItems?: MediaPreviewItem[]) => {
+    const items = overrideItems ?? mediaItems;
+    if (items.length === 0) {
       showAlert('No Media', 'Add at least one photo or video clip.');
       return;
     }
@@ -119,22 +129,24 @@ export default function UploadScreen() {
 
     try {
       let videoUri: string;
-      let thumbnail = mediaItems[0].previewUri;
-      if (!thumbnail && mediaItems[0].type === 'video') {
-        thumbnail = await getVideoPreviewUri(mediaItems[0].uri);
+      let thumbnail = items[0].previewUri;
+      if (!thumbnail && items[0].type === 'video') {
+        thumbnail = await getVideoPreviewUri(items[0].uri);
       }
 
-      if (mediaItems.length === 1 && mediaItems[0].type === 'video') {
+      const totalDur = items.reduce((s, m) => s + (m.type === 'photo' ? 3 : Math.min(m.durationSec ?? 15, 15)), 0);
+
+      if (items.length === 1 && items[0].type === 'video') {
         // Single video — pass through directly, no conversion needed
-        videoUri = mediaItems[0].uri;
-        const assetId = mediaItems[0].uri.startsWith('ph://')
-          ? mediaItems[0].uri.replace('ph://', '').split('/')[0]
+        videoUri = items[0].uri;
+        const assetId = items[0].uri.startsWith('ph://')
+          ? items[0].uri.replace('ph://', '').split('/')[0]
           : undefined;
 
         addVideo({
           id, title: '', thumbnail,
-          duration: mediaItems[0].durationSec ?? 15,
-          status: 'ready', platforms,
+          duration: items[0].durationSec ?? 15,
+          status: 'ready', platforms: ['tiktok', 'reels'] as PlatformType[],
           createdAt: new Date().toISOString(),
           videoUri,
           ...(assetId ? { videoAssetId: assetId } : {}),
@@ -142,12 +154,12 @@ export default function UploadScreen() {
       } else {
         // Photos, multiple videos, or any mix — combine into one reel
         setProcessingLabel('Creating reel…');
-        const items: MediaItem[] = mediaItems.map(m => ({ uri: m.uri, type: m.type }));
-        videoUri = await combineMediaToVideo(items, 3.0);
+        const mediaList: MediaItem[] = items.map(m => ({ uri: m.uri, type: m.type }));
+        videoUri = await combineMediaToVideo(mediaList, 3.0);
 
         addVideo({
           id, title: '', thumbnail,
-          duration: totalDuration, status: 'ready', platforms,
+          duration: totalDur, status: 'ready', platforms: ['tiktok', 'reels'] as PlatformType[],
           createdAt: new Date().toISOString(),
           videoUri,
         } as Video);
@@ -162,6 +174,16 @@ export default function UploadScreen() {
 
     setIsProcessing(false);
     setProcessingLabel('');
+
+    const meta = pendingMetaRef.current;
+    if (meta.title || meta.hook) {
+      updateVideo(id, {
+        ...(meta.title ? { title: meta.title } : {}),
+        ...(meta.hook ? { hook: { type: 'question' as const, text: meta.hook } } : {}),
+      });
+      pendingMetaRef.current = {};
+    }
+
     router.push({ pathname: '/editor', params: { id } });
   };
 
@@ -251,28 +273,6 @@ export default function UploadScreen() {
           <Text style={styles.tipText}>• Tap × on any item to remove it from the reel</Text>
         </View>
 
-        {/* Platforms */}
-        <View style={styles.field}>
-          <Text style={styles.fieldLabel}>Target Platforms</Text>
-          <View style={styles.platformsList}>
-            {ALL_PLATFORMS.map(p => (
-              <Pressable
-                key={p}
-                style={[styles.platformCard, platforms.includes(p) && styles.platformCardActive]}
-                onPress={() => togglePlatform(p)}
-              >
-                <PlatformBadge platform={p} size="md" />
-                <Text style={[styles.platformName, platforms.includes(p) && styles.platformNameActive]}>
-                  {p === 'tiktok' ? 'TikTok' : p === 'reels' ? 'Instagram Reels' : 'YouTube Shorts'}
-                </Text>
-                {platforms.includes(p)
-                  ? <MaterialIcons name="check-circle" size={18} color={Colors.primary} />
-                  : <MaterialIcons name="radio-button-unchecked" size={18} color={Colors.textMuted} />}
-              </Pressable>
-            ))}
-          </View>
-        </View>
-
         {/* Edit Button */}
         <View style={styles.actionRow}>
           <Pressable
@@ -281,7 +281,7 @@ export default function UploadScreen() {
               (!hasMedia || isProcessing) && styles.actionBtnDisabled,
               pressed && { opacity: 0.85 },
             ]}
-            onPress={handleEdit}
+            onPress={() => handleEdit()}
             disabled={!hasMedia || isProcessing}
           >
             {isProcessing ? (
@@ -342,7 +342,7 @@ const styles = StyleSheet.create({
   strip: { gap: 8, paddingHorizontal: 4 },
   stripItem: {
     width: 80, height: 106, borderRadius: Radius.md,
-    overflow: 'hidden', position: 'relative',
+    overflow: 'hidden', position: 'absolute',
   },
   stripThumb: { width: '100%', height: '100%' },
   stripThumbPlaceholder: { alignItems: 'center', justifyContent: 'center', backgroundColor: Colors.surfaceElevated },
@@ -388,23 +388,6 @@ const styles = StyleSheet.create({
     color: Colors.amber, includeFontPadding: false,
   },
   tipText: { fontSize: FontSize.sm, color: Colors.textSecondary, includeFontPadding: false },
-  field: { paddingHorizontal: Spacing.md, marginBottom: Spacing.lg, gap: Spacing.sm },
-  fieldLabel: {
-    fontSize: FontSize.sm, fontWeight: FontWeight.semibold,
-    color: Colors.textSecondary, includeFontPadding: false,
-  },
-  platformsList: { gap: Spacing.sm },
-  platformCard: {
-    flexDirection: 'row', alignItems: 'center', gap: Spacing.sm,
-    backgroundColor: Colors.surfaceElevated, borderRadius: Radius.md,
-    padding: Spacing.sm + 4, borderWidth: 1.5, borderColor: Colors.surfaceBorder,
-  },
-  platformCardActive: { borderColor: Colors.primary, backgroundColor: Colors.primaryGlow },
-  platformName: {
-    flex: 1, fontSize: FontSize.md, fontWeight: FontWeight.semibold,
-    color: Colors.textSecondary, includeFontPadding: false,
-  },
-  platformNameActive: { color: Colors.textPrimary },
   actionRow: { marginHorizontal: Spacing.md },
   editBtn: {
     flexDirection: 'row', alignItems: 'center', justifyContent: 'center',

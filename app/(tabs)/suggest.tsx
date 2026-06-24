@@ -9,10 +9,10 @@ import * as MediaLibrary from 'expo-media-library';
 import * as ImageManipulator from 'expo-image-manipulator';
 import * as VideoThumbnails from 'expo-video-thumbnails';
 import { Colors, Spacing, Radius, FontSize, FontWeight } from '@/constants/theme';
-import { useAuth } from '@/template';
+import { useAuth, getSupabaseClient } from '@/template';
 import { Image } from 'expo-image';
 import { useInstagram } from '@/hooks/useInstagram';
-import { getInstagramFullStatus, InstagramStatus } from '@/services/instagramService';
+import { getInstagramStatus, getInstagramFullStatus, InstagramStatus } from '@/services/instagramService';
 import { setPendingReelItems, PendingReelItem } from '@/stores/pendingReel';
 
 const { width } = Dimensions.get('window');
@@ -224,13 +224,6 @@ export default function SuggestScreen() {
   ) => {
     if (!user?.id) return;
 
-    const apiKey = process.env.EXPO_PUBLIC_ANTHROPIC_API_KEY;
-    if (!apiKey) {
-      setError('Anthropic API key not configured. Add EXPO_PUBLIC_ANTHROPIC_API_KEY to your .env file.');
-      setLoading(false);
-      return;
-    }
-
     if (mode === 'replace') {
       setLoading(true);
       setError(null);
@@ -238,13 +231,17 @@ export default function SuggestScreen() {
       setLoadingMore(true);
     }
 
-    // Fetch live Instagram profile (bio + posts) once per session via get_status?full=true
     if (igStatus.connected && user.id && !igProfileRef.current) {
       if (mode === 'replace') setLoadingStep('Loading your Instagram profile…');
-      const fetched = await getInstagramFullStatus(user.id);
-      if (fetched.connected) {
-        igProfileRef.current = fetched;
-        setLiveProfile(fetched);
+      try {
+        // full=true fetches bio + recent post captions so the AI can determine niche
+        const fetched = await getInstagramFullStatus(user.id);
+        if (fetched.connected) {
+          igProfileRef.current = fetched;
+          setLiveProfile(fetched);
+        }
+      } catch {
+        // Non-fatal — continue with basic status from useInstagram
       }
     }
 
@@ -263,175 +260,62 @@ export default function SuggestScreen() {
     const igConnected = igStatus.connected;
 
     let profileSection: string;
-    if (igProfile?.bio || (igProfile?.recentPosts?.length ?? 0) > 0) {
-      const postLines = (igProfile!.recentPosts ?? [])
-        .map((p: any, i: number) =>
-          `  ${i + 1}. [${p.type}] ${p.date} | ${p.likes ?? '?'} likes | ${p.comments ?? '?'} comments | "${p.caption ?? 'no caption'}"`,
-        )
-        .join('\n');
-      profileSection = `Instagram Profile:
-Username: @${igProfile!.username ?? igStatus.username ?? 'unknown'}
-Bio: ${igProfile!.bio || 'Not set'}
-Followers: ${igProfile!.followersCount?.toLocaleString() ?? 'unknown'}
-Total posts: ${igProfile!.mediaCount ?? 'unknown'}
-
-Last ${igProfile!.recentPosts?.length ?? 0} posts (engagement data):
-${postLines || '  (no posts found)'}`;
-    } else if (igConnected && igStatus.username) {
-      profileSection = `Instagram Profile:\nUsername: @${igStatus.username}\nFollowers: ${igStatus.followersCount?.toLocaleString() ?? 'unknown'}\nBio: (not loaded yet)`;
+    let captionsBlock = '';
+    const username = igProfile?.username ?? igStatus.username;
+    const followers = igProfile?.followersCount ?? igStatus.followersCount;
+    if (igConnected && username) {
+      profileSection = `Instagram Profile:\nUsername: @${username}\nBio: ${igProfile?.bio || 'Not set'}\nFollowers: ${followers?.toLocaleString() ?? 'unknown'}${igProfile?.mediaCount != null ? `\nTotal posts: ${igProfile.mediaCount}` : ''}`;
+      if (igProfile?.recentPosts?.length) {
+        const postLines = igProfile.recentPosts
+          .map((p, i) => `  ${i + 1}. [${p.type}] ${p.date} | ${p.likes ?? '?'} likes | "${p.caption ?? 'no caption'}"`)
+          .join('\n');
+        captionsBlock = `\n\nLast ${igProfile.recentPosts.length} posts:\n${postLines}`;
+      }
     } else {
       profileSection = 'Instagram: not connected.';
     }
 
-    const eventLines = topEvents
-      .map((ev, i) => `  Event ${i}: ${ev.label} (${ev.count} items)`)
-      .join('\n');
-
-    // ── Build userContent: Instagram text FIRST, then images, then event list ──
-    // Putting text first ensures the AI reads the niche context before seeing images.
-    const userContent: any[] = [];
-
-    userContent.push({
-      type: 'text',
-      text: `${profileSection}
-
-⚠️ NICHE SOURCE: ${igConnected ? 'Determine the niche from the Instagram profile ABOVE only. The gallery photos below are raw footage — do NOT use them to identify the niche.' : 'Instagram not connected — use gallery content to infer niche.'}`,
-    });
-
-    // Gallery thumbnails (raw footage for reel selection, not niche signals)
+    // Build thumbnail list for the edge function — origIdx maps back to topEvents
+    // so that galleryIndices in the response are valid indices into this batch.
+    const thumbnails: { origIdx: number; label: string; count: number; base64: string }[] = [];
     for (let i = 0; i < topEvents.length; i++) {
       const ev = topEvents[i];
       const b64 = ev.base64 ?? (await genThumb(ev));
-      if (b64) {
-        userContent.push({
-          type: 'image',
-          source: { type: 'base64', media_type: 'image/jpeg', data: b64 },
-        });
-      }
+      if (b64) thumbnails.push({ origIdx: i, label: ev.label, count: ev.count, base64: b64 });
     }
-
-    userContent.push({
-      type: 'text',
-      text: `Camera roll: ${totalItems} total items across ${evList.length} detected events.
-These ${topEvents.length} thumbnails (indices 0–${topEvents.length - 1}) are the raw footage for reel creation:
-${eventLines}
-
-Now give 8 niche-focused Reel ideas using these events as raw material. Return JSON only.`,
-    });
-
-    const systemPrompt = `You are an expert Instagram Reels strategist who creates scroll-stopping, niche-specific content.
-
-═══ STEP 1: IDENTIFY THE NICHE ═══
-${igConnected
-  ? `Instagram IS connected. Determine the niche from the Instagram profile text ONLY:
-  • Bio text is the strongest signal
-  • Post captions and engagement patterns reveal content style
-  • Username may hint at the niche
-  ⛔ DO NOT use the gallery thumbnail images to determine the niche.
-  The photos/videos shown are the creator's personal camera roll — they may include unrelated personal moments.`
-  : `Instagram is NOT connected. Infer the niche from the gallery thumbnails and event dates.`}
-
-Write ONE specific niche sentence:
-  ✗ "lifestyle" ✗ "family" ✗ "travel"
-  ✓ "first-time mom documenting toddler milestones for Indian-American parents"
-  ✓ "solo budget traveller sharing hidden gems in Southeast Asia"
-  ✓ "fitness coach posting workout motivation and transformation content"
-
-═══ STEP 2: GENERATE 8 REEL IDEAS ═══
-⚠️ PEOPLE RULE: Only use events where the thumbnail clearly shows at least one visible person (face or body). Skip any thumbnail that shows only objects, food, landscapes, nature, animals, or scenery with no people. If fewer than 8 thumbnails have visible people, use fewer suggestions — do not make up ideas for people-less shots.
-
-Transform each gallery event through the niche lens. The event is just raw material — the idea must be niche-branded:
-  ✗ Event: beach trip → "Fun beach day" / "We had so much fun!"
-  ✓ Event: beach trip, niche: mom content → "Beach day survival guide with a toddler" / "POV: packing for the beach with a toddler (15 bags later) 😅"
-
-For each suggestion:
-• TITLE (5–8 words): niche-branded, not a literal thumbnail description
-• HOOK (under 80 chars): use a DIFFERENT format for each:
-    "POV: [relatable niche situation]"
-    "Nobody tells you that [niche truth]..."
-    "Things I wish I knew before [niche activity]"
-    "[Number] signs you're a [niche identity]"
-    "Real talk: [honest niche experience]"
-    "Day [X] of [niche challenge/journey]"
-    "I finally [niche milestone/thing]"
-    "How I [niche achievement] with [constraint]"
-• REASON: name the niche and explain why this will resonate with its audience
-• galleryIndices: 0-based indices into THIS batch's thumbnails (max ${topEvents.length - 1})
-• contentType: vary across photo_montage, video_clip, mixed
-
-Return ONLY valid JSON — no markdown, no code blocks:
-{
-  "niche": "One specific sentence describing the creator's exact niche and target audience",
-  "suggestions": [
-    {
-      "id": "s1",
-      "title": "Niche-specific reel title",
-      "hook": "Scroll-stopping hook under 80 chars",
-      "reason": "Why this resonates with [niche] audience",
-      "galleryIndices": [0],
-      "contentType": "photo_montage|video_clip|mixed"
-    }
-  ]
-}`;
 
     try {
-      const controller = new AbortController();
-      const timeoutId = setTimeout(() => controller.abort(), 90000);
-      const res = await fetch('https://api.anthropic.com/v1/messages', {
-        method: 'POST',
-        signal: controller.signal,
-        headers: {
-          'Content-Type': 'application/json',
-          'x-api-key': apiKey,
-          'anthropic-version': '2023-06-01',
+      const { data, error: fnError } = await getSupabaseClient().functions.invoke('analyze-gallery', {
+        body: {
+          profileSection,
+          captionsBlock,
+          thumbnails,
+          totalItems,
+          evCount: evList.length,
+          igConnected,
         },
-        body: JSON.stringify({
-          model: 'claude-sonnet-4-6',
-          max_tokens: 4096,
-          system: systemPrompt,
-          messages: [{ role: 'user', content: userContent }],
-          temperature: 0.7,
-        }),
       });
 
-      clearTimeout(timeoutId);
-
-      if (!res.ok) {
-        const errText = await res.text();
-        if (mode === 'replace') setError(`AI error: ${errText}`);
-        else setLoadingMore(false);
-        setLoading(false);
-        return;
-      }
-
-      const aiData = await res.json();
-      const rawText = ((aiData.content?.[0]?.text as string) ?? '').trim();
-
-      let parsed: { niche?: string; suggestions?: Suggestion[] };
-      try {
-        const cleaned = rawText.replace(/```json?\n?/g, '').replace(/```/g, '').trim();
-        parsed = JSON.parse(cleaned);
-      } catch {
-        if (mode === 'replace') setError('AI returned invalid format. Please try again.');
+      if (fnError || data?.error) {
+        if (mode === 'replace') setError(fnError?.message ?? data?.error ?? 'AI analysis failed.');
         setLoading(false);
         setLoadingMore(false);
         return;
       }
 
-      const suggestions: Suggestion[] = parsed.suggestions
-        ?? (Array.isArray(parsed) ? parsed as unknown as Suggestion[] : []);
+      const suggestions: Suggestion[] = data?.suggestions ?? [];
       const newBatch: SuggestionBatch = { suggestions, analysisEvents: topEvents };
 
       if (mode === 'replace') {
         setResult({
-          niche: parsed.niche ?? '',
+          niche: data?.niche ?? '',
           profile: { username: igStatus.username, followers: igStatus.followersCount },
           batches: [newBatch],
         });
       } else {
         setResult(prev => prev
           ? { ...prev, batches: [...prev.batches, newBatch] }
-          : { niche: parsed.niche ?? '', profile: {}, batches: [newBatch] },
+          : { niche: data?.niche ?? '', profile: {}, batches: [newBatch] },
         );
       }
     } catch (err) {
@@ -484,10 +368,18 @@ Return ONLY valid JSON — no markdown, no code blocks:
 
   const handleMakeReel = (s: Suggestion, batchEvents: EventCluster[]) => {
     const picks: PendingReelItem[] = (s.galleryIndices ?? [])
-      .map(i => batchEvents[i]?.rep)
-      .filter(Boolean)
-      .map(g => ({ uri: g.uri, type: g.type, previewUri: g.uri, durationSec: g.durationSec }));
-    if (picks.length) setPendingReelItems(picks, true);
+      .map(i => {
+        const ev = batchEvents[i];
+        if (!ev) return null;
+        return {
+          uri: ev.rep.uri,
+          type: ev.rep.type,
+          previewUri: ev.base64 ? `data:image/jpeg;base64,${ev.base64}` : ev.rep.uri,
+          durationSec: ev.rep.durationSec,
+        };
+      })
+      .filter((x): x is PendingReelItem => x !== null);
+    if (picks.length) setPendingReelItems(picks, true, { title: s.title, hook: s.hook });
     router.push('/upload');
   };
 
@@ -550,7 +442,6 @@ Return ONLY valid JSON — no markdown, no code blocks:
             {(liveProfile?.followersCount ?? igStatus.followersCount) != null && (
               <Text style={styles.igFollowers}>
                 · {(liveProfile?.followersCount ?? igStatus.followersCount)!.toLocaleString()} followers
-                {liveProfile?.mediaCount != null ? ` · ${liveProfile.mediaCount} posts` : ''}
               </Text>
             )}
           </View>
@@ -677,7 +568,7 @@ Return ONLY valid JSON — no markdown, no code blocks:
                 style={({ pressed }) => [styles.loadMoreBtn, pressed && { opacity: 0.8 }]}
                 onPress={handleLoadMore}
               >
-                <MaterialCommunityIcons name="creation-outline" size={18} color={Colors.primary} />
+                <MaterialCommunityIcons name="crown-outline" size={18} color={Colors.primary} />
                 <Text style={styles.loadMoreBtnText}>Load More Ideas</Text>
                 <Text style={styles.loadMoreHint}>from different moments</Text>
               </Pressable>

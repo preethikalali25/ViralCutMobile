@@ -1,6 +1,14 @@
 import { getSupabaseClient } from '@/template';
 import { FunctionsHttpError } from '@supabase/supabase-js';
 
+export interface InstagramRecentPost {
+  type: string;
+  caption?: string;
+  likes?: number;
+  comments?: number;
+  date: string;
+}
+
 export interface InstagramStatus {
   connected: boolean;
   expired?: boolean;
@@ -8,6 +16,9 @@ export interface InstagramStatus {
   profilePictureUrl?: string;
   followersCount?: number;
   igUserId?: string;
+  bio?: string;
+  mediaCount?: number;
+  recentPosts?: InstagramRecentPost[];
 }
 
 async function invoke(action: string, payload: Record<string, unknown>) {
@@ -45,6 +56,14 @@ export async function exchangeInstagramCode(
 
 export async function getInstagramStatus(userId: string): Promise<InstagramStatus> {
   const { data, error } = await invoke('get_status', { userId });
+  if (error || !data) return { connected: false };
+  return data as InstagramStatus;
+}
+
+// Like getInstagramStatus but also fetches bio, media count, and recent post
+// captions from the Instagram Graph API so the AI can determine the creator's niche.
+export async function getInstagramFullStatus(userId: string): Promise<InstagramStatus> {
+  const { data, error } = await invoke('get_status', { userId, full: true });
   if (error || !data) return { connected: false };
   return data as InstagramStatus;
 }

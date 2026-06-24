@@ -10,7 +10,7 @@ interface Props {
 }
 
 const PLATFORM_CONFIG: Record<PlatformType, { label: string; color: string; bg: string }> = {
-  tiktok: { label: 'TikTok', color: '#ffffff', bg: '#010101' },
+  tiktok: { label: 'TikTok', color: '#ffffff', bg: '#ee1d52' },
   reels: { label: 'Reels', color: '#ffffff', bg: '#e1306c' },
   youtube: { label: 'YT', color: '#ffffff', bg: '#ff0000' },
 };
