@@ -304,6 +304,70 @@ Deno.serve(async (req) => {
       );
     }
 
+    // ── 5. Get analytics ──────────────────────────────────────────────────
+    if (action === 'get_analytics') {
+      const { userId } = body as { userId: string };
+
+      const tokenResult = await getValidAccessToken(supabase, userId, clientId);
+      if ('error' in tokenResult) {
+        return new Response(
+          JSON.stringify({ error: tokenResult.error }),
+          { status: 401, headers: { ...corsHeaders, 'Content-Type': 'application/json' } },
+        );
+      }
+
+      const { accessToken } = tokenResult;
+
+      const [channelRes, searchRes] = await Promise.all([
+        fetch(`${YOUTUBE_CHANNELS_URL}?part=statistics,snippet&mine=true`, {
+          headers: { Authorization: `Bearer ${accessToken}` },
+        }),
+        fetch('https://www.googleapis.com/youtube/v3/search?part=snippet&forMine=true&type=video&order=date&maxResults=20', {
+          headers: { Authorization: `Bearer ${accessToken}` },
+        }),
+      ]);
+
+      const channelData = channelRes.ok ? await channelRes.json() : {};
+      const searchData = searchRes.ok ? await searchRes.json() : {};
+      const channel = channelData.items?.[0];
+      const channelStats = channel?.statistics ?? {};
+
+      const videoIds = ((searchData.items ?? []) as Record<string, unknown>[])
+        .map((i: any) => (i.id as any)?.videoId)
+        .filter(Boolean)
+        .join(',');
+
+      let videos: Record<string, unknown>[] = [];
+      if (videoIds) {
+        const videosRes = await fetch(
+          `https://www.googleapis.com/youtube/v3/videos?part=statistics,snippet&id=${videoIds}`,
+          { headers: { Authorization: `Bearer ${accessToken}` } },
+        );
+        const videosData = videosRes.ok ? await videosRes.json() : {};
+        videos = ((videosData.items ?? []) as Record<string, unknown>[]).map((v: any) => ({
+          id: v.id as string,
+          title: (v.snippet?.title ?? '') as string,
+          thumbnail: (v.snippet?.thumbnails?.medium?.url ?? v.snippet?.thumbnails?.default?.url ?? '') as string,
+          publishedAt: (v.snippet?.publishedAt ?? '') as string,
+          views: parseInt((v.statistics?.viewCount ?? '0') as string, 10),
+          likes: parseInt((v.statistics?.likeCount ?? '0') as string, 10),
+          comments: parseInt((v.statistics?.commentCount ?? '0') as string, 10),
+        }));
+      }
+
+      return new Response(
+        JSON.stringify({
+          channelId: (channel?.id ?? '') as string,
+          channelTitle: (channel?.snippet?.title ?? '') as string,
+          totalViews: parseInt((channelStats.viewCount ?? '0') as string, 10),
+          subscribers: parseInt((channelStats.subscriberCount ?? '0') as string, 10),
+          videoCount: parseInt((channelStats.videoCount ?? '0') as string, 10),
+          videos,
+        }),
+        { headers: { ...corsHeaders, 'Content-Type': 'application/json' } },
+      );
+    }
+
     return new Response(
       JSON.stringify({ error: `Unknown action: ${action}` }),
       { status: 400, headers: { ...corsHeaders, 'Content-Type': 'application/json' } },
