@@ -14,18 +14,25 @@ export interface ScheduledPostPayload {
 
 export async function saveScheduledPost(payload: ScheduledPostPayload): Promise<{ id: string } | { error: string }> {
   const supabase = getSupabaseClient();
-  console.log('[scheduleService] inserting post:', JSON.stringify(payload).slice(0, 200));
-  const { data, error } = await supabase
-    .from('scheduled_posts')
-    .insert(payload)
-    .select('id');
+  console.log('[scheduleService] inserting post via rpc:', payload.platform);
 
-  console.log('[scheduleService] result data:', JSON.stringify(data));
-  console.log('[scheduleService] result error:', JSON.stringify(error));
+  const { data, error } = await supabase.rpc('insert_scheduled_post', {
+    p_user_id: payload.user_id,
+    p_platform: payload.platform,
+    p_video_url: payload.video_url,
+    p_title: payload.title,
+    p_caption: payload.caption,
+    p_hashtags: payload.hashtags,
+    p_hook_text: payload.hook_text,
+    p_privacy_level: payload.privacy_level,
+    p_scheduled_at: payload.scheduled_at,
+  });
+
+  console.log('[scheduleService] rpc result data:', JSON.stringify(data));
+  console.log('[scheduleService] rpc result error:', JSON.stringify(error));
 
   if (error) return { error: `[${error.code}] ${error.message} | ${error.details}` };
-  if (!data || data.length === 0) return { error: 'Insert succeeded but no row returned' };
-  return { id: data[0].id };
+  return { id: data as string };
 }
 
 export async function getScheduledPosts(userId: string) {
