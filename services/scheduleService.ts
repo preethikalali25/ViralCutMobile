@@ -14,29 +14,17 @@ export interface ScheduledPostPayload {
 
 export async function saveScheduledPost(payload: ScheduledPostPayload): Promise<{ id: string } | { error: string }> {
   const supabase = getSupabaseClient();
-  console.log('[scheduleService] inserting post:', payload.platform);
+  console.log('[scheduleService] calling save-scheduled-post fn:', payload.platform);
 
-  const { data, error } = await supabase
-    .from('scheduled_posts')
-    .insert({
-      user_id: payload.user_id,
-      platform: payload.platform,
-      video_url: payload.video_url,
-      title: payload.title,
-      caption: payload.caption,
-      hashtags: payload.hashtags,
-      hook_text: payload.hook_text,
-      privacy_level: payload.privacy_level,
-      scheduled_at: payload.scheduled_at,
-    })
-    .select('id')
-    .single();
+  const { data, error } = await supabase.functions.invoke('save-scheduled-post', {
+    body: payload,
+  });
 
-  console.log('[scheduleService] insert data:', JSON.stringify(data));
-  console.log('[scheduleService] insert error:', JSON.stringify(error));
-  console.log('[scheduleService] insert error raw:', error);
+  console.log('[scheduleService] fn data:', JSON.stringify(data));
+  console.log('[scheduleService] fn error:', JSON.stringify(error));
 
-  if (error) return { error: `[${error.code}] ${error.message} | details:${error.details} | hint:${(error as any).hint} | full:${JSON.stringify(error)}` };
+  if (error) return { error: error.message ?? JSON.stringify(error) };
+  if (data?.error) return { error: data.error };
   return { id: data.id as string };
 }
 
