@@ -14,25 +14,29 @@ export interface ScheduledPostPayload {
 
 export async function saveScheduledPost(payload: ScheduledPostPayload): Promise<{ id: string } | { error: string }> {
   const supabase = getSupabaseClient();
-  console.log('[scheduleService] inserting post via rpc:', payload.platform);
+  console.log('[scheduleService] inserting post:', payload.platform);
 
-  const { data, error } = await supabase.rpc('insert_scheduled_post', {
-    p_user_id: payload.user_id,
-    p_platform: payload.platform,
-    p_video_url: payload.video_url,
-    p_title: payload.title,
-    p_caption: payload.caption,
-    p_hashtags: payload.hashtags,
-    p_hook_text: payload.hook_text,
-    p_privacy_level: payload.privacy_level,
-    p_scheduled_at: payload.scheduled_at,
-  });
+  const { data, error } = await supabase
+    .from('scheduled_posts')
+    .insert({
+      user_id: payload.user_id,
+      platform: payload.platform,
+      video_url: payload.video_url,
+      title: payload.title,
+      caption: payload.caption,
+      hashtags: payload.hashtags,
+      hook_text: payload.hook_text,
+      privacy_level: payload.privacy_level,
+      scheduled_at: payload.scheduled_at,
+    })
+    .select('id')
+    .single();
 
-  console.log('[scheduleService] rpc result data:', JSON.stringify(data));
-  console.log('[scheduleService] rpc result error:', JSON.stringify(error));
+  console.log('[scheduleService] insert data:', JSON.stringify(data));
+  console.log('[scheduleService] insert error:', JSON.stringify(error));
 
   if (error) return { error: `[${error.code}] ${error.message} | ${error.details}` };
-  return { id: data as string };
+  return { id: data.id as string };
 }
 
 export async function getScheduledPosts(userId: string) {
