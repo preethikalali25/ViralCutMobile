@@ -1,14 +1,14 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import {
-  View, Text, ScrollView, StyleSheet, Pressable,
+  View, Text, ScrollView, StyleSheet, Pressable, ActivityIndicator,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Image } from 'expo-image';
 import { MaterialIcons, MaterialCommunityIcons } from '@expo/vector-icons';
 import { useRouter } from 'expo-router';
 import { Colors, Spacing, Radius, FontSize, FontWeight } from '@/constants/theme';
-import { useVideos } from '@/hooks/useVideos';
-import PlatformBadge from '@/components/ui/PlatformBadge';
+import { useAuth } from '@/hooks/useAuth';
+import { getScheduledPosts, deleteScheduledPost, ScheduledPost } from '@/services/scheduleService';
 
 const DAYS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
 const MONTHS = [
@@ -193,13 +193,28 @@ function BestTimesSection() {
 
 export default function ScheduleScreen() {
   const router = useRouter();
-  const { videos } = useVideos();
+  const { user } = useAuth();
   const now = new Date();
   const [year, setYear] = useState(now.getFullYear());
   const [month, setMonth] = useState(now.getMonth());
   const [selectedDay, setSelectedDay] = useState<number | null>(null);
+  const [posts, setPosts] = useState<ScheduledPost[]>([]);
+  const [loading, setLoading] = useState(true);
 
-  const scheduled = videos.filter(v => v.status === 'scheduled');
+  const loadPosts = useCallback(async () => {
+    if (!user?.id) return;
+    setLoading(true);
+    const { posts: fetched } = await getScheduledPosts(user.id);
+    setPosts(fetched);
+    setLoading(false);
+  }, [user?.id]);
+
+  useEffect(() => { loadPosts(); }, [loadPosts]);
+
+  const handleDelete = async (id: string) => {
+    await deleteScheduledPost(id);
+    setPosts(prev => prev.filter(p => p.id !== id));
+  };
 
   const daysInMonth = getDaysInMonth(year, month);
   const firstDay = getFirstDayOfMonth(year, month);
@@ -207,23 +222,19 @@ export default function ScheduleScreen() {
   const rows = Math.ceil(totalCells / 7);
 
   const scheduledDays = new Set(
-    scheduled
-      .filter(v => v.scheduledAt)
-      .map(v => {
-        const d = new Date(v.scheduledAt!);
-        if (d.getFullYear() === year && d.getMonth() === month) return d.getDate();
-        return null;
-      })
-      .filter(Boolean) as number[]
+    posts.map(p => {
+      const d = new Date(p.scheduled_at);
+      if (d.getFullYear() === year && d.getMonth() === month) return d.getDate();
+      return null;
+    }).filter(Boolean) as number[]
   );
 
   const selectedVideos = selectedDay
-    ? scheduled.filter(v => {
-        if (!v.scheduledAt) return false;
-        const d = new Date(v.scheduledAt);
+    ? posts.filter(p => {
+        const d = new Date(p.scheduled_at);
         return d.getFullYear() === year && d.getMonth() === month && d.getDate() === selectedDay;
       })
-    : scheduled;
+    : posts;
 
   const prevMonth = () => {
     if (month === 0) { setYear(y => y - 1); setMonth(11); }
@@ -307,32 +318,32 @@ export default function ScheduleScreen() {
             <Text style={styles.sectionCount}>({selectedVideos.length})</Text>
           </Text>
 
-          {selectedVideos.length > 0 ? selectedVideos.map(v => (
-            <Pressable
-              key={v.id}
-              style={({ pressed }) => [styles.videoRow, pressed && { opacity: 0.8 }]}
-              onPress={() => router.push({ pathname: '/editor', params: { id: v.id } })}
-            >
-              <Image source={{ uri: v.thumbnail }} style={styles.videoThumb} contentFit="cover" transition={200} />
-              <View style={styles.videoInfo}>
-                <Text style={styles.videoTitle} numberOfLines={1}>{v.title}</Text>
-                <View style={styles.videoMeta}>
-                  <MaterialIcons name="schedule" size={11} color={Colors.amber} />
-                  <Text style={styles.videoDate}>
-                    {v.platformSchedules
-                      ? Object.entries(v.platformSchedules)
-                          .map(([p, t]) => `${p.charAt(0).toUpperCase() + p.slice(1)}: ${new Date(t).toLocaleDateString('en', { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' })}`)
-                          .join('  ·  ')
-                      : v.scheduledAt ? new Date(v.scheduledAt).toLocaleDateString('en', { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' }) : ''}
-                  </Text>
+          {loading ? (
+            <ActivityIndicator color={Colors.primary} style={{ marginVertical: 32 }} />
+          ) : selectedVideos.length > 0 ? selectedVideos.map(p => {
+            const platformLabel = p.platform === 'reels' ? 'Instagram' : p.platform === 'tiktok' ? 'TikTok' : 'YouTube';
+            const platformColor = p.platform === 'reels' ? '#e1306c' : p.platform === 'tiktok' ? '#ee1d52' : '#ff0000';
+            const statusColor = p.status === 'published' ? Colors.success : p.status === 'failed' ? Colors.error : Colors.amber;
+            return (
+              <View key={p.id} style={styles.videoRow}>
+                <View style={[styles.platformDot, { backgroundColor: platformColor }]} />
+                <View style={styles.videoInfo}>
+                  <Text style={styles.videoTitle} numberOfLines={1}>{p.title || 'Untitled'}</Text>
+                  <View style={styles.videoMeta}>
+                    <MaterialIcons name="schedule" size={11} color={statusColor} />
+                    <Text style={[styles.videoDate, { color: statusColor }]}>
+                      {platformLabel} · {new Date(p.scheduled_at).toLocaleDateString('en', { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' })}
+                      {p.status !== 'pending' ? `  (${p.status})` : ''}
+                    </Text>
+                  </View>
+                  {p.caption ? <Text style={styles.videoCaption} numberOfLines={1}>{p.caption}</Text> : null}
                 </View>
-                <View style={styles.platforms}>
-                  {v.platforms.map(p => <PlatformBadge key={p} platform={p} size="sm" />)}
-                </View>
+                <Pressable hitSlop={12} onPress={() => handleDelete(p.id)}>
+                  <MaterialIcons name="delete-outline" size={20} color={Colors.textMuted} />
+                </Pressable>
               </View>
-              <MaterialIcons name="chevron-right" size={20} color={Colors.textMuted} />
-            </Pressable>
-          )) : (
+            );
+          }) : (
             <View style={styles.empty}>
               <MaterialIcons name="event-busy" size={44} color={Colors.textMuted} />
               <Text style={styles.emptyText}>
@@ -461,10 +472,11 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderColor: Colors.surfaceBorder,
   },
-  videoThumb: {
-    width: 56,
-    height: 56,
-    borderRadius: Radius.sm,
+  platformDot: {
+    width: 10,
+    height: 10,
+    borderRadius: 5,
+    marginTop: 4,
   },
   videoInfo: { flex: 1, gap: 4 },
   videoTitle: {
@@ -482,6 +494,11 @@ const styles = StyleSheet.create({
     fontSize: FontSize.xs,
     color: Colors.amber,
     fontWeight: FontWeight.medium,
+    includeFontPadding: false,
+  },
+  videoCaption: {
+    fontSize: FontSize.xs,
+    color: Colors.textMuted,
     includeFontPadding: false,
   },
   platforms: {
