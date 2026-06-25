@@ -9,6 +9,7 @@ const webStubs = {
   'expo-video-thumbnails': path.resolve(__dirname, 'modules/expo-video-thumbnails.web.ts'),
   'react-native-video-trim': path.resolve(__dirname, 'modules/react-native-video-trim.web.ts'),
   'expo-video': path.resolve(__dirname, 'modules/expo-video.web.ts'),
+  'expo-web-browser': path.resolve(__dirname, 'modules/expo-web-browser.web.ts'),
 };
 
 const originalResolveRequest = config.resolver.resolveRequest;
