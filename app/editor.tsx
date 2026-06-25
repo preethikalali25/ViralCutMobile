@@ -493,8 +493,13 @@ export default function EditorScreen() {
         return;
       }
 
-      // Burn hook overlay and upload to Supabase Storage
-      const { videoUrl, error: uploadError } = await prepareVideoForPublish(videoUri, hookText);
+      // Upload raw video to Supabase Storage (skip local burn — server handles overlay at publish time)
+      setUploadingToStorage(true);
+      const { publicUrl: videoUrl, error: uploadError } = await uploadVideoToStorage(
+        videoUri, user.id, video.id, setUploadProgress,
+      );
+      setUploadingToStorage(false);
+      setUploadProgress(0);
       if (uploadError || !videoUrl) {
         showAlert('Upload Failed', uploadError ?? 'Could not upload video.', [{ text: 'OK', style: 'cancel' }]);
         return;
