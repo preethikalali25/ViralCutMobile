@@ -1372,7 +1372,7 @@ export default function EditorScreen() {
                 ? <ActivityIndicator size="small" color="#fff" />
                 : <MaterialIcons name="schedule" size={18} color="#fff" />}
               <Text style={styles.tiktokPublishBtnText}>
-                {schedulingPost ? 'Uploading…' : `Schedule ${scheduledPlatforms.size} Platform${scheduledPlatforms.size !== 1 ? 's' : ''}`}
+                {burningOverlay ? 'Burning overlay…' : uploadingToStorage ? 'Uploading…' : schedulingPost ? 'Saving…' : `Schedule ${scheduledPlatforms.size} Platform${scheduledPlatforms.size !== 1 ? 's' : ''}`}
               </Text>
             </Pressable>
           </View>
