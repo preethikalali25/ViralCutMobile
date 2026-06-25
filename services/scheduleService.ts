@@ -34,8 +34,9 @@ export async function saveScheduledPost(payload: ScheduledPostPayload): Promise<
 
   console.log('[scheduleService] insert data:', JSON.stringify(data));
   console.log('[scheduleService] insert error:', JSON.stringify(error));
+  console.log('[scheduleService] insert error raw:', error);
 
-  if (error) return { error: `[${error.code}] ${error.message} | ${error.details}` };
+  if (error) return { error: `[${error.code}] ${error.message} | details:${error.details} | hint:${(error as any).hint} | full:${JSON.stringify(error)}` };
   return { id: data.id as string };
 }
 
