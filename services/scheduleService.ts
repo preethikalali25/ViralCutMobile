@@ -14,14 +14,18 @@ export interface ScheduledPostPayload {
 
 export async function saveScheduledPost(payload: ScheduledPostPayload): Promise<{ id: string } | { error: string }> {
   const supabase = getSupabaseClient();
+  console.log('[scheduleService] inserting post:', JSON.stringify(payload).slice(0, 200));
   const { data, error } = await supabase
     .from('scheduled_posts')
     .insert(payload)
-    .select('id')
-    .single();
+    .select('id');
 
-  if (error) return { error: `[${error.code}] ${error.message}` };
-  return { id: data.id };
+  console.log('[scheduleService] result data:', JSON.stringify(data));
+  console.log('[scheduleService] result error:', JSON.stringify(error));
+
+  if (error) return { error: `[${error.code}] ${error.message} | ${error.details}` };
+  if (!data || data.length === 0) return { error: 'Insert succeeded but no row returned' };
+  return { id: data[0].id };
 }
 
 export async function getScheduledPosts(userId: string) {
