@@ -7,7 +7,7 @@ import { Image } from 'expo-image';
 import { MaterialIcons, MaterialCommunityIcons } from '@expo/vector-icons';
 import { useRouter } from 'expo-router';
 import { Colors, Spacing, Radius, FontSize, FontWeight } from '@/constants/theme';
-import { useAuth } from '@/hooks/useAuth';
+import { useAuth } from '@/template';
 import { getScheduledPosts, deleteScheduledPost, ScheduledPost } from '@/services/scheduleService';
 
 const DAYS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
