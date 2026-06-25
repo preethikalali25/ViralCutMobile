@@ -20,7 +20,7 @@ export async function saveScheduledPost(payload: ScheduledPostPayload): Promise<
     .select('id')
     .single();
 
-  if (error) return { error: error.message };
+  if (error) return { error: `[${error.code}] ${error.message}` };
   return { id: data.id };
 }
 
