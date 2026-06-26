@@ -133,15 +133,22 @@ export default function LoginScreen() {
                 <Text style={styles.cardTitle}>Get Started</Text>
                 <Text style={styles.cardSub}>Sign in or create an account</Text>
 
-                {/* Apple — shown when native module is linked (always on production builds) */}
-                {appleAvailable && (
-                  <AppleAuthentication.AppleAuthenticationButton
-                    buttonType={AppleAuthentication.AppleAuthenticationButtonType.SIGN_IN}
-                    buttonStyle={AppleAuthentication.AppleAuthenticationButtonStyle.WHITE}
-                    cornerRadius={50}
-                    style={styles.appleBtn}
-                    onPress={handleApple}
-                  />
+                {/* Apple — native button on real devices, styled fallback on simulator */}
+                {Platform.OS === 'ios' && (
+                  appleAvailable ? (
+                    <AppleAuthentication.AppleAuthenticationButton
+                      buttonType={AppleAuthentication.AppleAuthenticationButtonType.SIGN_IN}
+                      buttonStyle={AppleAuthentication.AppleAuthenticationButtonStyle.WHITE}
+                      cornerRadius={50}
+                      style={styles.appleBtn}
+                      onPress={handleApple}
+                    />
+                  ) : (
+                    <Pressable style={({ pressed }) => [styles.appleFallbackBtn, pressed && { opacity: 0.85 }]} onPress={handleApple}>
+                      <MaterialCommunityIcons name="apple" size={20} color="#000" />
+                      <Text style={styles.appleFallbackText}>Sign in with Apple</Text>
+                    </Pressable>
+                  )
                 )}
 
                 {/* Google */}
@@ -348,6 +355,22 @@ const styles = StyleSheet.create({
     width: '100%',
     height: 50,
     borderRadius: 50,
+  },
+  appleFallbackBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 8,
+    backgroundColor: '#ffffff',
+    borderRadius: 50,
+    height: 50,
+    width: '100%',
+  },
+  appleFallbackText: {
+    fontSize: FontSize.md,
+    fontWeight: FontWeight.semibold,
+    color: '#000000',
+    includeFontPadding: false,
   },
   socialBtn: {
     flexDirection: 'row',
