@@ -27,6 +27,7 @@ import { burnHookOverlay, shareToInstagramReels } from '@/services/videoOverlayS
 import { INSTAGRAM_APP_ID } from '@/constants/instagram';
 import { searchViralAudio, AudioSearchResult } from '@/services/audioSearchService';
 import { SCHEDULE_CONFIG, getNextBestSlot, formatSlot, type SchedulePlatform } from '@/constants/schedulingBestTimes';
+import { saveScheduledPost } from '@/services/scheduleService';
 import * as FileSystem from 'expo-file-system';
 import * as Clipboard from 'expo-clipboard';
 import Slider from '@react-native-community/slider';
@@ -181,6 +182,7 @@ export default function EditorScreen() {
   const [tiktokPrivacy, setTiktokPrivacy] = useState('SELF_ONLY');
   const [youtubePrivacy, setYoutubePrivacy] = useState('public');
   const [uploadingToStorage, setUploadingToStorage] = useState(false);
+  const [schedulingPost, setSchedulingPost] = useState(false);
   const [uploadProgress, setUploadProgress] = useState(0);
   const [burningOverlay, setBurningOverlay] = useState(false);
   const [savingToPhotos, setSavingToPhotos] = useState(false);
@@ -479,33 +481,79 @@ export default function EditorScreen() {
     });
   };
 
-  const confirmSchedule = () => {
-    if (scheduledPlatforms.size === 0) return;
-    const snap = snapshotEditorState();
-    const platformSchedules: Record<string, string> = {};
-    let earliest: Date | null = null;
+  const confirmSchedule = async () => {
+    if (scheduledPlatforms.size === 0 || !user?.id || !video) return;
+    setSchedulingPost(true);
 
-    scheduledPlatforms.forEach(p => {
-      const slot = getNextBestSlot(p);
-      platformSchedules[p] = slot.toISOString();
-      if (!earliest || slot < earliest) earliest = slot;
-    });
+    try {
+      const snap = snapshotEditorState();
+      const videoUri = video.videoUri ?? '';
+      if (!videoUri) {
+        showAlert('Error', 'No video file found.', [{ text: 'OK', style: 'cancel' }]);
+        return;
+      }
 
-    updateVideo(video.id, {
-      ...snap,
-      status: 'scheduled',
-      scheduledAt: earliest!.toISOString(),
-      platformSchedules,
-    });
-    setShowScheduleSheet(false);
+      // Upload raw video to Supabase Storage (skip local burn — server handles overlay at publish time)
+      setUploadingToStorage(true);
+      const { publicUrl: videoUrl, error: uploadError } = await uploadVideoToStorage(
+        videoUri, user.id, video.id, setUploadProgress,
+      );
+      setUploadingToStorage(false);
+      setUploadProgress(0);
+      if (uploadError || !videoUrl) {
+        showAlert('Upload Failed', uploadError ?? 'Could not upload video.', [{ text: 'OK', style: 'cancel' }]);
+        return;
+      }
 
-    const lines = Array.from(scheduledPlatforms)
-      .map(p => `${SCHEDULE_CONFIG[p].label}: ${formatSlot(new Date(platformSchedules[p]))}`)
-      .join('\n');
-    showAlert('Scheduled!', lines, [
-      { text: 'View Schedule', onPress: () => router.push('/(tabs)/schedule') },
-      { text: 'OK', style: 'cancel' },
-    ]);
+      const platformSchedules: Record<string, string> = {};
+      let earliest: Date | null = null;
+      const errors: string[] = [];
+
+      await Promise.all(Array.from(scheduledPlatforms).map(async (p) => {
+        const slot = getNextBestSlot(p);
+        platformSchedules[p] = slot.toISOString();
+        if (!earliest || slot < earliest) earliest = slot;
+
+        const dbPlatform = p === 'instagram' ? 'reels' : p as 'tiktok' | 'reels' | 'youtube';
+        const result = await saveScheduledPost({
+          user_id: user.id,
+          platform: dbPlatform,
+          video_url: videoUrl,
+          title: videoTitle || snap.hook?.text || 'ViralCut video',
+          caption: caption,
+          hashtags: hashtags,
+          hook_text: hookText,
+          privacy_level: p === 'youtube' ? youtubePrivacy : (tiktokPrivacy === 'SELF_ONLY' ? 'private' : 'public'),
+          scheduled_at: slot.toISOString(),
+        });
+
+        if ('error' in result) errors.push(`${SCHEDULE_CONFIG[p].label}: ${result.error}`);
+      }));
+
+      if (errors.length > 0 && errors.length === scheduledPlatforms.size) {
+        showAlert('Schedule Failed', errors.join('\n'), [{ text: 'OK', style: 'cancel' }]);
+        return;
+      }
+
+      updateVideo(video.id, {
+        ...snap,
+        status: 'scheduled',
+        scheduledAt: earliest!.toISOString(),
+        platformSchedules,
+      });
+      setShowScheduleSheet(false);
+
+      const lines = Array.from(scheduledPlatforms)
+        .map(p => `${SCHEDULE_CONFIG[p].label}: ${formatSlot(new Date(platformSchedules[p]))}`)
+        .join('\n');
+      const suffix = errors.length > 0 ? `\n\nWarning: ${errors.join('; ')}` : '';
+      showAlert('Scheduled!', lines + suffix, [
+        { text: 'View Schedule', onPress: () => router.push('/(tabs)/schedule') },
+        { text: 'OK', style: 'cancel' },
+      ]);
+    } finally {
+      setSchedulingPost(false);
+    }
   };
 
   const handlePublish = () => {
@@ -1316,17 +1364,20 @@ export default function EditorScreen() {
             <View style={styles.scheduleNote}>
               <MaterialIcons name="info-outline" size={13} color={Colors.textMuted} />
               <Text style={styles.scheduleNoteText}>
-                Each platform posts at its own peak time. Auto-posting requires the app to be open at the scheduled time.
+                Each platform posts at its own peak time. The server will publish automatically even when the app is closed.
               </Text>
             </View>
 
             <Pressable
-              style={[styles.tiktokPublishBtn, { backgroundColor: Colors.primary, marginTop: Spacing.sm }]}
+              style={[styles.tiktokPublishBtn, { backgroundColor: Colors.primary, marginTop: Spacing.sm, opacity: schedulingPost ? 0.7 : 1 }]}
               onPress={confirmSchedule}
+              disabled={schedulingPost}
             >
-              <MaterialIcons name="schedule" size={18} color="#fff" />
+              {schedulingPost
+                ? <ActivityIndicator size="small" color="#fff" />
+                : <MaterialIcons name="schedule" size={18} color="#fff" />}
               <Text style={styles.tiktokPublishBtnText}>
-                Schedule {scheduledPlatforms.size} Platform{scheduledPlatforms.size !== 1 ? 's' : ''}
+                {burningOverlay ? 'Burning overlay…' : uploadingToStorage ? 'Uploading…' : schedulingPost ? 'Saving…' : `Schedule ${scheduledPlatforms.size} Platform${scheduledPlatforms.size !== 1 ? 's' : ''}`}
               </Text>
             </Pressable>
           </View>

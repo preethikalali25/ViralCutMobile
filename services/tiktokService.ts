@@ -151,7 +151,7 @@ export async function uploadVideoToStorage(
 ): Promise<{ publicUrl?: string; error?: string }> {
   try {
     const client = getSupabaseClient();
-    const fileName = `${userId}/${videoId}.mp4`;
+    const fileName = `${userId}/${videoId}_${Date.now()}.mp4`;
     const supabaseUrl = process.env.EXPO_PUBLIC_SUPABASE_URL!;
 
     // Get the authenticated user's JWT for the upload request
@@ -163,15 +163,21 @@ export async function uploadVideoToStorage(
     const FileSystem = await import('expo-file-system');
     const uploadUrl = `${supabaseUrl}/storage/v1/object/videos/${fileName}`;
 
-    const result = await (FileSystem as any).uploadAsync(uploadUrl, localUri, {
-      httpMethod: 'POST',
-      uploadType: (FileSystem as any).FileSystemUploadType.BINARY_CONTENT,
-      headers: {
-        Authorization: `Bearer ${token}`,
-        'Content-Type': 'video/mp4',
-        'x-upsert': 'true',
-      },
-    });
+    const uploadTimeout = new Promise<never>((_, reject) =>
+      setTimeout(() => reject(new Error('Upload timed out after 3 minutes')), 180_000),
+    );
+
+    const result = await Promise.race([
+      (FileSystem as any).uploadAsync(uploadUrl, localUri, {
+        httpMethod: 'POST',
+        uploadType: (FileSystem as any).FileSystemUploadType.BINARY_CONTENT,
+        headers: {
+          Authorization: `Bearer ${token}`,
+          'Content-Type': 'video/mp4',
+        },
+      }),
+      uploadTimeout,
+    ]) as { status: number; body?: string };
 
     if (result.status < 200 || result.status > 299) {
       return { error: `Storage upload failed (${result.status}): ${result.body ?? ''}` };
