@@ -144,7 +144,7 @@ export default function LoginScreen() {
                       onPress={handleApple}
                     />
                   ) : (
-                    <Pressable style={({ pressed }) => [styles.appleFallbackBtn, pressed && { opacity: 0.85 }]} onPress={handleApple}>
+                    <Pressable style={[styles.appleFallbackBtn, { opacity: 0.6 }]} disabled>
                       <MaterialCommunityIcons name="apple" size={20} color="#000" />
                       <Text style={styles.appleFallbackText}>Sign in with Apple</Text>
                     </Pressable>
