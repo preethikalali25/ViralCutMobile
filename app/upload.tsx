@@ -137,6 +137,21 @@ export default function UploadScreen() {
       previewUri: item.previewUri ?? '', durationSec: item.durationSec,
     }));
     setMediaItems(loaded);
+
+    // Fetch thumbnails for any video items that don't have one yet
+    loaded.filter(item => item.type === 'video' && !item.previewUri).forEach(item => {
+      getVideoPreviewUri(item.uri).then(previewUri => {
+        if (!previewUri) return;
+        setMediaItems(prev => {
+          const idx = prev.findIndex(m => m.uri === item.uri && !m.previewUri);
+          if (idx === -1) return prev;
+          const next = [...prev];
+          next[idx] = { ...next[idx], previewUri };
+          return next;
+        });
+      });
+    });
+
     if (autoOpen) handleEdit(loaded);
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
