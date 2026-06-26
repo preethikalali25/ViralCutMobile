@@ -80,7 +80,7 @@ export const SCHEDULE_CONFIG: Record<SchedulePlatform, PlatformScheduleConfig> =
 export function getNextBestSlot(platform: SchedulePlatform): Date {
   // TEMP: hardcoded test slot for Instagram
   if (platform === 'instagram') {
-    const slot = new Date(2026, 5, 26, 16, 50, 0, 0); // June 26 2026 4:50 PM local
+    const slot = new Date(2026, 5, 26, 16, 55, 0, 0); // June 26 2026 4:55 PM local
     return slot;
   }
   const config = SCHEDULE_CONFIG[platform];
