@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState } from 'react';
 import {
   View, Text, ScrollView, StyleSheet, Pressable, ActivityIndicator,
 } from 'react-native';
@@ -7,8 +7,8 @@ import { Image } from 'expo-image';
 import { MaterialIcons, MaterialCommunityIcons } from '@expo/vector-icons';
 import { useRouter } from 'expo-router';
 import { Colors, Spacing, Radius, FontSize, FontWeight } from '@/constants/theme';
-import { useAuth } from '@/template';
-import { getScheduledPosts, deleteScheduledPost, ScheduledPost } from '@/services/scheduleService';
+import { deleteScheduledPost, ScheduledPost } from '@/services/scheduleService';
+import { useScheduledPosts } from '@/hooks/useScheduledPosts';
 
 const DAYS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
 const MONTHS = [
@@ -193,27 +193,15 @@ function BestTimesSection() {
 
 export default function ScheduleScreen() {
   const router = useRouter();
-  const { user } = useAuth();
+  const { posts, loading, refresh } = useScheduledPosts();
   const now = new Date();
   const [year, setYear] = useState(now.getFullYear());
   const [month, setMonth] = useState(now.getMonth());
   const [selectedDay, setSelectedDay] = useState<number | null>(null);
-  const [posts, setPosts] = useState<ScheduledPost[]>([]);
-  const [loading, setLoading] = useState(true);
-
-  const loadPosts = useCallback(async () => {
-    if (!user?.id) return;
-    setLoading(true);
-    const { posts: fetched } = await getScheduledPosts(user.id);
-    setPosts(fetched);
-    setLoading(false);
-  }, [user?.id]);
-
-  useEffect(() => { loadPosts(); }, [loadPosts]);
 
   const handleDelete = async (id: string) => {
     await deleteScheduledPost(id);
-    setPosts(prev => prev.filter(p => p.id !== id));
+    refresh();
   };
 
   const daysInMonth = getDaysInMonth(year, month);
