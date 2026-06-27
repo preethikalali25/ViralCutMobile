@@ -1,16 +1,39 @@
 {
   "cli": {
-    "version": ">= 12.0.0"
+    "version": ">= 16.0.0",
+    "appVersionSource": "remote"
   },
   "build": {
+    "development": {
+      "developmentClient": true,
+      "distribution": "internal",
+      "ios": {
+        "image": "macos-tahoe-26.4-xcode-26.4",
+        "buildConfiguration": "Debug"
+      }
+    },
+    "preview": {
+      "distribution": "internal",
+      "ios": {
+        "image": "macos-tahoe-26.4-xcode-26.4",
+        "simulator": false
+      }
+    },
     "production": {
       "autoIncrement": true,
       "ios": {
         "image": "macos-tahoe-26.4-xcode-26.4"
+      },
+      "android": {
+        "buildType": "apk"
       }
     }
   },
   "submit": {
-    "production": {}
+    "production": {
+      "ios": {
+        "appleId": "preethika.kallaguntla@gmail.com"
+      }
+    }
   }
 }
