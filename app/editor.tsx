@@ -521,10 +521,19 @@ export default function EditorScreen() {
         return;
       }
 
-      // Upload raw video to Supabase Storage (skip local burn — server handles overlay at publish time)
+      // Burn hook overlay + audio into the video before uploading
+      let burnedUri = videoUri;
+      try {
+        const burned = await burnOverlayLocally(videoUri, hookText);
+        burnedUri = burned.outputUri;
+      } catch (e) {
+        console.warn('[confirmSchedule] burn failed, uploading raw video:', e);
+      }
+
+      // Upload burned video to Supabase Storage
       setUploadingToStorage(true);
       const { publicUrl: videoUrl, error: uploadError } = await uploadVideoToStorage(
-        videoUri, user.id, video.id, setUploadProgress,
+        burnedUri, user.id, video.id, setUploadProgress,
       );
       setUploadingToStorage(false);
       setUploadProgress(0);
