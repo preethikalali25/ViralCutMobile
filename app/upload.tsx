@@ -23,17 +23,41 @@ type MediaPreviewItem = MediaItem & { previewUri: string; durationSec?: number }
 
 const THUMBNAIL_TIMEOUT_MS = 8000;
 
+async function resolveUri(uri: string): Promise<string> {
+  if (!uri.startsWith('ph://')) return uri;
+  try {
+    const FS = await import('expo-file-system');
+    const dest = FS.cacheDirectory + `thumb_src_${Date.now()}.mp4`;
+    await FS.copyAsync({ from: uri, to: dest });
+    return dest;
+  } catch { /* fall through */ }
+  try {
+    const MediaLibrary = await import('expo-media-library');
+    const assetId = uri.replace('ph://', '').split('/')[0];
+    const asset = await MediaLibrary.getAssetInfoAsync(assetId);
+    if (asset?.localUri) return asset.localUri;
+  } catch { /* fall through */ }
+  return uri;
+}
+
 // '' means "no thumbnail yet" (still loading or failed) — never the raw video
 // URI, since <Image> can't render a video file and would show a broken tile.
 async function getVideoPreviewUri(uri: string): Promise<string> {
   try {
     const VideoThumbnails = await import('expo-video-thumbnails');
-    const result = await Promise.race([
-      VideoThumbnails.getThumbnailAsync(uri, { time: 0, quality: 0.7 }),
-      new Promise<never>((_, reject) =>
-        setTimeout(() => reject(new Error('thumbnail timed out')), THUMBNAIL_TIMEOUT_MS)),
-    ]);
-    return result.uri;
+    const resolved = await resolveUri(uri);
+    // Try multiple seek points in case the first frame is blank/black
+    for (const seekMs of [1000, 500, 2000, 0]) {
+      try {
+        const result = await Promise.race([
+          VideoThumbnails.getThumbnailAsync(resolved, { time: seekMs, quality: 0.7 }),
+          new Promise<never>((_, reject) =>
+            setTimeout(() => reject(new Error('thumbnail timed out')), THUMBNAIL_TIMEOUT_MS)),
+        ]);
+        if (result.uri) return result.uri;
+      } catch { /* try next seek */ }
+    }
+    return '';
   } catch (e) {
     console.warn('[upload] thumbnail generation failed:', e);
     return '';
@@ -113,6 +137,21 @@ export default function UploadScreen() {
       previewUri: item.previewUri ?? '', durationSec: item.durationSec,
     }));
     setMediaItems(loaded);
+
+    // Fetch thumbnails for any video items that don't have one yet
+    loaded.filter(item => item.type === 'video' && !item.previewUri).forEach(item => {
+      getVideoPreviewUri(item.uri).then(previewUri => {
+        if (!previewUri) return;
+        setMediaItems(prev => {
+          const idx = prev.findIndex(m => m.uri === item.uri && !m.previewUri);
+          if (idx === -1) return prev;
+          const next = [...prev];
+          next[idx] = { ...next[idx], previewUri };
+          return next;
+        });
+      });
+    });
+
     if (autoOpen) handleEdit(loaded);
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
@@ -342,7 +381,7 @@ const styles = StyleSheet.create({
   strip: { gap: 8, paddingHorizontal: 4 },
   stripItem: {
     width: 80, height: 106, borderRadius: Radius.md,
-    overflow: 'hidden', position: 'absolute',
+    overflow: 'hidden',
   },
   stripThumb: { width: '100%', height: '100%' },
   stripThumbPlaceholder: { alignItems: 'center', justifyContent: 'center', backgroundColor: Colors.surfaceElevated },

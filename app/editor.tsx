@@ -81,17 +81,20 @@ async function extractVideoFrame(videoUri: string): Promise<{ base64: string; mi
     const FileSystem = await import('expo-file-system');
     const resolvedUri = await resolveVideoUri(videoUri);
     let frameUri: string | null = null;
-    for (const seekMs of [2000, 1000, 500, 0]) {
+    for (const seekMs of [1000, 500, 2000, 0]) {
       try {
-        const { uri } = await VideoThumbnails.getThumbnailAsync(resolvedUri, { time: seekMs, quality: 0.4, maxWidth: 512 });
-        if (uri) { frameUri = uri; break; }
+        const result = await Promise.race([
+          VideoThumbnails.getThumbnailAsync(resolvedUri, { time: seekMs, quality: 0.4, maxWidth: 512 }),
+          new Promise<never>((_, reject) => setTimeout(() => reject(new Error('frame timeout')), 8000)),
+        ]);
+        if (result.uri) { frameUri = result.uri; break; }
       } catch { /* try next */ }
     }
     if (!frameUri) return null;
     const base64 = await FileSystem.readAsStringAsync(frameUri, { encoding: FileSystem.EncodingType.Base64 });
     return { base64, mime: 'image/jpeg' };
   } catch (e) {
-    console.warn('Frame extraction failed:', e);
+    console.warn('[extractVideoFrame] failed:', e);
     return null;
   }
 }
@@ -255,6 +258,31 @@ export default function EditorScreen() {
     }
     setPlatforms(video.platforms ?? ['tiktok']);
     setThumbnailUri(video.thumbnail ?? null);
+  }, [video?.id]);
+
+  // Retry thumbnail if missing when editor opens
+  useEffect(() => {
+    if (!video || thumbnailUri) return;
+    const uri = video.videoUri;
+    if (!uri) return;
+    (async () => {
+      try {
+        const VideoThumbnails = await import('expo-video-thumbnails');
+        const resolved = await resolveVideoUri(uri);
+        for (const seekMs of [1000, 500, 2000, 0]) {
+          try {
+            const { uri: thumbUri } = await VideoThumbnails.getThumbnailAsync(resolved, { time: seekMs, quality: 0.7 });
+            if (thumbUri) {
+              setThumbnailUri(thumbUri);
+              updateVideo(video.id, { thumbnail: thumbUri });
+              break;
+            }
+          } catch { /* try next */ }
+        }
+      } catch (e) {
+        console.warn('[editor] thumbnail retry failed:', e);
+      }
+    })();
   }, [video?.id]);
 
   // Auto-generate hook, caption, and audio on first open
@@ -493,10 +521,19 @@ export default function EditorScreen() {
         return;
       }
 
-      // Upload raw video to Supabase Storage (skip local burn — server handles overlay at publish time)
+      // Burn hook overlay + audio into the video before uploading
+      let burnedUri = videoUri;
+      try {
+        const burned = await burnOverlayLocally(videoUri, hookText);
+        burnedUri = burned.outputUri;
+      } catch (e) {
+        console.warn('[confirmSchedule] burn failed, uploading raw video:', e);
+      }
+
+      // Upload burned video to Supabase Storage
       setUploadingToStorage(true);
       const { publicUrl: videoUrl, error: uploadError } = await uploadVideoToStorage(
-        videoUri, user.id, video.id, setUploadProgress,
+        burnedUri, user.id, video.id, setUploadProgress,
       );
       setUploadingToStorage(false);
       setUploadProgress(0);

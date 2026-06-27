@@ -10,6 +10,7 @@ import { Colors, Spacing, Radius, FontSize, FontWeight } from '@/constants/theme
 import { useAuth } from '@/template';
 import { useVideos } from '@/hooks/useVideos';
 import { useAnalytics } from '@/hooks/useAnalytics';
+import { useScheduledPosts } from '@/hooks/useScheduledPosts';
 import { formatNumber, getRelativeTime } from '@/services/formatters';
 import PlatformBadge from '@/components/ui/PlatformBadge';
 import StatsCard from '@/components/ui/StatsCard';
@@ -25,14 +26,15 @@ export default function DashboardScreen() {
   const router = useRouter();
   const { user } = useAuth();
   const { videos } = useVideos();
+  const { posts: scheduledPosts } = useScheduledPosts();
   const initials = user?.email ? getInitials(user.email) : 'U';
 
   const { data: analytics } = useAnalytics();
 
   const published = videos.filter(v => v.status === 'published');
-  const scheduled = videos.filter(v => v.status === 'scheduled');
   const ready = videos.filter(v => v.status === 'ready');
   const processing = videos.filter(v => v.status === 'processing' || v.status === 'uploading');
+  const scheduled = scheduledPosts;
 
   const hasRealAnalytics = !!analytics && analytics.platforms.some(p => p.connected && p.posts > 0);
   const totalViews = hasRealAnalytics ? analytics!.totalViews : 0;
@@ -65,7 +67,7 @@ export default function DashboardScreen() {
               <Text style={styles.greeting}>Welcome back</Text>
               <Text style={styles.subGreeting}>
                 {processing.length > 0 ? `${processing.length} processing · ` : ''}
-                {ready.length} ready · {scheduled.length} scheduled
+                {ready.length} ready · {scheduledPosts.length} scheduled
               </Text>
             </View>
           </Pressable>
@@ -98,7 +100,7 @@ export default function DashboardScreen() {
         <View style={styles.statsGrid}>
           <View style={styles.statsRow}>
             <View style={{ flex: 1 }}>
-              <StatsCard label="Videos" value={String(published.length + ready.length)} change={`${scheduled.length} scheduled`} changeType="neutral" accentColor={Colors.primary} />
+              <StatsCard label="Videos" value={String(published.length + ready.length)} change={`${scheduledPosts.length} scheduled`} changeType="neutral" accentColor={Colors.primary} />
             </View>
             <View style={{ flex: 1 }}>
               <StatsCard label="Total Views" value={formatNumber(totalViews)} change={hasRealAnalytics ? 'Live data' : 'Connect platforms'} changeType={hasRealAnalytics ? 'up' : 'neutral'} accentColor={Colors.sky} />
@@ -122,25 +124,31 @@ export default function DashboardScreen() {
           </Pressable>
         </View>
         <ScrollView horizontal showsHorizontalScrollIndicator={false} style={styles.horizontalScroll}>
-          {scheduled.length > 0 ? scheduled.map(v => (
-            <Pressable
-              key={v.id}
-              style={({ pressed }) => [styles.upcomingCard, pressed && { opacity: 0.8 }]}
-              onPress={() => router.push({ pathname: '/editor', params: { id: v.id } })}
-            >
-              <Image source={{ uri: v.thumbnail }} style={styles.upcomingThumb} contentFit="cover" transition={200} />
-              <Text style={styles.upcomingTitle} numberOfLines={2}>{v.title}</Text>
-              <View style={styles.upcomingMeta}>
-                <MaterialIcons name="schedule" size={11} color={Colors.amber} />
-                <Text style={styles.upcomingDate}>
-                  {v.scheduledAt ? new Date(v.scheduledAt).toLocaleDateString('en', { month: 'short', day: 'numeric' }) : ''}
-                </Text>
-              </View>
-              <View style={styles.upcomingPlatforms}>
-                {v.platforms.map(p => <PlatformBadge key={p} platform={p} size="sm" />)}
-              </View>
-            </Pressable>
-          )) : (
+          {scheduled.length > 0 ? scheduled.map(p => {
+            const platformColor = p.platform === 'reels' ? '#e1306c' : p.platform === 'tiktok' ? '#ee1d52' : '#ff0000';
+            const platformLabel = p.platform === 'reels' ? 'Instagram' : p.platform === 'tiktok' ? 'TikTok' : 'YouTube';
+            return (
+              <Pressable
+                key={p.id}
+                style={({ pressed }) => [styles.upcomingCard, pressed && { opacity: 0.8 }]}
+                onPress={() => router.push('/(tabs)/schedule')}
+              >
+                <View style={[styles.upcomingThumb, { backgroundColor: platformColor + '22', alignItems: 'center', justifyContent: 'center' }]}>
+                  <MaterialIcons name="schedule" size={28} color={platformColor} />
+                </View>
+                <Text style={styles.upcomingTitle} numberOfLines={2}>{p.title || 'Untitled'}</Text>
+                <View style={styles.upcomingMeta}>
+                  <MaterialIcons name="schedule" size={11} color={Colors.amber} />
+                  <Text style={styles.upcomingDate}>
+                    {new Date(p.scheduled_at).toLocaleDateString('en', { month: 'short', day: 'numeric' })}
+                  </Text>
+                </View>
+                <View style={styles.upcomingPlatforms}>
+                  <Text style={[styles.upcomingDate, { color: platformColor }]}>{platformLabel}</Text>
+                </View>
+              </Pressable>
+            );
+          }) : (
             <View style={styles.emptyUpcoming}>
               <MaterialIcons name="video-call" size={32} color={Colors.textMuted} />
               <Text style={styles.emptyText}>No upcoming posts</Text>
