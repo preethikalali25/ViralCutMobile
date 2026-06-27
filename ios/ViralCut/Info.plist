@@ -27,7 +27,7 @@
 		<dict>
 			<key>CFBundleURLSchemes</key>
 			<array>
-				<string>viralcut</string>
+				<string>shortreel</string>
 				<string>com.kalel.KalelViralCut</string>
 			</array>
 		</dict>

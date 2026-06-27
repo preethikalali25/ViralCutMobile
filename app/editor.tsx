@@ -668,10 +668,7 @@ export default function EditorScreen() {
     if (uploadError) { showAlert('Upload Failed', uploadError); return; }
 
     updateVideo(video.id, { ...snap, title: videoTitle });
-    const { error } = await tiktok.publish(
-      videoUrl, videoTitle || snap.hook.text || 'KalELConnect video', tiktokPrivacy,
-    );
-    if (error) showAlert('TikTok Error', error);
+    tiktok.startPollingById(publishId);
   };
 
   const handleInstagramPublish = async () => {
