@@ -78,6 +78,10 @@ export const SCHEDULE_CONFIG: Record<SchedulePlatform, PlatformScheduleConfig> =
 
 /** Returns the next upcoming best posting slot for a given platform (device local time). */
 export function getNextBestSlot(platform: SchedulePlatform): Date {
+  // TEMP: hardcoded test slot for Instagram
+  if (platform === 'instagram') {
+    return new Date(2026, 5, 26, 18, 30, 0, 0); // June 26 2026 6:30 PM PST (hardcoded test)
+  }
   const config = SCHEDULE_CONFIG[platform];
   const now = new Date();
 
