@@ -97,10 +97,9 @@ export default function ProfileScreen() {
         style: 'destructive',
         onPress: async () => {
           setLoggingOut(true);
-          try {
-            const { error } = await logout();
-            if (error) showAlert('Error', error);
-          } finally {
+          const { error } = await logout();
+          if (error) {
+            showAlert('Error', error);
             setLoggingOut(false);
           }
         },
