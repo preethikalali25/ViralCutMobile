@@ -556,7 +556,7 @@ export default function EditorScreen() {
           user_id: user.id,
           platform: dbPlatform,
           video_url: videoUrl,
-          title: videoTitle || snap.hook?.text || 'ViralCut video',
+          title: videoTitle || snap.hook?.text || 'ShortReel video',
           caption: caption,
           hashtags: hashtags,
           hook_text: hookText,
@@ -696,7 +696,7 @@ export default function EditorScreen() {
 
     // Step 3: init TikTok FILE_UPLOAD — get upload URL
     setUploadingToStorage(true);
-    const title = videoTitle || snap.hook?.text || 'KalELConnect video';
+    const title = videoTitle || snap.hook?.text || 'ShortReel video';
     const { publishId, uploadUrl, error: initError } = await initTikTokPublish(
       user.id, videoSize, title, tiktokPrivacy,
     );
@@ -756,7 +756,7 @@ export default function EditorScreen() {
     }
 
     youtube.setPublishState({ phase: 'uploading', progress: 0 });
-    const title = videoTitle || snap.hook?.text || 'KalELConnect Short';
+    const title = videoTitle || snap.hook?.text || 'ShortReel Short';
     const description = [snap.caption, snap.hashtags.join(' ')].filter(Boolean).join('\n\n');
 
     const initResult = await initYouTubeUpload(user.id, title, videoSize, description, youtubePrivacy);

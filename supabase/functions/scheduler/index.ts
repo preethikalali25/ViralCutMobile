@@ -82,7 +82,7 @@ async function publishTikTok(
   const videoSize = parseInt(headRes.headers.get('content-length') ?? '0', 10);
   if (!videoSize) return { error: 'Could not determine video size from storage URL' };
 
-  const title = (post.hook_text || post.title || 'KalELConnect video').slice(0, 150);
+  const title = (post.hook_text || post.title || 'ShortReel video').slice(0, 150);
   const privacyLevel = post.privacy_level === 'private' ? 'SELF_ONLY' : 'PUBLIC_TO_EVERYONE';
 
   // Use PULL_FROM_URL — TikTok fetches the video from the public Supabase Storage URL
@@ -272,7 +272,7 @@ async function publishYouTube(
   const videoSize = videoBlob.size;
 
   // Init resumable upload
-  const title = (post.hook_text || post.title || 'KalELConnect Short').slice(0, 100);
+  const title = (post.hook_text || post.title || 'ShortReel Short').slice(0, 100);
   const captionParts = [post.caption, post.hashtags].filter(Boolean);
   const description = captionParts.join('\n\n');
   const privacyStatus = post.privacy_level === 'private' ? 'private' : 'public';

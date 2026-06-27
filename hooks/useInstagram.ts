@@ -12,7 +12,7 @@ import {
 } from '@/services/instagramService';
 import * as WebBrowser from 'expo-web-browser';
 
-// Backend URL that Instagram redirects to, then this forwards to viralcut://instagram-callback
+// Backend URL that Instagram redirects to, then this forwards to shortreel://instagram-callback
 export const INSTAGRAM_REDIRECT_URI =
   'https://mrsvovoywukechawmrsv.backend.onspace.ai/functions/v1/instagram-publisher';
 
@@ -65,11 +65,11 @@ export function useInstagram() {
           return resolve({ error: result.error });
         }
 
-        // openAuthSessionAsync detects the viralcut:// redirect and returns it
+        // openAuthSessionAsync detects the shortreel:// redirect and returns it
         // instead of treating it as a browser dismissal
         const browserResult = await WebBrowser.openAuthSessionAsync(
           result.authUrl,
-          'viralcut://',
+          'shortreel://',
         );
 
         if (browserResult.type !== 'success') {

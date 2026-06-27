@@ -6,7 +6,7 @@ const IG_TOKEN_URL = 'https://api.instagram.com/oauth/access_token';
 const IG_LONG_TOKEN_URL = 'https://graph.instagram.com/access_token';
 const IG_GRAPH_URL = 'https://graph.instagram.com/v21.0';
 
-const APP_DEEP_LINK = 'viralcut://instagram-callback';
+const APP_DEEP_LINK = 'shortreel://instagram-callback';
 
 function getEnv(key: string): string {
   const v = Deno.env.get(key);

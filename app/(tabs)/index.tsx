@@ -80,7 +80,7 @@ export default function DashboardScreen() {
           />
           <View style={styles.heroOverlay}>
             <MaterialCommunityIcons name="scissors-cutting" size={28} color={Colors.primaryLight} />
-            <Text style={styles.heroTitle}>ViralCut</Text>
+            <Text style={styles.heroTitle}>ShortReel</Text>
             <Text style={styles.heroSub}>AI-powered short-form video studio</Text>
           </View>
         </View>
