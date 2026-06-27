@@ -21,7 +21,7 @@ export const Colors = {
   sky: '#0ea5e9',
   
   // Platform colors
-  tiktok: '#ee1d52',
+  tiktok: '#010101',
   reels: '#e1306c',
   youtube: '#ff0000',
   
