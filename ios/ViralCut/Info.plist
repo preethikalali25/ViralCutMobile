@@ -52,11 +52,9 @@
 		<true/>
 	</dict>
 	<key>NSCalendarsFullAccessUsageDescription</key>
-	<string>ViralCut uses calendar access to schedule your video posts at the right time.</string>
+	<string>This app needs access to your calendar.</string>
 	<key>NSCalendarsUsageDescription</key>
-	<string>ViralCut uses calendar access to schedule your video posts at the right time.</string>
-	<key>NSContactsUsageDescription</key>
-	<string>ViralCut uses your contacts to help you tag and share videos with people you know.</string>
+	<string>This app needs access to your calendar.</string>
 	<key>NSCameraUsageDescription</key>
 	<string>KalELConnect needs access to your camera to record videos directly.</string>
 	<key>NSMicrophoneUsageDescription</key>
@@ -64,7 +62,7 @@
 	<key>NSPhotoLibraryUsageDescription</key>
 	<string>KalELConnect needs access to your photo library to select videos for editing and publishing.</string>
 	<key>NSRemindersFullAccessUsageDescription</key>
-	<string>ViralCut uses reminders to notify you when it's time to post your scheduled videos.</string>
+	<string>This app needs access to your reminders.</string>
 	<key>NSUserActivityTypes</key>
 	<array>
 		<string>$(PRODUCT_BUNDLE_IDENTIFIER).expo.index_route</string>
