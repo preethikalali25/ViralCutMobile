@@ -57,7 +57,7 @@ export async function getCachedEnhancement(
   userId: string,
 ): Promise<{ enhancement: VoiceEnhancement | null; error?: string }> {
   const { data, error } = await invoke('voice-analyzer', { action: 'get', videoId, userId });
-  if (error) return { enhancement: null, error };
+  if (error) return { enhancement: null }; // fail silently — function may not be deployed yet
   const raw = data?.enhancement;
   if (!raw) return { enhancement: null };
   return {

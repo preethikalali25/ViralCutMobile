@@ -15,15 +15,15 @@ Deno.serve(async (req) => {
 
   try {
     const supabase = createClient(getEnv('SUPABASE_URL'), getEnv('SUPABASE_SERVICE_ROLE_KEY'));
-    const assemblyKey = getEnv('ASSEMBLYAI_API_KEY');
-    const dolbyKey = getEnv('DOLBY_API_KEY');
-    const dolbySecret = getEnv('DOLBY_API_SECRET');
 
     const body = await req.json();
     const { action, videoId, userId, videoUrl, transcriptId, dolbyJobId, enhancementId } = body;
 
     // ── Submit analysis (AssemblyAI diarization + Dolby.io enhance in parallel) ──
     if (action === 'submit') {
+      const assemblyKey = getEnv('ASSEMBLYAI_API_KEY');
+      const dolbyKey = getEnv('DOLBY_API_KEY');
+      const dolbySecret = getEnv('DOLBY_API_SECRET');
       if (!videoUrl || !userId || !videoId) {
         return new Response(JSON.stringify({ error: 'Missing videoUrl, userId, or videoId' }), { status: 400, headers: corsHeaders });
       }
@@ -79,6 +79,7 @@ Deno.serve(async (req) => {
 
     // ── Poll AssemblyAI status ──
     if (action === 'poll-transcript') {
+      const assemblyKey = getEnv('ASSEMBLYAI_API_KEY');
       if (!transcriptId || !enhancementId) {
         return new Response(JSON.stringify({ error: 'Missing transcriptId or enhancementId' }), { status: 400, headers: corsHeaders });
       }
@@ -119,6 +120,8 @@ Deno.serve(async (req) => {
 
     // ── Poll Dolby.io enhance status ──
     if (action === 'poll-enhance') {
+      const dolbyKey = getEnv('DOLBY_API_KEY');
+      const dolbySecret = getEnv('DOLBY_API_SECRET');
       if (!dolbyJobId || !enhancementId) {
         return new Response(JSON.stringify({ error: 'Missing dolbyJobId or enhancementId' }), { status: 400, headers: corsHeaders });
       }
