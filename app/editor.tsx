@@ -27,8 +27,9 @@ import { searchViralAudio, AudioSearchResult } from '@/services/audioSearchServi
 import * as FileSystem from 'expo-file-system';
 import * as Clipboard from 'expo-clipboard';
 import Slider from '@react-native-community/slider';
+import VoiceTab from '@/components/voice/VoiceTab';
 
-type Tab = 'hook' | 'caption' | 'audio' | 'platforms';
+type Tab = 'hook' | 'caption' | 'audio' | 'voice' | 'platforms';
 
 interface AISuggestedAudio {
   id: string;
@@ -179,6 +180,7 @@ export default function EditorScreen() {
   const [savingToPhotos, setSavingToPhotos] = useState(false);
   const [generatingThumbnail, setGeneratingThumbnail] = useState(false);
   const [thumbnailUri, setThumbnailUri] = useState<string | null>(video?.thumbnail ?? null);
+  const [voiceMixUrl, setVoiceMixUrl] = useState<string | null>(null);
 
   // ── Edge Function Test Panel ──
   const [showTestModal, setShowTestModal] = useState(false);
@@ -483,10 +485,13 @@ export default function EditorScreen() {
         return;
       }
 
+      // Use voice-mixed video if available, otherwise raw video
+      const sourceUri = voiceMixUrl ?? videoUri;
+
       // Burn hook overlay + audio into the video before uploading
-      let burnedUri = videoUri;
+      let burnedUri = sourceUri;
       try {
-        const burned = await burnOverlayLocally(videoUri, hookText);
+        const burned = await burnOverlayLocally(sourceUri, hookText);
         burnedUri = burned.outputUri;
       } catch (e) {
         console.warn('[confirmSchedule] burn failed, uploading raw video:', e);
@@ -792,6 +797,7 @@ export default function EditorScreen() {
     { id: 'hook', label: 'Hook' },
     { id: 'caption', label: 'Caption' },
     { id: 'audio', label: 'Audio' },
+    { id: 'voice', label: 'Voice' },
     { id: 'platforms', label: 'Platforms' },
   ];
 
@@ -1193,6 +1199,16 @@ export default function EditorScreen() {
                   </View>
                 ) : null}
               </View>
+            ) : null}
+
+            {/* ── Voice Tab ── */}
+            {tab === 'voice' ? (
+              <VoiceTab
+                videoId={video.id}
+                videoPublicUrl={video.videoUri}
+                videoDurationMs={(video.duration ?? 0) * 1000}
+                onMixReady={url => setVoiceMixUrl(url)}
+              />
             ) : null}
 
             {/* ── Platforms Tab ── */}

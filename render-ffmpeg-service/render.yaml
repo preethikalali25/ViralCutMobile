@@ -1,0 +1,12 @@
+services:
+  - type: web
+    name: shortreel-ffmpeg
+    runtime: python
+    buildCommand: pip install -r requirements.txt
+    startCommand: uvicorn main:app --host 0.0.0.0 --port $PORT
+    envVars:
+      - key: PORT
+        value: 10000
+    # Use the ffmpeg buildpack by adding ffmpeg to the system packages
+    # In Render dashboard: Settings → Build & Deploy → Add Build Command:
+    #   apt-get install -y ffmpeg && pip install -r requirements.txt
