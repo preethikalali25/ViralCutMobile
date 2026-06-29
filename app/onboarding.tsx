@@ -10,17 +10,6 @@ import { useInstagram } from '@/hooks/useInstagram';
 import { useTikTok } from '@/hooks/useTikTok';
 import { useYouTube } from '@/hooks/useYouTube';
 import { useAlert } from '@/template';
-import AsyncStorage from '@react-native-async-storage/async-storage';
-
-const ONBOARDING_KEY = 'shortreel_onboarding_done';
-
-export async function markOnboardingDone() {
-  await AsyncStorage.setItem(ONBOARDING_KEY, '1');
-}
-
-export async function hasCompletedOnboarding(): Promise<boolean> {
-  return (await AsyncStorage.getItem(ONBOARDING_KEY)) === '1';
-}
 
 export default function OnboardingScreen() {
   const router = useRouter();
@@ -43,8 +32,7 @@ export default function OnboardingScreen() {
     }
   };
 
-  const handleFinish = async () => {
-    await markOnboardingDone();
+  const handleFinish = () => {
     router.replace('/(tabs)');
   };
 
