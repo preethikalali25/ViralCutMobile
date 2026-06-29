@@ -5,7 +5,6 @@ import {
   VoiceEnhancement,
   submitVoiceAnalysis,
   pollTranscript,
-  pollEnhancement,
   getCachedEnhancement,
   submitMixJob,
   pollMixJob,
@@ -44,15 +43,12 @@ export function useVoiceEnhancement(videoId: string, videoPublicUrl: string | un
     errorMessage: null,
   });
   const [speakerVolumes, setSpeakerVolumes] = useState<Record<string, number>>({});
-  const [useEnhanced, setUseEnhanced] = useState(false);
 
   const transcriptPollRef = useRef<ReturnType<typeof setInterval> | null>(null);
-  const enhancePollRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const mixPollRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   const stopPolling = useCallback(() => {
     if (transcriptPollRef.current) clearInterval(transcriptPollRef.current);
-    if (enhancePollRef.current) clearInterval(enhancePollRef.current);
     if (mixPollRef.current) clearInterval(mixPollRef.current);
   }, []);
 
@@ -81,7 +77,7 @@ export function useVoiceEnhancement(videoId: string, videoPublicUrl: string | un
     if (!user?.id || !videoPublicUrl) return;
     setState({ phase: 'submitting', enhancement: null, mixOutputUrl: null, errorMessage: null });
 
-    const { enhancementId, transcriptId, dolbyJobId, error } = await submitVoiceAnalysis(
+    const { enhancementId, transcriptId, error } = await submitVoiceAnalysis(
       videoId, user.id, videoPublicUrl,
     );
 
@@ -92,23 +88,17 @@ export function useVoiceEnhancement(videoId: string, videoPublicUrl: string | un
 
     setState(prev => ({ ...prev, phase: 'analyzing' }));
 
-    let transcriptDone = false;
-    let enhanceDone = !dolbyJobId; // skip Dolby polling if no job ID
-    let finalEnhancement: VoiceEnhancement | null = null;
-    let enhancedUrl: string | null = null;
-
     // Poll AssemblyAI transcript
     transcriptPollRef.current = setInterval(async () => {
       const { data, error: pollErr } = await pollTranscript(transcriptId, enhancementId);
       if (pollErr) return;
       if (data?.status === 'completed') {
         clearInterval(transcriptPollRef.current!);
-        transcriptDone = true;
-        finalEnhancement = {
+        const enhancement: VoiceEnhancement = {
           id: enhancementId,
           speakerCount: data.speakerCount ?? 0,
           speakerSegments: data.speakerSegments ?? [],
-          enhancedUrl: enhancedUrl,
+          enhancedUrl: null,
           status: 'ready',
         };
         const speakers = [...new Set((data.speakerSegments as SpeakerSegment[] ?? []).map(s => s.speaker))];
@@ -117,51 +107,18 @@ export function useVoiceEnhancement(videoId: string, videoPublicUrl: string | un
           for (const sp of speakers) { if (!(sp in next)) next[sp] = 1.0; }
           return next;
         });
-        if (enhanceDone) {
-          setState(prev => ({
-            ...prev,
-            phase: 'ready',
-            enhancement: { ...finalEnhancement!, enhancedUrl },
-          }));
-        } else {
-          setState(prev => ({ ...prev, phase: 'enhancing' }));
-        }
+        setState(prev => ({ ...prev, phase: 'ready', enhancement }));
       } else if (data?.status === 'error') {
         clearInterval(transcriptPollRef.current!);
         setState(prev => ({ ...prev, phase: 'error', errorMessage: 'Speaker detection failed' }));
       }
     }, 4000);
-
-    // Poll Dolby.io enhancement
-    if (dolbyJobId) {
-      enhancePollRef.current = setInterval(async () => {
-        const { data, error: pollErr } = await pollEnhancement(dolbyJobId, enhancementId);
-        if (pollErr) return;
-        if (data?.status === 'completed') {
-          clearInterval(enhancePollRef.current!);
-          enhanceDone = true;
-          enhancedUrl = data.enhancedUrl ?? null;
-          if (transcriptDone && finalEnhancement) {
-            setState(prev => ({
-              ...prev,
-              phase: 'ready',
-              enhancement: { ...finalEnhancement!, enhancedUrl },
-            }));
-          }
-        } else if (data?.status === 'error') {
-          clearInterval(enhancePollRef.current!);
-          enhanceDone = true; // don't block on enhance failure
-        }
-      }, 5000);
-    }
   }, [user?.id, videoId, videoPublicUrl]);
 
   /** Submit per-speaker mix job (Phase 2). */
   const applyMix = useCallback(async () => {
     if (!user?.id || !state.enhancement) return;
-    const sourceUrl = (useEnhanced && state.enhancement.enhancedUrl)
-      ? state.enhancement.enhancedUrl
-      : videoPublicUrl;
+    const sourceUrl = videoPublicUrl;
     if (!sourceUrl) return;
 
     setState(prev => ({ ...prev, phase: 'mixing' }));
@@ -188,7 +145,7 @@ export function useVoiceEnhancement(videoId: string, videoPublicUrl: string | un
         setState(prev => ({ ...prev, phase: 'error', errorMessage: result.error ?? 'Mix failed' }));
       }
     }, 4000);
-  }, [user?.id, videoId, videoPublicUrl, state.enhancement, speakerVolumes, useEnhanced]);
+  }, [user?.id, videoId, videoPublicUrl, state.enhancement, speakerVolumes]);
 
   const reset = useCallback(() => {
     stopPolling();
@@ -200,8 +157,6 @@ export function useVoiceEnhancement(videoId: string, videoPublicUrl: string | un
     state,
     speakerVolumes,
     setSpeakerVolumes,
-    useEnhanced,
-    setUseEnhanced,
     analyze,
     applyMix,
     loadCached,

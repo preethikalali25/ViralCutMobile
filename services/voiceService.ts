@@ -24,12 +24,12 @@ async function invoke(fn: string, body: Record<string, unknown>) {
   return { data, error: null };
 }
 
-/** Start speaker diarization + voice enhancement for a video. */
+/** Start speaker diarization for a video (AssemblyAI). */
 export async function submitVoiceAnalysis(
   videoId: string,
   userId: string,
   videoUrl: string,
-): Promise<{ enhancementId?: string; transcriptId?: string; dolbyJobId?: string; error?: string }> {
+): Promise<{ enhancementId?: string; transcriptId?: string; error?: string }> {
   const { data, error } = await invoke('voice-analyzer', {
     action: 'submit', videoId, userId, videoUrl,
   });
@@ -37,18 +37,12 @@ export async function submitVoiceAnalysis(
   return {
     enhancementId: data.enhancementId,
     transcriptId: data.transcriptId,
-    dolbyJobId: data.dolbyJobId,
   };
 }
 
 /** Poll AssemblyAI transcript status. */
 export async function pollTranscript(transcriptId: string, enhancementId: string) {
   return invoke('voice-analyzer', { action: 'poll-transcript', transcriptId, enhancementId });
-}
-
-/** Poll Dolby.io enhancement status. */
-export async function pollEnhancement(dolbyJobId: string, enhancementId: string) {
-  return invoke('voice-analyzer', { action: 'poll-enhance', dolbyJobId, enhancementId });
 }
 
 /** Get cached voice enhancement from DB. */

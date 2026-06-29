@@ -1,6 +1,6 @@
 import React, { useEffect } from 'react';
 import {
-  View, Text, StyleSheet, Pressable, ActivityIndicator, Switch,
+  View, Text, StyleSheet, Pressable, ActivityIndicator,
 } from 'react-native';
 import { MaterialIcons, MaterialCommunityIcons } from '@expo/vector-icons';
 import { Colors, Spacing, Radius, FontSize, FontWeight } from '@/constants/theme';
@@ -19,14 +19,12 @@ interface Props {
 const PHASE_LABELS: Record<string, string> = {
   submitting: 'Starting analysis…',
   analyzing: 'Detecting speakers…',
-  enhancing: 'Enhancing voice quality…',
   mixing: 'Applying speaker mix…',
 };
 
 export default function VoiceTab({ videoId, videoPublicUrl, videoDurationMs, onMixReady }: Props) {
   const {
     state, speakerVolumes, setSpeakerVolumes,
-    useEnhanced, setUseEnhanced,
     analyze, applyMix, loadCached, reset,
   } = useVoiceEnhancement(videoId, videoPublicUrl);
 
@@ -100,29 +98,7 @@ export default function VoiceTab({ videoId, videoPublicUrl, videoDurationMs, onM
                 {state.enhancement.speakerCount} speaker{state.enhancement.speakerCount !== 1 ? 's' : ''} detected
               </Text>
             </View>
-            {state.enhancement.enhancedUrl && (
-              <View style={styles.summaryChip}>
-                <MaterialIcons name="check-circle" size={15} color="#10b981" />
-                <Text style={[styles.summaryText, { color: '#10b981' }]}>Voice enhanced</Text>
-              </View>
-            )}
           </View>
-
-          {/* Voice enhancement toggle */}
-          {state.enhancement.enhancedUrl && (
-            <View style={styles.toggleRow}>
-              <View style={{ flex: 1 }}>
-                <Text style={styles.toggleLabel}>Use Enhanced Audio</Text>
-                <Text style={styles.toggleSub}>Reduces noise and isolates speech clarity</Text>
-              </View>
-              <Switch
-                value={useEnhanced}
-                onValueChange={setUseEnhanced}
-                trackColor={{ false: Colors.surfaceBorder, true: Colors.primary }}
-                thumbColor={useEnhanced ? Colors.primaryLight : '#f4f3f4'}
-              />
-            </View>
-          )}
 
           {/* Speaker timeline */}
           <SpeakerTimeline
