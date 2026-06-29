@@ -27,12 +27,17 @@ interface ScheduledPost {
   user_id: string;
   platform: 'tiktok' | 'reels' | 'youtube';
   video_url: string;
+  enhanced_video_url: string | null;
   title: string;
   caption: string;
   hashtags: string;
   hook_text: string;
   privacy_level: string;
   scheduled_at: string;
+}
+
+function effectiveVideoUrl(post: ScheduledPost): string {
+  return post.enhanced_video_url ?? post.video_url;
 }
 
 // ── TikTok ────────────────────────────────────────────────────────────────────
@@ -78,7 +83,7 @@ async function publishTikTok(
   }
 
   // Fetch video to get its size
-  const headRes = await fetch(post.video_url, { method: 'HEAD' });
+  const headRes = await fetch(effectiveVideoUrl(post), { method: 'HEAD' });
   const videoSize = parseInt(headRes.headers.get('content-length') ?? '0', 10);
   if (!videoSize) return { error: 'Could not determine video size from storage URL' };
 
@@ -97,7 +102,7 @@ async function publishTikTok(
     },
     source_info: {
       source: 'PULL_FROM_URL',
-      video_url: post.video_url,
+      video_url: effectiveVideoUrl(post),
     },
   };
 
@@ -169,7 +174,7 @@ async function publishInstagram(
   // Step 1: Create media container
   const containerParams = {
     media_type: 'REELS',
-    video_url: post.video_url,
+    video_url: effectiveVideoUrl(post),
     caption,
     share_to_feed: 'true',
     access_token: accessToken,
@@ -266,7 +271,7 @@ async function publishYouTube(
   }
 
   // Fetch video from Supabase Storage
-  const videoRes = await fetch(post.video_url);
+  const videoRes = await fetch(effectiveVideoUrl(post));
   if (!videoRes.ok) return { error: `Could not fetch video from storage: ${videoRes.status}` };
   const videoBlob = await videoRes.blob();
   const videoSize = videoBlob.size;
@@ -324,12 +329,12 @@ Deno.serve(async (req) => {
   if (req.method === 'OPTIONS') return new Response('ok', { headers: corsHeaders });
 
   try {
-    const supabaseUrl       = getEnv('SUPABASE_URL');
-    const serviceRoleKey    = getEnv('SUPABASE_SERVICE_ROLE_KEY');
-    const tiktokClientKey   = Deno.env.get('TIKTOK_CLIENT_KEY') ?? '';
+    const supabaseUrl        = getEnv('SUPABASE_URL');
+    const serviceRoleKey     = getEnv('SUPABASE_SERVICE_ROLE_KEY');
+    const tiktokClientKey    = Deno.env.get('TIKTOK_CLIENT_KEY') ?? '';
     const tiktokClientSecret = Deno.env.get('TIKTOK_CLIENT_SECRET') ?? '';
-    const igAppSecret       = Deno.env.get('INSTAGRAM_APP_SECRET') ?? '';
-    const youtubeClientId   = Deno.env.get('YOUTUBE_CLIENT_ID') ?? '';
+    const igAppSecret        = Deno.env.get('INSTAGRAM_APP_SECRET') ?? '';
+    const youtubeClientId    = Deno.env.get('YOUTUBE_CLIENT_ID') ?? '';
 
     const supabase = createClient(supabaseUrl, serviceRoleKey);
 
