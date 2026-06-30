@@ -72,24 +72,49 @@ async function resolveVideoUri(uri: string): Promise<string> {
   return uri;
 }
 
-async function extractVideoFrame(videoUri: string): Promise<{ base64: string; mime: string } | null> {
+async function extractVideoFrames(
+  videoUri: string,
+  durationSec = 0,
+): Promise<Array<{ base64: string; mime: string }>> {
   try {
     const VideoThumbnails = await import('expo-video-thumbnails');
     const FileSystem = await import('expo-file-system');
     const resolvedUri = await resolveVideoUri(videoUri);
-    let frameUri: string | null = null;
-    for (const seekMs of [2000, 1000, 500, 0]) {
+
+    // Sample at 2s, 6s, 11s — capped to first 13s so longer videos still get relevant frames
+    const cap = Math.min(durationSec > 0 ? durationSec * 1000 : 13000, 13000);
+    const seekPoints = [2000, Math.round(cap * 0.45), Math.round(cap * 0.85)].filter(
+      (t, i, arr) => t <= cap && arr.indexOf(t) === i,
+    );
+
+    const frames: Array<{ base64: string; mime: string }> = [];
+    for (const seekMs of seekPoints) {
       try {
-        const { uri } = await VideoThumbnails.getThumbnailAsync(resolvedUri, { time: seekMs, quality: 0.4, maxWidth: 512 });
-        if (uri) { frameUri = uri; break; }
-      } catch { /* try next */ }
+        const { uri } = await VideoThumbnails.getThumbnailAsync(resolvedUri, {
+          time: seekMs, quality: 0.35, maxWidth: 480,
+        });
+        if (uri) {
+          const base64 = await FileSystem.readAsStringAsync(uri, { encoding: FileSystem.EncodingType.Base64 });
+          if (base64.length < 500_000) frames.push({ base64, mime: 'image/jpeg' });
+        }
+      } catch { /* skip this seek point */ }
     }
-    if (!frameUri) return null;
-    const base64 = await FileSystem.readAsStringAsync(frameUri, { encoding: FileSystem.EncodingType.Base64 });
-    return { base64, mime: 'image/jpeg' };
+
+    // Fallback: try 1s if nothing worked
+    if (frames.length === 0) {
+      try {
+        const { uri } = await VideoThumbnails.getThumbnailAsync(resolvedUri, { time: 1000, quality: 0.35, maxWidth: 480 });
+        if (uri) {
+          const base64 = await FileSystem.readAsStringAsync(uri, { encoding: FileSystem.EncodingType.Base64 });
+          frames.push({ base64, mime: 'image/jpeg' });
+        }
+      } catch { /* ignore */ }
+    }
+
+    return frames;
   } catch (e) {
     console.warn('Frame extraction failed:', e);
-    return null;
+    return [];
   }
 }
 
@@ -225,7 +250,7 @@ export default function EditorScreen() {
     setTestLoading(prev => ({ ...prev, [fn]: false }));
   };
 
-  const frameCache = useRef<{ base64: string; mime: string } | null | 'pending'>('pending');
+  const frameCache = useRef<Array<{ base64: string; mime: string }> | 'pending'>('pending');
   const tiktok = useTikTok();
   const instagram = useInstagram();
 
@@ -259,9 +284,9 @@ export default function EditorScreen() {
     setAutoGenDone(true);
 
     const runAll = async () => {
-      const frame = video.videoUri ? await extractVideoFrame(video.videoUri) : null;
-      frameCache.current = frame;
-      const framePayload = frame ? { videoFrameBase64: frame.base64, videoFrameMime: frame.mime } : {};
+      const frames = video.videoUri ? await extractVideoFrames(video.videoUri, video.duration ?? 0) : [];
+      frameCache.current = frames;
+      const framePayload = frames.length > 0 ? { videoFrames: frames } : {};
 
       if (needsHook) {
         const { data, error } = await callAIGenerator('hook', {
@@ -335,10 +360,12 @@ export default function EditorScreen() {
 
   const ensureFrame = async () => {
     if (frameCache.current === 'pending') {
-      frameCache.current = video.videoUri ? await extractVideoFrame(video.videoUri) : null;
+      frameCache.current = video.videoUri
+        ? await extractVideoFrames(video.videoUri, video.duration ?? 0)
+        : [];
     }
-    const frame = frameCache.current !== 'pending' ? frameCache.current : null;
-    return frame ? { videoFrameBase64: frame.base64, videoFrameMime: frame.mime } : {};
+    const frames = frameCache.current !== 'pending' ? frameCache.current : [];
+    return frames.length > 0 ? { videoFrames: frames } : {};
   };
 
   // The background-audio `useEffect` resolves the preview clip lazily and may
