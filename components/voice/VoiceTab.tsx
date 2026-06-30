@@ -30,6 +30,7 @@ export default function VoiceTab({ videoId, videoPublicUrl, videoDurationMs, onM
     videoPublicUrl?.startsWith('http') ? videoPublicUrl : undefined,
   );
   const [uploading, setUploading] = useState(false);
+  const [speakersExpected, setSpeakersExpected] = useState<number>(2);
 
   // If videoPublicUrl is a local path, upload to storage first to get a public HTTP URL
   useEffect(() => {
@@ -81,14 +82,32 @@ export default function VoiceTab({ videoId, videoPublicUrl, videoDurationMs, onM
             <Text style={styles.processingLabel}>Preparing video…</Text>
           </View>
         ) : (
-          <Pressable
-            style={({ pressed }) => [styles.analyzeBtn, pressed && { opacity: 0.85 }]}
-            onPress={analyze}
-            disabled={!resolvedUrl}
-          >
-            <MaterialIcons name="record-voice-over" size={18} color="#fff" />
-            <Text style={styles.analyzeBtnText}>Analyze Voice & Speakers</Text>
-          </Pressable>
+          <>
+            <View style={styles.speakerPickerRow}>
+              <Text style={styles.speakerPickerLabel}>How many speakers?</Text>
+              <View style={styles.speakerPickerBtns}>
+                {[1, 2, 3, 4].map(n => (
+                  <Pressable
+                    key={n}
+                    style={[styles.speakerPickerBtn, speakersExpected === n && styles.speakerPickerBtnActive]}
+                    onPress={() => setSpeakersExpected(n)}
+                  >
+                    <Text style={[styles.speakerPickerBtnText, speakersExpected === n && styles.speakerPickerBtnTextActive]}>
+                      {n}
+                    </Text>
+                  </Pressable>
+                ))}
+              </View>
+            </View>
+            <Pressable
+              style={({ pressed }) => [styles.analyzeBtn, pressed && { opacity: 0.85 }]}
+              onPress={() => analyze(speakersExpected)}
+              disabled={!resolvedUrl}
+            >
+              <MaterialIcons name="record-voice-over" size={18} color="#fff" />
+              <Text style={styles.analyzeBtnText}>Analyze Voice & Speakers</Text>
+            </Pressable>
+          </>
         )
       )}
 
@@ -165,7 +184,7 @@ export default function VoiceTab({ videoId, videoPublicUrl, videoDurationMs, onM
             </>
           )}
 
-          <Pressable onPress={reset} style={styles.reanalyzeBtn}>
+          <Pressable onPress={() => { reset(); }} style={styles.reanalyzeBtn}>
             <Text style={styles.reanalyzeText}>Re-analyze</Text>
           </Pressable>
         </>
@@ -236,4 +255,20 @@ const styles = StyleSheet.create({
   mixReadyText: { flex: 1, fontSize: FontSize.sm, color: '#10b981' },
   reanalyzeBtn: { alignItems: 'center', paddingVertical: Spacing.sm, marginBottom: Spacing.md },
   reanalyzeText: { fontSize: FontSize.sm, color: Colors.textMuted },
+  speakerPickerRow: {
+    flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between',
+    backgroundColor: Colors.surface, borderRadius: Radius.md,
+    borderWidth: 1, borderColor: Colors.surfaceBorder,
+    padding: Spacing.md, marginBottom: Spacing.sm,
+  },
+  speakerPickerLabel: { fontSize: FontSize.sm, color: Colors.text, fontWeight: FontWeight.semibold },
+  speakerPickerBtns: { flexDirection: 'row', gap: 8 },
+  speakerPickerBtn: {
+    width: 36, height: 36, borderRadius: 18,
+    alignItems: 'center', justifyContent: 'center',
+    backgroundColor: Colors.surfaceBorder,
+  },
+  speakerPickerBtnActive: { backgroundColor: Colors.primary },
+  speakerPickerBtnText: { fontSize: FontSize.sm, fontWeight: FontWeight.semibold, color: Colors.textMuted },
+  speakerPickerBtnTextActive: { color: '#fff' },
 });

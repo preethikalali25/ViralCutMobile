@@ -73,12 +73,12 @@ export function useVoiceEnhancement(videoId: string, videoPublicUrl: string | un
   }, [user?.id, videoId]);
 
   /** Start voice analysis (Phase 1). */
-  const analyze = useCallback(async () => {
+  const analyze = useCallback(async (speakersExpected?: number) => {
     if (!user?.id || !videoPublicUrl) return;
     setState({ phase: 'submitting', enhancement: null, mixOutputUrl: null, errorMessage: null });
 
     const { enhancementId, transcriptId, error } = await submitVoiceAnalysis(
-      videoId, user.id, videoPublicUrl,
+      videoId, user.id, videoPublicUrl, speakersExpected,
     );
 
     if (error || !enhancementId || !transcriptId) {

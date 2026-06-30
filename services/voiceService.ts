@@ -40,9 +40,11 @@ export async function submitVoiceAnalysis(
   videoId: string,
   userId: string,
   videoUrl: string,
+  speakersExpected?: number,
 ): Promise<{ enhancementId?: string; transcriptId?: string; error?: string }> {
   const { data, error } = await invoke('voice-analyzer', {
     action: 'submit', videoId, userId, videoUrl,
+    ...(speakersExpected ? { speakersExpected } : {}),
   });
   if (error) return { error };
   return {
