@@ -167,6 +167,14 @@ export default function VoiceTab({ videoId, videoPublicUrl, videoDurationMs, onM
                 }
               />
 
+              {/* Mix error (inline, doesn't replace UI) */}
+              {state.mixError && (
+                <View style={styles.mixErrorRow}>
+                  <MaterialIcons name="error-outline" size={15} color="#ef4444" />
+                  <Text style={styles.mixErrorText}>{state.mixError}</Text>
+                </View>
+              )}
+
               {/* Apply mix button */}
               {state.phase === 'ready' && (
                 <Pressable
@@ -261,4 +269,6 @@ const styles = StyleSheet.create({
   mixReadyText: { flex: 1, fontSize: FontSize.sm, color: '#10b981' },
   reanalyzeBtn: { alignItems: 'center', paddingVertical: Spacing.sm, marginBottom: Spacing.md },
   reanalyzeText: { fontSize: FontSize.sm, color: Colors.textMuted },
+  mixErrorRow: { flexDirection: 'row', alignItems: 'center', gap: 6, marginBottom: Spacing.sm },
+  mixErrorText: { fontSize: FontSize.xs, color: '#ef4444', flex: 1 },
 });

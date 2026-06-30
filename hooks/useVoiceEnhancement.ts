@@ -25,6 +25,7 @@ export interface VoiceState {
   enhancement: VoiceEnhancement | null;
   mixOutputUrl: string | null;
   errorMessage: string | null;
+  mixError: string | null;
 }
 
 const SPEAKER_COLORS = ['#6366f1', '#f59e0b', '#10b981', '#ef4444', '#8b5cf6'];
@@ -41,6 +42,7 @@ export function useVoiceEnhancement(videoId: string, videoPublicUrl: string | un
     enhancement: null,
     mixOutputUrl: null,
     errorMessage: null,
+    mixError: null,
   });
   const [speakerVolumes, setSpeakerVolumes] = useState<Record<string, number>>({});
 
@@ -121,7 +123,7 @@ export function useVoiceEnhancement(videoId: string, videoPublicUrl: string | un
     const sourceUrl = videoPublicUrl;
     if (!sourceUrl) return;
 
-    setState(prev => ({ ...prev, phase: 'mixing' }));
+    setState(prev => ({ ...prev, phase: 'mixing', mixError: null }));
 
     const { jobId, error } = await submitMixJob(
       videoId, user.id, sourceUrl,
@@ -130,7 +132,8 @@ export function useVoiceEnhancement(videoId: string, videoPublicUrl: string | un
     );
 
     if (error || !jobId) {
-      setState(prev => ({ ...prev, phase: 'error', errorMessage: error ?? 'Mix submission failed' }));
+      // Go back to ready state with inline mix error (don't replace the whole UI)
+      setState(prev => ({ ...prev, phase: 'ready', mixError: error ?? 'Mix submission failed' }));
       return;
     }
 
@@ -139,17 +142,17 @@ export function useVoiceEnhancement(videoId: string, videoPublicUrl: string | un
       const result = await pollMixJob(jobId);
       if (result.status === 'completed' && result.outputUrl) {
         clearInterval(mixPollRef.current!);
-        setState(prev => ({ ...prev, phase: 'mix-ready', mixOutputUrl: result.outputUrl! }));
+        setState(prev => ({ ...prev, phase: 'mix-ready', mixOutputUrl: result.outputUrl!, mixError: null }));
       } else if (result.status === 'failed') {
         clearInterval(mixPollRef.current!);
-        setState(prev => ({ ...prev, phase: 'error', errorMessage: result.error ?? 'Mix failed' }));
+        setState(prev => ({ ...prev, phase: 'ready', mixError: result.error ?? 'Mix failed' }));
       }
     }, 4000);
   }, [user?.id, videoId, videoPublicUrl, state.enhancement, speakerVolumes]);
 
   const reset = useCallback(() => {
     stopPolling();
-    setState({ phase: 'idle', enhancement: null, mixOutputUrl: null, errorMessage: null });
+    setState({ phase: 'idle', enhancement: null, mixOutputUrl: null, errorMessage: null, mixError: null });
     setSpeakerVolumes({});
   }, [stopPolling]);
 
