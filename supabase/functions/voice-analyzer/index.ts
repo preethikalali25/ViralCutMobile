@@ -16,13 +16,11 @@ Deno.serve(async (req) => {
     const supabase = createClient(getEnv('SUPABASE_URL'), getEnv('SUPABASE_SERVICE_ROLE_KEY'));
 
     const body = await req.json();
-    const { action, videoId, userId, videoUrl, transcriptId, enhancementId } = body;
+    const { action, videoId, userId, videoUrl, transcriptId, enhancementId, speakersExpected } = body;
 
     // ── Submit analysis (AssemblyAI speaker diarization) ──
     if (action === 'submit') {
-      console.log('[voice-analyzer] submit start, videoId:', videoId, 'userId:', userId);
       const assemblyKey = getEnv('ASSEMBLYAI_API_KEY');
-      console.log('[voice-analyzer] assemblyKey length:', assemblyKey.length);
       if (!videoUrl || !userId || !videoId) {
         return new Response(JSON.stringify({ error: 'Missing videoUrl, userId, or videoId' }), { status: 400, headers: corsHeaders });
       }
@@ -33,17 +31,25 @@ Deno.serve(async (req) => {
         .insert({ video_id: videoId, user_id: userId, status: 'analyzing' })
         .select('id')
         .single();
-      console.log('[voice-analyzer] DB insert result:', record?.id, 'error:', insertErr?.message);
       if (insertErr) return new Response(JSON.stringify({ error: `DB insert failed: ${insertErr.message}` }), { status: 500, headers: corsHeaders });
 
       // Submit AssemblyAI transcript with speaker diarization
+      const aaiPayload: Record<string, unknown> = {
+        audio_url: videoUrl,
+        speaker_labels: true,
+      };
+      if (speakersExpected && speakersExpected > 1) {
+        aaiPayload.speakers_expected = speakersExpected;
+      }
+      console.log('[voice-analyzer] AAI payload:', JSON.stringify(aaiPayload).slice(0, 200));
+
       const aaiRes = await fetch(`${ASSEMBLYAI_URL}/transcript`, {
         method: 'POST',
         headers: { authorization: assemblyKey, 'content-type': 'application/json' },
-        body: JSON.stringify({ audio_url: videoUrl, speaker_labels: true }),
+        body: JSON.stringify(aaiPayload),
       });
       const aaiData = await aaiRes.json();
-      console.log('[voice-analyzer] AssemblyAI response status:', aaiRes.status, 'error:', aaiData.error);
+      console.log('[voice-analyzer] AAI submit status:', aaiRes.status, 'id:', aaiData.id, 'error:', aaiData.error);
       if (aaiData.error) {
         await supabase.from('voice_enhancements').update({ status: 'failed', error_message: aaiData.error }).eq('id', record.id);
         return new Response(JSON.stringify({ error: `AssemblyAI: ${aaiData.error}` }), { status: 500, headers: corsHeaders });
