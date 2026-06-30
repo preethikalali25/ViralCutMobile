@@ -1,10 +1,12 @@
-import React, { useEffect } from 'react';
+import React, { useEffect, useState } from 'react';
 import {
   View, Text, StyleSheet, Pressable, ActivityIndicator,
 } from 'react-native';
 import { MaterialIcons, MaterialCommunityIcons } from '@expo/vector-icons';
 import { Colors, Spacing, Radius, FontSize, FontWeight } from '@/constants/theme';
+import { useAuth } from '@/template';
 import { useVoiceEnhancement } from '@/hooks/useVoiceEnhancement';
+import { uploadVideoToStorage } from '@/services/tiktokService';
 import SpeakerTimeline from './SpeakerTimeline';
 import SpeakerVolumeSliders from './SpeakerVolumeSliders';
 
@@ -23,10 +25,26 @@ const PHASE_LABELS: Record<string, string> = {
 };
 
 export default function VoiceTab({ videoId, videoPublicUrl, videoDurationMs, onMixReady }: Props) {
+  const { user } = useAuth();
+  const [resolvedUrl, setResolvedUrl] = useState<string | undefined>(
+    videoPublicUrl?.startsWith('http') ? videoPublicUrl : undefined,
+  );
+  const [uploading, setUploading] = useState(false);
+
+  // If videoPublicUrl is a local path, upload to storage first to get a public HTTP URL
+  useEffect(() => {
+    if (!videoPublicUrl || videoPublicUrl.startsWith('http') || !user?.id) return;
+    setUploading(true);
+    uploadVideoToStorage(videoPublicUrl, user.id, videoId)
+      .then(({ publicUrl }) => { if (publicUrl) setResolvedUrl(publicUrl); })
+      .catch(() => {})
+      .finally(() => setUploading(false));
+  }, [videoPublicUrl, videoId, user?.id]);
+
   const {
     state, speakerVolumes, setSpeakerVolumes,
     analyze, applyMix, loadCached, reset,
-  } = useVoiceEnhancement(videoId, videoPublicUrl);
+  } = useVoiceEnhancement(videoId, resolvedUrl);
 
   useEffect(() => {
     loadCached();
@@ -55,16 +73,23 @@ export default function VoiceTab({ videoId, videoPublicUrl, videoDurationMs, onM
         </View>
       </View>
 
-      {/* Idle — show analyze button */}
+      {/* Idle — show analyze button (or uploading spinner) */}
       {state.phase === 'idle' && (
-        <Pressable
-          style={({ pressed }) => [styles.analyzeBtn, pressed && { opacity: 0.85 }]}
-          onPress={analyze}
-          disabled={!videoPublicUrl}
-        >
-          <MaterialIcons name="record-voice-over" size={18} color="#fff" />
-          <Text style={styles.analyzeBtnText}>Analyze Voice & Speakers</Text>
-        </Pressable>
+        uploading ? (
+          <View style={styles.processingCard}>
+            <ActivityIndicator size="small" color={Colors.primaryLight} />
+            <Text style={styles.processingLabel}>Preparing video…</Text>
+          </View>
+        ) : (
+          <Pressable
+            style={({ pressed }) => [styles.analyzeBtn, pressed && { opacity: 0.85 }]}
+            onPress={analyze}
+            disabled={!resolvedUrl}
+          >
+            <MaterialIcons name="record-voice-over" size={18} color="#fff" />
+            <Text style={styles.analyzeBtnText}>Analyze Voice & Speakers</Text>
+          </Pressable>
+        )
       )}
 
       {/* Processing spinner */}
