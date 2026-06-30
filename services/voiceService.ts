@@ -90,7 +90,7 @@ export async function submitMixJob(
   const { data, error } = await invoke('voice-mixer', {
     action: 'submit', videoId, userId, inputUrl, speakerSegments, speakerVolumes,
   });
-  if (error) return { error };
+  if (error) return { error: error.includes('RENDER_FFMPEG_SERVICE_URL') ? 'Speaker mix service not configured yet.' : error };
   return { jobId: data.jobId };
 }
 
