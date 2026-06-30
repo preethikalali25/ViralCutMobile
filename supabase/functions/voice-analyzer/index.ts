@@ -20,7 +20,9 @@ Deno.serve(async (req) => {
 
     // ── Submit analysis (AssemblyAI speaker diarization) ──
     if (action === 'submit') {
+      console.log('[voice-analyzer] submit start, videoId:', videoId, 'userId:', userId);
       const assemblyKey = getEnv('ASSEMBLYAI_API_KEY');
+      console.log('[voice-analyzer] assemblyKey length:', assemblyKey.length);
       if (!videoUrl || !userId || !videoId) {
         return new Response(JSON.stringify({ error: 'Missing videoUrl, userId, or videoId' }), { status: 400, headers: corsHeaders });
       }
@@ -31,7 +33,8 @@ Deno.serve(async (req) => {
         .insert({ video_id: videoId, user_id: userId, status: 'analyzing' })
         .select('id')
         .single();
-      if (insertErr) return new Response(JSON.stringify({ error: insertErr.message }), { status: 500, headers: corsHeaders });
+      console.log('[voice-analyzer] DB insert result:', record?.id, 'error:', insertErr?.message);
+      if (insertErr) return new Response(JSON.stringify({ error: `DB insert failed: ${insertErr.message}` }), { status: 500, headers: corsHeaders });
 
       // Submit AssemblyAI transcript with speaker diarization
       const aaiRes = await fetch(`${ASSEMBLYAI_URL}/transcript`, {
@@ -40,9 +43,10 @@ Deno.serve(async (req) => {
         body: JSON.stringify({ audio_url: videoUrl, speaker_labels: true }),
       });
       const aaiData = await aaiRes.json();
+      console.log('[voice-analyzer] AssemblyAI response status:', aaiRes.status, 'error:', aaiData.error);
       if (aaiData.error) {
         await supabase.from('voice_enhancements').update({ status: 'failed', error_message: aaiData.error }).eq('id', record.id);
-        return new Response(JSON.stringify({ error: aaiData.error }), { status: 500, headers: corsHeaders });
+        return new Response(JSON.stringify({ error: `AssemblyAI: ${aaiData.error}` }), { status: 500, headers: corsHeaders });
       }
 
       await supabase.from('voice_enhancements').update({
@@ -120,7 +124,7 @@ Deno.serve(async (req) => {
     return new Response(JSON.stringify({ error: `Unknown action: ${action}` }), { status: 400, headers: corsHeaders });
 
   } catch (err) {
-    console.error('[voice-analyzer] error:', err);
+    console.error('[voice-analyzer] unhandled error:', String(err));
     return new Response(JSON.stringify({ error: String(err) }), { status: 500, headers: corsHeaders });
   }
 });
