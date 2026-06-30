@@ -31,14 +31,35 @@ export default function VoiceTab({ videoId, videoPublicUrl, videoDurationMs, onM
   );
   const [uploading, setUploading] = useState(false);
 
-  // If videoPublicUrl is a local path, upload to storage first to get a public HTTP URL
+  // If videoPublicUrl is a local path, resolve ph:// then upload to get a public HTTP URL
   useEffect(() => {
     if (!videoPublicUrl || videoPublicUrl.startsWith('http') || !user?.id) return;
     setUploading(true);
-    uploadVideoToStorage(videoPublicUrl, user.id, videoId)
-      .then(({ publicUrl }) => { if (publicUrl) setResolvedUrl(publicUrl); })
-      .catch(() => {})
-      .finally(() => setUploading(false));
+    (async () => {
+      try {
+        let uri = videoPublicUrl;
+        // Resolve ph:// Photos library URIs to a readable file path
+        if (uri.startsWith('ph://')) {
+          try {
+            const FS = await import('expo-file-system');
+            const dest = FS.cacheDirectory + `voice_${videoId}_${Date.now()}.mp4`;
+            await FS.copyAsync({ from: uri, to: dest });
+            uri = dest;
+          } catch {
+            const MediaLibrary = await import('expo-media-library');
+            const assetId = uri.replace('ph://', '').split('/')[0];
+            const asset = await MediaLibrary.getAssetInfoAsync(assetId);
+            if (asset?.localUri) uri = asset.localUri;
+          }
+        }
+        const { publicUrl } = await uploadVideoToStorage(uri, user.id, videoId);
+        if (publicUrl) setResolvedUrl(publicUrl);
+      } catch (e) {
+        console.warn('[VoiceTab] failed to resolve/upload video:', e);
+      } finally {
+        setUploading(false);
+      }
+    })();
   }, [videoPublicUrl, videoId, user?.id]);
 
   const {
@@ -80,11 +101,15 @@ export default function VoiceTab({ videoId, videoPublicUrl, videoDurationMs, onM
             <ActivityIndicator size="small" color={Colors.primaryLight} />
             <Text style={styles.processingLabel}>Preparing video…</Text>
           </View>
+        ) : !resolvedUrl ? (
+          <View style={styles.errorCard}>
+            <MaterialIcons name="error-outline" size={20} color="#ef4444" />
+            <Text style={styles.errorText}>Could not prepare video for analysis. Try saving the video first.</Text>
+          </View>
         ) : (
           <Pressable
             style={({ pressed }) => [styles.analyzeBtn, pressed && { opacity: 0.85 }]}
             onPress={() => analyze()}
-            disabled={!resolvedUrl}
           >
             <MaterialIcons name="record-voice-over" size={18} color="#fff" />
             <Text style={styles.analyzeBtnText}>Analyze Voice & Speakers</Text>
