@@ -19,7 +19,18 @@ export interface VoiceEnhancement {
 async function invoke(fn: string, body: Record<string, unknown>) {
   const supabase = getSupabaseClient();
   const { data, error } = await supabase.functions.invoke(fn, { body });
-  if (error) return { data: null, error: error.message };
+  if (error) {
+    // Try to extract the real error message from the response body
+    let msg = error.message;
+    try {
+      const ctx = (error as any).context;
+      if (ctx) {
+        const json = typeof ctx.json === 'function' ? await ctx.json() : ctx;
+        if (json?.error) msg = json.error;
+      }
+    } catch { /* ignore */ }
+    return { data: null, error: msg };
+  }
   if (data?.error) return { data: null, error: data.error };
   return { data, error: null };
 }
