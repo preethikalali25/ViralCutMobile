@@ -19,13 +19,13 @@ Deno.serve(async (req) => {
 
   try {
     const supabase = createClient(getEnv('SUPABASE_URL'), getEnv('SUPABASE_SERVICE_ROLE_KEY'));
-    const renderUrl = getEnv('RENDER_FFMPEG_SERVICE_URL'); // e.g. https://shortreel-ffmpeg.onrender.com
 
     const body = await req.json();
     const { action, videoId, userId, inputUrl, speakerSegments, speakerVolumes, jobId } = body;
 
     // ── Submit mix job ──
     if (action === 'submit') {
+      const renderUrl = getEnv('RENDER_FFMPEG_SERVICE_URL');
       if (!videoId || !userId || !inputUrl || !speakerSegments || !speakerVolumes) {
         return new Response(JSON.stringify({ error: 'Missing required fields' }), { status: 400, headers: corsHeaders });
       }
