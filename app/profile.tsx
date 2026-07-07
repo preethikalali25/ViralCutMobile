@@ -7,6 +7,7 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import { useRouter } from 'expo-router';
 import { MaterialIcons, MaterialCommunityIcons } from '@expo/vector-icons';
 import { useAuth, useAlert } from '@/template';
+import { getSharedSupabaseClient } from '@/template/core/client';
 import { Colors, Spacing, Radius, FontSize, FontWeight } from '@/constants/theme';
 import { useSocialAccounts } from '@/hooks/useSocialAccounts';
 import { useTikTok } from '@/hooks/useTikTok';
@@ -84,6 +85,7 @@ export default function ProfileScreen() {
   const [followers, setFollowers] = useState('');
   const [saving, setSaving] = useState(false);
   const [loggingOut, setLoggingOut] = useState(false);
+  const [deletingAccount, setDeletingAccount] = useState(false);
 
   useEffect(() => {
     load();
@@ -105,6 +107,45 @@ export default function ProfileScreen() {
         },
       },
     ]);
+  };
+
+  const handleDeleteAccount = () => {
+    showAlert(
+      'Delete Account?',
+      'This will permanently delete your ShortReel account and all associated data. This cannot be undone.',
+      [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: 'Delete My Account',
+          style: 'destructive',
+          onPress: () => {
+            showAlert(
+              'Are you sure?',
+              'Your account, videos, and all platform connections will be permanently removed.',
+              [
+                { text: 'Cancel', style: 'cancel' },
+                {
+                  text: 'Yes, Delete',
+                  style: 'destructive',
+                  onPress: async () => {
+                    setDeletingAccount(true);
+                    try {
+                      const supabase = getSharedSupabaseClient();
+                      const { error } = await supabase.rpc('delete_user_account');
+                      if (error) throw error;
+                      await logout();
+                    } catch (e: any) {
+                      setDeletingAccount(false);
+                      showAlert('Delete Failed', e?.message ?? 'Could not delete account. Please contact support.');
+                    }
+                  },
+                },
+              ],
+            );
+          },
+        },
+      ],
+    );
   };
 
   // ── TikTok OAuth Connect ────────────────────────────────────────────────
@@ -494,6 +535,21 @@ export default function ProfileScreen() {
             )}
             <Text style={styles.signOutText}>Sign Out</Text>
           </Pressable>
+
+          <View style={styles.accountRowDivider} />
+
+          <Pressable
+            style={({ pressed }) => [styles.accountRow, pressed && { opacity: 0.7 }]}
+            onPress={handleDeleteAccount}
+            disabled={deletingAccount}
+          >
+            {deletingAccount ? (
+              <ActivityIndicator size="small" color={Colors.error} />
+            ) : (
+              <MaterialIcons name="delete-forever" size={18} color={Colors.error} />
+            )}
+            <Text style={styles.signOutText}>Delete Account</Text>
+          </Pressable>
         </View>
 
         <View style={{ height: Spacing.xxl }} />
@@ -670,6 +726,7 @@ const styles = StyleSheet.create({
     borderWidth: 1, borderColor: Colors.surfaceBorder, overflow: 'hidden', marginBottom: Spacing.lg,
   },
   accountRow: { flexDirection: 'row', alignItems: 'center', gap: Spacing.sm, padding: Spacing.md, minHeight: 52 },
+  accountRowDivider: { height: 1, backgroundColor: Colors.surfaceBorder, marginHorizontal: Spacing.md },
   signOutText: { fontSize: FontSize.md, fontWeight: FontWeight.semibold, color: Colors.error, includeFontPadding: false },
 
   // Modal

@@ -27,7 +27,7 @@ export default function LoginScreen() {
     if (Platform.OS === 'ios') {
       AppleAuthentication.isAvailableAsync()
         .then(setAppleAvailable)
-        .catch(() => setAppleAvailable(false));
+        .catch(() => setAppleAvailable(true)); // default true on iOS — let the button attempt
     }
   }, []);
 
@@ -133,22 +133,15 @@ export default function LoginScreen() {
                 <Text style={styles.cardTitle}>Get Started</Text>
                 <Text style={styles.cardSub}>Sign in or create an account</Text>
 
-                {/* Apple — native button on real devices, styled fallback on simulator */}
-                {Platform.OS === 'ios' && (
-                  appleAvailable ? (
-                    <AppleAuthentication.AppleAuthenticationButton
-                      buttonType={AppleAuthentication.AppleAuthenticationButtonType.SIGN_IN}
-                      buttonStyle={AppleAuthentication.AppleAuthenticationButtonStyle.WHITE}
-                      cornerRadius={50}
-                      style={styles.appleBtn}
-                      onPress={handleApple}
-                    />
-                  ) : (
-                    <Pressable style={[styles.appleFallbackBtn, { opacity: 0.6 }]} disabled>
-                      <MaterialCommunityIcons name="apple" size={20} color="#000" />
-                      <Text style={styles.appleFallbackText}>Sign in with Apple</Text>
-                    </Pressable>
-                  )
+                {/* Apple — always rendered on iOS; isAvailableAsync guards the flow not the render */}
+                {Platform.OS === 'ios' && appleAvailable && (
+                  <AppleAuthentication.AppleAuthenticationButton
+                    buttonType={AppleAuthentication.AppleAuthenticationButtonType.SIGN_IN}
+                    buttonStyle={AppleAuthentication.AppleAuthenticationButtonStyle.WHITE}
+                    cornerRadius={50}
+                    style={styles.appleBtn}
+                    onPress={handleApple}
+                  />
                 )}
 
                 {/* Google */}
