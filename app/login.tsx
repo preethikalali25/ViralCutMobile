@@ -10,12 +10,20 @@ import * as AppleAuthentication from 'expo-apple-authentication';
 import { useAuth, useAlert } from '@/template';
 import { getSharedSupabaseClient } from '@/template/core/client';
 import { Colors, Spacing, Radius, FontSize, FontWeight } from '@/constants/theme';
+import { useRouter } from 'expo-router';
 
 type Mode = 'landing' | 'email' | 'otp';
 
 export default function LoginScreen() {
-  const { signInWithGoogle, operationLoading } = useAuth();
+  const { signInWithGoogle, operationLoading, user } = useAuth();
   const { showAlert } = useAlert();
+  const router = useRouter();
+
+  useEffect(() => {
+    if (user) {
+      router.replace('/(tabs)');
+    }
+  }, [user]);
 
   const [mode, setMode] = useState<Mode>('landing');
   const [email, setEmail] = useState('');
