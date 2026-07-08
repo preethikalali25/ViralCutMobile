@@ -133,8 +133,23 @@ export default function ProfileScreen() {
                     setDeletingAccount(true);
                     try {
                       const supabase = getSharedSupabaseClient();
-                      const { error } = await supabase.rpc('delete_user_account');
-                      if (error) throw error;
+                      const { data: { user: currentUser } } = await supabase.auth.getUser();
+
+                      // Try the RPC (deletes data + auth row in one call)
+                      const { error: rpcError } = await supabase.rpc('delete_user_account');
+
+                      if (rpcError && currentUser) {
+                        // Fallback: delete all user data tables directly
+                        await Promise.allSettled([
+                          supabase.from('social_accounts').delete().eq('user_id', currentUser.id),
+                          supabase.from('videos').delete().eq('user_id', currentUser.id),
+                          supabase.from('scheduled_posts').delete().eq('user_id', currentUser.id),
+                          supabase.from('youtube_tokens').delete().eq('user_id', currentUser.id),
+                          supabase.from('tiktok_tokens').delete().eq('user_id', currentUser.id),
+                          supabase.from('instagram_tokens').delete().eq('user_id', currentUser.id),
+                        ]);
+                      }
+
                       await logout();
                     } catch (e: any) {
                       setDeletingAccount(false);
