@@ -151,6 +151,7 @@ export default function ProfileScreen() {
                       }
 
                       await logout();
+                      router.replace('/login');
                     } catch (e: any) {
                       setDeletingAccount(false);
                       showAlert('Delete Failed', e?.message ?? 'Could not delete account. Please contact support.');
