@@ -103,6 +103,8 @@ export default function ProfileScreen() {
           if (error) {
             showAlert('Error', error);
             setLoggingOut(false);
+          } else {
+            router.replace('/login');
           }
         },
       },
