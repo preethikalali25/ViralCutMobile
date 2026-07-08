@@ -151,7 +151,8 @@ export async function uploadVideoToStorage(
 ): Promise<{ publicUrl?: string; error?: string }> {
   try {
     const client = getSupabaseClient();
-    const fileName = `${userId}/${videoId}.mp4`;
+    // Use a unique timestamp suffix so every upload is a fresh INSERT (no upsert/UPDATE needed)
+    const fileName = `${userId}/${videoId}_${Date.now()}.mp4`;
     const supabaseUrl = process.env.EXPO_PUBLIC_SUPABASE_URL!;
 
     // Get the authenticated user's JWT for the upload request
@@ -169,7 +170,6 @@ export async function uploadVideoToStorage(
       headers: {
         Authorization: `Bearer ${token}`,
         'Content-Type': 'video/mp4',
-        'x-upsert': 'true',
       },
     });
 
