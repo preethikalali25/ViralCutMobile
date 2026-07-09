@@ -38,11 +38,12 @@ Deno.serve(async (req) => {
       const aaiPayload: Record<string, unknown> = {
         audio_url: videoUrl,
         speaker_labels: true,
+        speech_model: 'best',
         ...(speakersExpected && speakersExpected > 1 ? { speakers_expected: speakersExpected } : {}),
       };
       console.log('[voice-analyzer] AAI payload:', JSON.stringify(aaiPayload).slice(0, 200));
 
-      const aaiRes = await fetch(`${ASSEMBLYAI_V3_URL}/transcript`, {
+      const aaiRes = await fetch(`${ASSEMBLYAI_URL}/transcript`, {
         method: 'POST',
         headers: { authorization: assemblyKey, 'content-type': 'application/json' },
         body: JSON.stringify(aaiPayload),
@@ -71,7 +72,7 @@ Deno.serve(async (req) => {
       if (!transcriptId || !enhancementId) {
         return new Response(JSON.stringify({ error: 'Missing transcriptId or enhancementId' }), { status: 400, headers: corsHeaders });
       }
-      const res = await fetch(`${ASSEMBLYAI_V3_URL}/transcript/${transcriptId}`, {
+      const res = await fetch(`${ASSEMBLYAI_URL}/transcript/${transcriptId}`, {
         headers: { authorization: assemblyKey },
       });
       const data = await res.json();
