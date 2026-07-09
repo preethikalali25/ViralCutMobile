@@ -95,6 +95,7 @@ export function useVoiceEnhancement(videoId: string, videoPublicUrl: string | un
       const { data, error: pollErr } = await pollTranscript(transcriptId, enhancementId);
       if (pollErr) return;
       if (data?.status === 'completed') {
+        console.log('[VoiceEnhancement] poll completed:', JSON.stringify(data));
         clearInterval(transcriptPollRef.current!);
         const enhancement: VoiceEnhancement = {
           id: enhancementId,
