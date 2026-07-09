@@ -49,7 +49,7 @@ Deno.serve(async (req) => {
         body: JSON.stringify(aaiPayload),
       });
       const aaiData = await aaiRes.json();
-      console.log('[voice-analyzer] AAI submit status:', aaiRes.status, 'id:', aaiData.id, 'error:', aaiData.error);
+      console.log('[voice-analyzer] AAI submit status:', aaiRes.status, 'id:', aaiData.id, 'error:', aaiData.error, 'full:', JSON.stringify(aaiData).slice(0, 300));
       if (aaiData.error) {
         await supabase.from('voice_enhancements').update({ status: 'failed', error_message: aaiData.error }).eq('id', record.id);
         return new Response(JSON.stringify({ error: `AssemblyAI: ${aaiData.error}` }), { status: 500, headers: corsHeaders });
@@ -78,7 +78,10 @@ Deno.serve(async (req) => {
       const data = await res.json();
 
       if (data.status === 'completed') {
+        console.log('[voice-analyzer] utterances count:', data.utterances?.length ?? 0, 'words count:', data.words?.length ?? 0);
+        console.log('[voice-analyzer] utterances sample:', JSON.stringify(data.utterances?.slice(0, 3) ?? []));
         const speakerCount = new Set(data.utterances?.map((u: any) => u.speaker) ?? []).size;
+        console.log('[voice-analyzer] detected speakerCount:', speakerCount);
         const speakerSegments = (data.utterances ?? []).map((u: any) => ({
           speaker: u.speaker,
           start: u.start,
