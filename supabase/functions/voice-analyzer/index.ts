@@ -96,7 +96,7 @@ Deno.serve(async (req) => {
           updated_at: new Date().toISOString(),
         }).eq('id', enhancementId);
 
-        return new Response(JSON.stringify({ status: 'completed', speakerCount, speakerSegments }), {
+        return new Response(JSON.stringify({ status: 'completed', speakerCount, speakerSegments, _debug: { utterancesCount: data.utterances?.length ?? 0, speechModel: data.speech_model, speakers: [...new Set(data.utterances?.map((u: any) => u.speaker) ?? [])] } }), {
           headers: { ...corsHeaders, 'Content-Type': 'application/json' },
         });
       }
