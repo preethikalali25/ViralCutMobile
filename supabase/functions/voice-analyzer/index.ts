@@ -34,11 +34,12 @@ Deno.serve(async (req) => {
       if (insertErr) return new Response(JSON.stringify({ error: `DB insert failed: ${insertErr.message}` }), { status: 500, headers: corsHeaders });
 
       // Submit AssemblyAI transcript with speaker diarization
+      // Default to 2 speakers — AAI auto-detect often collapses to 1 without a hint
+      const resolvedSpeakers = (speakersExpected && speakersExpected >= 1) ? speakersExpected : 2;
       const aaiPayload: Record<string, unknown> = {
         audio_url: videoUrl,
         speaker_labels: true,
-        // Pass explicit count if provided; otherwise let AAI auto-detect up to 5
-        ...(speakersExpected && speakersExpected > 1 ? { speakers_expected: speakersExpected } : {}),
+        speakers_expected: resolvedSpeakers,
       };
       console.log('[voice-analyzer] AAI payload:', JSON.stringify(aaiPayload).slice(0, 200));
 
