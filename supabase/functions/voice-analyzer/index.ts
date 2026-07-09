@@ -38,7 +38,7 @@ Deno.serve(async (req) => {
       const aaiPayload: Record<string, unknown> = {
         audio_url: videoUrl,
         speaker_labels: true,
-        speech_model: 'best',
+        speech_models: ['universal-3-5-pro', 'universal-2'],
         ...(speakersExpected && speakersExpected > 1 ? { speakers_expected: speakersExpected } : {}),
       };
       console.log('[voice-analyzer] AAI payload:', JSON.stringify(aaiPayload).slice(0, 200));
