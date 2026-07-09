@@ -2,6 +2,7 @@ import { corsHeaders } from '../_shared/cors.ts';
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
 
 const ASSEMBLYAI_URL = 'https://api.assemblyai.com/v2';
+const ASSEMBLYAI_V3_URL = 'https://api.assemblyai.com/v3';
 
 function getEnv(key: string): string {
   const v = Deno.env.get(key);
@@ -37,12 +38,11 @@ Deno.serve(async (req) => {
       const aaiPayload: Record<string, unknown> = {
         audio_url: videoUrl,
         speaker_labels: true,
-        // Pass explicit count if provided; otherwise let AAI auto-detect up to 5
         ...(speakersExpected && speakersExpected > 1 ? { speakers_expected: speakersExpected } : {}),
       };
       console.log('[voice-analyzer] AAI payload:', JSON.stringify(aaiPayload).slice(0, 200));
 
-      const aaiRes = await fetch(`${ASSEMBLYAI_URL}/transcript`, {
+      const aaiRes = await fetch(`${ASSEMBLYAI_V3_URL}/transcript`, {
         method: 'POST',
         headers: { authorization: assemblyKey, 'content-type': 'application/json' },
         body: JSON.stringify(aaiPayload),
@@ -71,7 +71,7 @@ Deno.serve(async (req) => {
       if (!transcriptId || !enhancementId) {
         return new Response(JSON.stringify({ error: 'Missing transcriptId or enhancementId' }), { status: 400, headers: corsHeaders });
       }
-      const res = await fetch(`${ASSEMBLYAI_URL}/transcript/${transcriptId}`, {
+      const res = await fetch(`${ASSEMBLYAI_V3_URL}/transcript/${transcriptId}`, {
         headers: { authorization: assemblyKey },
       });
       const data = await res.json();
