@@ -37,10 +37,9 @@ Deno.serve(async (req) => {
       const aaiPayload: Record<string, unknown> = {
         audio_url: videoUrl,
         speaker_labels: true,
+        // Pass explicit count if provided; otherwise let AAI auto-detect up to 5
+        ...(speakersExpected && speakersExpected > 1 ? { speakers_expected: speakersExpected } : {}),
       };
-      if (speakersExpected && speakersExpected > 1) {
-        aaiPayload.speakers_expected = speakersExpected;
-      }
       console.log('[voice-analyzer] AAI payload:', JSON.stringify(aaiPayload).slice(0, 200));
 
       const aaiRes = await fetch(`${ASSEMBLYAI_URL}/transcript`, {
