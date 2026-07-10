@@ -27,17 +27,12 @@ interface ScheduledPost {
   user_id: string;
   platform: 'tiktok' | 'reels' | 'youtube';
   video_url: string;
-  enhanced_video_url: string | null;
   title: string;
   caption: string;
   hashtags: string;
   hook_text: string;
   privacy_level: string;
   scheduled_at: string;
-}
-
-function effectiveVideoUrl(post: ScheduledPost): string {
-  return post.enhanced_video_url ?? post.video_url;
 }
 
 // ── TikTok ────────────────────────────────────────────────────────────────────
@@ -83,11 +78,11 @@ async function publishTikTok(
   }
 
   // Fetch video to get its size
-  const headRes = await fetch(effectiveVideoUrl(post), { method: 'HEAD' });
+  const headRes = await fetch(post.video_url, { method: 'HEAD' });
   const videoSize = parseInt(headRes.headers.get('content-length') ?? '0', 10);
   if (!videoSize) return { error: 'Could not determine video size from storage URL' };
 
-  const title = (post.hook_text || post.title || 'ShortReel video').slice(0, 150);
+  const title = (post.hook_text || post.title || 'SmartReel video').slice(0, 150);
   const privacyLevel = post.privacy_level === 'private' ? 'SELF_ONLY' : 'PUBLIC_TO_EVERYONE';
 
   // Use PULL_FROM_URL — TikTok fetches the video from the public Supabase Storage URL
@@ -102,7 +97,7 @@ async function publishTikTok(
     },
     source_info: {
       source: 'PULL_FROM_URL',
-      video_url: effectiveVideoUrl(post),
+      video_url: post.video_url,
     },
   };
 
@@ -174,7 +169,7 @@ async function publishInstagram(
   // Step 1: Create media container
   const containerParams = {
     media_type: 'REELS',
-    video_url: effectiveVideoUrl(post),
+    video_url: post.video_url,
     caption,
     share_to_feed: 'true',
     access_token: accessToken,
@@ -271,13 +266,13 @@ async function publishYouTube(
   }
 
   // Fetch video from Supabase Storage
-  const videoRes = await fetch(effectiveVideoUrl(post));
+  const videoRes = await fetch(post.video_url);
   if (!videoRes.ok) return { error: `Could not fetch video from storage: ${videoRes.status}` };
   const videoBlob = await videoRes.blob();
   const videoSize = videoBlob.size;
 
   // Init resumable upload
-  const title = (post.hook_text || post.title || 'ShortReel Short').slice(0, 100);
+  const title = (post.hook_text || post.title || 'SmartReel Short').slice(0, 100);
   const captionParts = [post.caption, post.hashtags].filter(Boolean);
   const description = captionParts.join('\n\n');
   const privacyStatus = post.privacy_level === 'private' ? 'private' : 'public';
