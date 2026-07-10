@@ -678,7 +678,7 @@ export default function EditorScreen() {
     if (!video?.videoUri) { showAlert('No Video File', 'Select a video before publishing to TikTok.'); return; }
 
     // Step 1: burn hook overlay locally
-    const { outputUri } = await burnOverlayLocally(video.videoUri, snap.hook?.text ?? '');
+    const { outputUri } = await burnOverlayLocally(voiceMixUrl ?? video.videoUri, snap.hook?.text ?? '');
 
     // Step 2: get file size
     const FileSystem = await import('expo-file-system');
@@ -712,7 +712,7 @@ export default function EditorScreen() {
     const snap = snapshotEditorState();
     if (!video?.videoUri) { showAlert('No Video File', 'Select a video before publishing to Instagram.'); return; }
 
-    const { videoUrl, error: prepError } = await prepareVideoForPublish(video.videoUri, snap.hook?.text ?? '');
+    const { videoUrl, error: prepError } = await prepareVideoForPublish(voiceMixUrl ?? video.videoUri, snap.hook?.text ?? '');
     if (prepError || !videoUrl) { showAlert('Upload Failed', prepError ?? 'Could not upload video.'); return; }
 
     const captionText = [snap.hook?.text, snap.caption, snap.hashtags.join(' ')].filter(Boolean).join('\n\n');
@@ -730,7 +730,7 @@ export default function EditorScreen() {
     youtube.setPublishState({ phase: 'burning' });
     let outputUri: string;
     try {
-      const burned = await burnOverlayLocally(video.videoUri, snap.hook?.text ?? '');
+      const burned = await burnOverlayLocally(voiceMixUrl ?? video.videoUri, snap.hook?.text ?? '');
       outputUri = burned.outputUri;
     } catch (err) {
       youtube.setPublishState({ phase: 'error', errorMessage: `Burn failed: ${String(err)}` });
@@ -772,7 +772,7 @@ export default function EditorScreen() {
     const snap = snapshotEditorState();
     if (!video?.videoUri) { showAlert('No Video File', 'Select a video first.'); return; }
 
-    const { outputUri, audioMixed } = await burnOverlayLocally(video.videoUri, snap.hook?.text ?? '');
+    const { outputUri, audioMixed } = await burnOverlayLocally(voiceMixUrl ?? video.videoUri, snap.hook?.text ?? '');
     updateVideo(video.id, { ...snap, title: videoTitle });
 
     // Instagram's Reels sharing-to-stories pasteboard handoff has no field
