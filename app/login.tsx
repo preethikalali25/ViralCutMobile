@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import {
   View, Text, StyleSheet, Pressable, TextInput,
-  KeyboardAvoidingView, Platform, ScrollView, ActivityIndicator, NativeModules,
+  KeyboardAvoidingView, Platform, ScrollView, ActivityIndicator,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Image } from 'expo-image';
@@ -29,8 +29,6 @@ export default function LoginScreen() {
   const [email, setEmail] = useState('');
   const [otp, setOtp] = useState('');
   const [loading, setLoading] = useState(false);
-  // Only render the native button when the module is actually linked (not in Expo Go)
-  const appleModuleLinked = Platform.OS === 'ios' && !!NativeModules.ExpoAppleAuthentication;
 
   const isBusy = operationLoading || loading;
 
@@ -135,7 +133,7 @@ export default function LoginScreen() {
                 <Text style={styles.cardSub}>Sign in or create an account</Text>
 
                 {/* Apple — always rendered on iOS; isAvailableAsync guards the flow not the render */}
-                {appleModuleLinked && (
+                {Platform.OS === 'ios' && (
                   <AppleAuthentication.AppleAuthenticationButton
                     buttonType={AppleAuthentication.AppleAuthenticationButtonType.SIGN_IN}
                     buttonStyle={AppleAuthentication.AppleAuthenticationButtonStyle.WHITE}
