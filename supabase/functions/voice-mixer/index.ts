@@ -49,6 +49,7 @@ Deno.serve(async (req) => {
       const renderRes = await fetch(`${renderUrl}/mix`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
+        signal: AbortSignal.timeout(150_000),
         body: JSON.stringify({
           jobId: job.id,
           inputUrl,

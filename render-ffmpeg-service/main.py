@@ -4,7 +4,7 @@ import subprocess
 import asyncio
 import shutil
 import httpx
-from fastapi import FastAPI, BackgroundTasks
+from fastapi import FastAPI
 from pydantic import BaseModel
 
 app = FastAPI()
@@ -144,6 +144,6 @@ def health():
 
 
 @app.post("/mix")
-async def mix(req: MixRequest, background_tasks: BackgroundTasks):
-    background_tasks.add_task(process_mix, req)
+async def mix(req: MixRequest):
+    await process_mix(req)
     return {"jobId": req.jobId, "status": "processing"}
