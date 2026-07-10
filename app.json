@@ -72,6 +72,7 @@
     "plugins": [
       "expo-router",
       "expo-apple-authentication",
+      "./plugins/withCpp20",
       [
         "expo-media-library",
         {
