@@ -1,11 +1,11 @@
 import os
-import uuid
 import tempfile
 import subprocess
+import asyncio
+import shutil
 import httpx
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, BackgroundTasks
 from pydantic import BaseModel
-from typing import Any
 
 app = FastAPI()
 
@@ -42,7 +42,6 @@ def update_job(supabase_url: str, supabase_key: str, job_id: str, payload: dict)
 
 
 def build_audio_filter(segments: list[SpeakerSegment], volumes: dict[str, float]) -> str:
-    # Group segments by speaker
     by_speaker: dict[str, list[SpeakerSegment]] = {}
     for seg in segments:
         by_speaker.setdefault(seg.speaker, []).append(seg)
@@ -54,7 +53,6 @@ def build_audio_filter(segments: list[SpeakerSegment], volumes: dict[str, float]
         vol = volumes.get(speaker, 1.0)
         if abs(vol - 1.0) < 0.01:
             continue
-
         conditions = "+".join(
             f"between(t,{seg.start/1000:.3f},{seg.end/1000:.3f})"
             for seg in segs
@@ -66,30 +64,23 @@ def build_audio_filter(segments: list[SpeakerSegment], volumes: dict[str, float]
     return ",".join(parts)
 
 
-@app.get("/health")
-def health():
-    return {"status": "ok"}
-
-
-@app.post("/mix")
-async def mix(req: MixRequest):
+async def process_mix(req: MixRequest):
     tmp_dir = tempfile.mkdtemp()
     input_path = os.path.join(tmp_dir, "input.mp4")
     output_path = os.path.join(tmp_dir, "output.mp4")
 
     try:
-        # Download input video
+        # Stream download to disk (avoids loading full video into memory)
         async with httpx.AsyncClient(timeout=120) as client:
-            r = await client.get(req.inputUrl)
-            if r.status_code != 200:
-                raise HTTPException(status_code=400, detail=f"Failed to download video: HTTP {r.status_code}")
-            with open(input_path, "wb") as f:
-                f.write(r.content)
+            async with client.stream("GET", req.inputUrl) as r:
+                if r.status_code != 200:
+                    raise Exception(f"Failed to download video: HTTP {r.status_code}")
+                with open(input_path, "wb") as f:
+                    async for chunk in r.aiter_bytes(chunk_size=1024 * 1024):
+                        f.write(chunk)
 
-        # Build audio filter
         audio_filter = build_audio_filter(req.speakerSegments, req.speakerVolumes)
 
-        # Run FFmpeg
         if audio_filter:
             cmd = [
                 "ffmpeg", "-y", "-i", input_path,
@@ -102,48 +93,50 @@ async def mix(req: MixRequest):
         else:
             cmd = ["ffmpeg", "-y", "-i", input_path, "-c", "copy", output_path]
 
-        result = subprocess.run(cmd, capture_output=True, text=True, timeout=300)
+        result = await asyncio.get_event_loop().run_in_executor(
+            None, lambda: subprocess.run(cmd, capture_output=True, text=True, timeout=300)
+        )
         if result.returncode != 0:
-            raise HTTPException(status_code=500, detail=f"FFmpeg error: {result.stderr[-500:]}")
+            raise Exception(f"FFmpeg error: {result.stderr[-500:]}")
 
-        # Upload to Supabase Storage
-        with open(output_path, "rb") as f:
-            video_bytes = f.read()
-
+        # Stream upload from disk (avoids loading full output into memory)
         upload_url = f"{req.supabaseUrl}/storage/v1/object/{req.outputBucket}/{req.outputPath}"
-        async with httpx.AsyncClient(timeout=120) as client:
-            up = await client.post(
-                upload_url,
-                content=video_bytes,
-                headers={
-                    "Authorization": f"Bearer {req.supabaseKey}",
-                    "Content-Type": "video/mp4",
-                },
-            )
+        file_size = os.path.getsize(output_path)
+        async with httpx.AsyncClient(timeout=180) as client:
+            with open(output_path, "rb") as f:
+                up = await client.post(
+                    upload_url,
+                    content=f,
+                    headers={
+                        "Authorization": f"Bearer {req.supabaseKey}",
+                        "Content-Type": "video/mp4",
+                        "Content-Length": str(file_size),
+                    },
+                )
             if up.status_code not in (200, 201):
-                raise HTTPException(status_code=500, detail=f"Storage upload failed: {up.text[:300]}")
+                raise Exception(f"Storage upload failed: {up.text[:300]}")
 
         public_url = f"{req.supabaseUrl}/storage/v1/object/public/{req.outputBucket}/{req.outputPath}"
-
         update_job(req.supabaseUrl, req.supabaseKey, req.jobId, {
             "status": "completed",
             "output_url": public_url,
         })
 
-        return {"jobId": req.jobId, "outputUrl": public_url}
-
-    except HTTPException as e:
-        update_job(req.supabaseUrl, req.supabaseKey, req.jobId, {
-            "status": "failed",
-            "error_message": e.detail,
-        })
-        raise
     except Exception as e:
         update_job(req.supabaseUrl, req.supabaseKey, req.jobId, {
             "status": "failed",
             "error_message": str(e)[:500],
         })
-        raise HTTPException(status_code=500, detail=str(e))
     finally:
-        import shutil
         shutil.rmtree(tmp_dir, ignore_errors=True)
+
+
+@app.get("/health")
+def health():
+    return {"status": "ok"}
+
+
+@app.post("/mix")
+async def mix(req: MixRequest, background_tasks: BackgroundTasks):
+    background_tasks.add_task(process_mix, req)
+    return {"jobId": req.jobId, "status": "processing"}
