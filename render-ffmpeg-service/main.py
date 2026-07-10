@@ -28,15 +28,16 @@ class MixRequest(BaseModel):
     outputPath: str
 
 
-def update_job(supabase_url: str, supabase_key: str, job_id: str, payload: dict):
+async def update_job(supabase_url: str, supabase_key: str, job_id: str, payload: dict):
     url = f"{supabase_url}/rest/v1/voice_mix_jobs?id=eq.{job_id}"
     try:
-        httpx.patch(url, json=payload, headers={
-            "apikey": supabase_key,
-            "Authorization": f"Bearer {supabase_key}",
-            "Content-Type": "application/json",
-            "Prefer": "return=minimal",
-        }, timeout=10)
+        async with httpx.AsyncClient(timeout=10) as client:
+            await client.patch(url, json=payload, headers={
+                "apikey": supabase_key,
+                "Authorization": f"Bearer {supabase_key}",
+                "Content-Type": "application/json",
+                "Prefer": "return=minimal",
+            })
     except Exception:
         pass
 
@@ -123,14 +124,14 @@ async def process_mix(req: MixRequest):
                 raise Exception(f"Storage upload failed: {up.text[:300]}")
 
         public_url = f"{req.supabaseUrl}/storage/v1/object/public/{req.outputBucket}/{req.outputPath}"
-        update_job(req.supabaseUrl, req.supabaseKey, req.jobId, {
+        await update_job(req.supabaseUrl, req.supabaseKey, req.jobId, {
             "status": "completed",
             "output_url": public_url,
         })
 
     except Exception as e:
         print(f"[mix] {req.jobId} FAILED: {e}")
-        update_job(req.supabaseUrl, req.supabaseKey, req.jobId, {
+        await update_job(req.supabaseUrl, req.supabaseKey, req.jobId, {
             "status": "failed",
             "error_message": str(e)[:500],
         })
