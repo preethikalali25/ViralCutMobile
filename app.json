@@ -11,7 +11,10 @@
     "ios": {
       "supportsTablet": true,
       "bundleIdentifier": "com.kalel.KalelViralCut",
-      "buildNumber": "3",
+      "buildNumber": "5",
+      "entitlements": {
+        "com.apple.developer.applesignin": ["Default"]
+      },
       "infoPlist": {
         "LSApplicationQueriesSchemes": ["instagram-reels", "instagram"],
         "NSContactsUsageDescription": "ShortReel uses your contacts to help you tag and share videos with people you know.",
@@ -68,6 +71,7 @@
     },
     "plugins": [
       "expo-router",
+      "expo-apple-authentication",
       [
         "expo-media-library",
         {
