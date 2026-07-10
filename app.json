@@ -1,11 +1,11 @@
 {
   "expo": {
-    "name": "ShortReel",
-    "slug": "shortreel",
+    "name": "SmartReel",
+    "slug": "smartreel",
     "version": "1.1.0",
     "orientation": "portrait",
     "icon": "./assets/images/logo.png",
-    "scheme": "shortreel",
+    "scheme": "smartreel",
     "userInterfaceStyle": "automatic",
     "newArchEnabled": true,
     "ios": {
@@ -17,12 +17,12 @@
       },
       "infoPlist": {
         "LSApplicationQueriesSchemes": ["instagram-reels", "instagram"],
-        "NSContactsUsageDescription": "ShortReel uses your contacts to help you tag and share videos with people you know.",
-        "NSMicrophoneUsageDescription": "ShortReel needs microphone access to record audio for your videos.",
-        "NSLocationWhenInUseUsageDescription": "ShortReel uses your location to suggest the best times to post based on your timezone.",
-        "NSFaceIDUsageDescription": "ShortReel uses Face ID to keep your account secure.",
-        "NSCalendarsUsageDescription": "ShortReel needs calendar access to schedule your video posts at the right time.",
-        "NSRemindersUsageDescription": "ShortReel uses reminders to notify you when it's time to post your scheduled videos.",
+        "NSContactsUsageDescription": "SmartReel uses your contacts to help you tag and share videos with people you know.",
+        "NSMicrophoneUsageDescription": "SmartReel needs microphone access to record audio for your videos.",
+        "NSLocationWhenInUseUsageDescription": "SmartReel uses your location to suggest the best times to post based on your timezone.",
+        "NSFaceIDUsageDescription": "SmartReel uses Face ID to keep your account secure.",
+        "NSCalendarsUsageDescription": "SmartReel needs calendar access to schedule your video posts at the right time.",
+        "NSRemindersUsageDescription": "SmartReel uses reminders to notify you when it's time to post your scheduled videos.",
         "CFBundleURLTypes": [
           {
             "CFBundleURLSchemes": [
@@ -45,7 +45,7 @@
           "autoVerify": true,
           "data": [
             {
-              "scheme": "shortreel",
+              "scheme": "smartreel",
               "host": "tiktok-callback"
             }
           ],
@@ -56,7 +56,7 @@
           "autoVerify": true,
           "data": [
             {
-              "scheme": "shortreel",
+              "scheme": "smartreel",
               "host": "instagram-callback"
             }
           ],
@@ -75,16 +75,16 @@
       [
         "expo-media-library",
         {
-          "photosPermission": "ShortReel needs access to your photo library to save your edited video.",
-          "savePhotosPermission": "ShortReel needs permission to save your edited video before opening Instagram.",
+          "photosPermission": "SmartReel needs access to your photo library to save your edited video.",
+          "savePhotosPermission": "SmartReel needs permission to save your edited video before opening Instagram.",
           "isAccessMediaLocationEnabled": false
         }
       ],
       [
         "expo-image-picker",
         {
-          "photosPermission": "ShortReel needs access to your photo library to select videos for editing and publishing.",
-          "cameraPermission": "ShortReel needs access to your camera to record videos directly."
+          "photosPermission": "SmartReel needs access to your photo library to select videos for editing and publishing.",
+          "cameraPermission": "SmartReel needs access to your camera to record videos directly."
         }
       ],
       [

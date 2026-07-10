@@ -8,7 +8,7 @@ const TIKTOK_INIT_URL = 'https://open.tiktokapis.com/v2/post/publish/video/init/
 const TIKTOK_STATUS_URL = 'https://open.tiktokapis.com/v2/post/publish/status/fetch/';
 
 // Deep-link scheme the mobile app intercepts after OAuth
-const APP_DEEP_LINK = 'shortreel://tiktok-callback';
+const APP_DEEP_LINK = 'smartreel://tiktok-callback';
 
 function getEnv(key: string): string {
   const v = Deno.env.get(key);

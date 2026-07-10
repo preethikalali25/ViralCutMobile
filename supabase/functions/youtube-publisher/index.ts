@@ -244,7 +244,7 @@ Deno.serve(async (req) => {
         );
       }
 
-      const safeTitle = (title || 'ShortReel Short').slice(0, 100);
+      const safeTitle = (title || 'SmartReel Short').slice(0, 100);
       const metadata = {
         snippet: {
           title: safeTitle,

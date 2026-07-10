@@ -118,7 +118,7 @@ export default function LoginScreen() {
             />
             <View style={styles.heroOverlay}>
               <MaterialCommunityIcons name="scissors-cutting" size={32} color={Colors.primaryLight} />
-              <Text style={styles.heroTitle}>ShortReel</Text>
+              <Text style={styles.heroTitle}>SmartReel</Text>
               <Text style={styles.heroSub}>Your short-form video studio</Text>
             </View>
           </View>

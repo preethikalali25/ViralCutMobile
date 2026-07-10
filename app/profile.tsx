@@ -114,7 +114,7 @@ export default function ProfileScreen() {
   const handleDeleteAccount = () => {
     showAlert(
       'Delete Account?',
-      'This will permanently delete your ShortReel account and all associated data. This cannot be undone.',
+      'This will permanently delete your SmartReel account and all associated data. This cannot be undone.',
       [
         { text: 'Cancel', style: 'cancel' },
         {
@@ -262,7 +262,7 @@ export default function ProfileScreen() {
     if (!account) return;
     showAlert(
       `Disconnect ${platform.label}?`,
-      `Remove @${account.handle} from your ShortReel profile?`,
+      `Remove @${account.handle} from your SmartReel profile?`,
       [
         { text: 'Cancel', style: 'cancel' },
         {
@@ -403,7 +403,7 @@ export default function ProfileScreen() {
           <View style={styles.infoNote}>
             <MaterialIcons name="info-outline" size={13} color={Colors.textMuted} />
             <Text style={styles.infoText}>
-              Connecting via OAuth lets ShortReel publish directly to your TikTok account using the official TikTok Content Posting API.
+              Connecting via OAuth lets SmartReel publish directly to your TikTok account using the official TikTok Content Posting API.
             </Text>
           </View>
         ) : null}
