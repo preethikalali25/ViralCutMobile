@@ -70,6 +70,7 @@ async def process_mix(req: MixRequest):
     output_path = os.path.join(tmp_dir, "output.mp4")
 
     try:
+        print(f"[mix] {req.jobId} starting download from {req.inputUrl[:80]}")
         # Stream download to disk (avoids loading full video into memory)
         async with httpx.AsyncClient(timeout=120) as client:
             async with client.stream("GET", req.inputUrl) as r:
@@ -78,8 +79,10 @@ async def process_mix(req: MixRequest):
                 with open(input_path, "wb") as f:
                     async for chunk in r.aiter_bytes(chunk_size=1024 * 1024):
                         f.write(chunk)
+        print(f"[mix] {req.jobId} downloaded {os.path.getsize(input_path)} bytes")
 
         audio_filter = build_audio_filter(req.speakerSegments, req.speakerVolumes)
+        print(f"[mix] {req.jobId} audio_filter={'(none)' if not audio_filter else audio_filter[:100]}")
 
         if audio_filter:
             cmd = [
@@ -96,8 +99,10 @@ async def process_mix(req: MixRequest):
         result = await asyncio.get_event_loop().run_in_executor(
             None, lambda: subprocess.run(cmd, capture_output=True, text=True, timeout=300)
         )
+        print(f"[mix] {req.jobId} ffmpeg returncode={result.returncode}")
         if result.returncode != 0:
             raise Exception(f"FFmpeg error: {result.stderr[-500:]}")
+        print(f"[mix] {req.jobId} output size={os.path.getsize(output_path)} bytes")
 
         # Stream upload from disk (avoids loading full output into memory)
         upload_url = f"{req.supabaseUrl}/storage/v1/object/{req.outputBucket}/{req.outputPath}"
@@ -113,6 +118,7 @@ async def process_mix(req: MixRequest):
                         "Content-Length": str(file_size),
                     },
                 )
+            print(f"[mix] {req.jobId} upload status={up.status_code}")
             if up.status_code not in (200, 201):
                 raise Exception(f"Storage upload failed: {up.text[:300]}")
 
@@ -123,6 +129,7 @@ async def process_mix(req: MixRequest):
         })
 
     except Exception as e:
+        print(f"[mix] {req.jobId} FAILED: {e}")
         update_job(req.supabaseUrl, req.supabaseKey, req.jobId, {
             "status": "failed",
             "error_message": str(e)[:500],
