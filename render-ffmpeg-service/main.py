@@ -105,23 +105,29 @@ async def process_mix(req: MixRequest):
             raise Exception(f"FFmpeg error: {result.stderr[-500:]}")
         print(f"[mix] {req.jobId} output size={os.path.getsize(output_path)} bytes")
 
-        # Stream upload from disk (avoids loading full output into memory)
+        # Free input file from disk before reading output into memory
+        if os.path.exists(input_path):
+            os.unlink(input_path)
+
+        # Read output bytes then upload (sync file → bytes avoids AsyncClient/sync conflict)
+        with open(output_path, "rb") as f:
+            video_bytes = f.read()
+        os.unlink(output_path)
+
         upload_url = f"{req.supabaseUrl}/storage/v1/object/{req.outputBucket}/{req.outputPath}"
-        file_size = os.path.getsize(output_path)
         async with httpx.AsyncClient(timeout=180) as client:
-            with open(output_path, "rb") as f:
-                up = await client.post(
-                    upload_url,
-                    content=f,
-                    headers={
-                        "Authorization": f"Bearer {req.supabaseKey}",
-                        "Content-Type": "video/mp4",
-                        "Content-Length": str(file_size),
-                    },
-                )
-            print(f"[mix] {req.jobId} upload status={up.status_code}")
-            if up.status_code not in (200, 201):
-                raise Exception(f"Storage upload failed: {up.text[:300]}")
+            up = await client.post(
+                upload_url,
+                content=video_bytes,
+                headers={
+                    "Authorization": f"Bearer {req.supabaseKey}",
+                    "Content-Type": "video/mp4",
+                    "Content-Length": str(len(video_bytes)),
+                },
+            )
+        print(f"[mix] {req.jobId} upload status={up.status_code}")
+        if up.status_code not in (200, 201):
+            raise Exception(f"Storage upload failed: {up.text[:300]}")
 
         public_url = f"{req.supabaseUrl}/storage/v1/object/public/{req.outputBucket}/{req.outputPath}"
         await update_job(req.supabaseUrl, req.supabaseKey, req.jobId, {
