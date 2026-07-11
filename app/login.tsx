@@ -1,16 +1,8 @@
 import React, { useState, useEffect, Component } from 'react';
-
-class AppleButtonBoundary extends Component<
-  { children: React.ReactNode },
-  { failed: boolean }
-> {
-  state = { failed: false };
-  static getDerivedStateFromError() { return { failed: true }; }
-  render() { return this.state.failed ? null : this.props.children; }
-}
 import {
   View, Text, StyleSheet, Pressable, TextInput,
   KeyboardAvoidingView, Platform, ScrollView, ActivityIndicator,
+  LogBox,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Image } from 'expo-image';
@@ -20,6 +12,17 @@ import { useAuth, useAlert } from '@/template';
 import { getSharedSupabaseClient } from '@/template/core/client';
 import { Colors, Spacing, Radius, FontSize, FontWeight } from '@/constants/theme';
 import { useRouter } from 'expo-router';
+
+LogBox.ignoreLogs(['Unimplemented component: <ViewManagerAdapter_ExpoAppleAuthentication']);
+
+class AppleButtonBoundary extends Component<
+  { children: React.ReactNode },
+  { failed: boolean }
+> {
+  state = { failed: false };
+  static getDerivedStateFromError() { return { failed: true }; }
+  render() { return this.state.failed ? null : this.props.children; }
+}
 
 type Mode = 'landing' | 'email' | 'otp';
 
@@ -38,6 +41,13 @@ export default function LoginScreen() {
   const [email, setEmail] = useState('');
   const [otp, setOtp] = useState('');
   const [loading, setLoading] = useState(false);
+  const [appleAvailable, setAppleAvailable] = useState(false);
+
+  useEffect(() => {
+    if (Platform.OS === 'ios') {
+      AppleAuthentication.isAvailableAsync().then(setAppleAvailable).catch(() => setAppleAvailable(false));
+    }
+  }, []);
 
   const isBusy = operationLoading || loading;
 
@@ -141,8 +151,7 @@ export default function LoginScreen() {
                 <Text style={styles.cardTitle}>Get Started</Text>
                 <Text style={styles.cardSub}>Sign in or create an account</Text>
 
-                {/* Apple — always rendered on iOS; isAvailableAsync guards the flow not the render */}
-                {Platform.OS === 'ios' && (
+                {appleAvailable && (
                   <AppleButtonBoundary>
                     <AppleAuthentication.AppleAuthenticationButton
                       buttonType={AppleAuthentication.AppleAuthenticationButtonType.SIGN_IN}
