@@ -22,6 +22,8 @@
         "NSLocationWhenInUseUsageDescription": "SmartReel uses your location to suggest the best times to post based on your timezone.",
         "NSFaceIDUsageDescription": "SmartReel uses Face ID to keep your account secure.",
         "NSCalendarsUsageDescription": "SmartReel needs calendar access to schedule your video posts at the right time.",
+        "NSCalendarsFullAccessUsageDescription": "SmartReel needs full calendar access to schedule and manage your video posts at the right time.",
+        "NSCalendarsWriteOnlyAccessUsageDescription": "SmartReel needs calendar access to schedule your video posts at the right time.",
         "NSRemindersUsageDescription": "SmartReel uses reminders to notify you when it's time to post your scheduled videos.",
         "CFBundleURLTypes": [
           {
