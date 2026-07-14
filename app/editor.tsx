@@ -83,34 +83,40 @@ async function extractVideoFrames(
     const FileSystem = await import('expo-file-system');
     const resolvedUri = await resolveVideoUri(videoUri);
 
-    // Sample the first 5 seconds — the hook should reflect the opening moment the viewer sees.
-    // Three frames: 0.5s (very first look), 2s (main subject established), 4s (action/reaction peak).
+    // Two high-quality frames from the opening seconds.
+    // 1s captures the subject before they start moving; 3s captures the key action/expression.
+    // Higher quality + resolution gives the model enough detail to write specific hooks.
     const durMs = durationSec > 0 ? durationSec * 1000 : 10000;
-    const seekPoints = [500, 2000, 4000].filter(t => t <= durMs);
+    const seekPoints = [1000, 3000].filter(t => t <= durMs);
+    if (seekPoints.length === 0) seekPoints.push(500); // very short video
 
     const frames: Array<{ base64: string; mime: string }> = [];
     for (const seekMs of seekPoints) {
       try {
         const { uri } = await VideoThumbnails.getThumbnailAsync(resolvedUri, {
-          time: seekMs, quality: 0.35, maxWidth: 480,
+          time: seekMs, quality: 0.8, maxWidth: 720,
         });
         if (uri) {
           const base64 = await FileSystem.readAsStringAsync(uri, { encoding: FileSystem.EncodingType.Base64 });
-          if (base64.length < 500_000) frames.push({ base64, mime: 'image/jpeg' });
+          console.log(`[extractVideoFrames] seekMs=${seekMs} base64Len=${base64.length}`);
+          if (base64.length > 100 && base64.length < 600_000) frames.push({ base64, mime: 'image/jpeg' });
         }
-      } catch { /* skip this seek point */ }
+      } catch (e) {
+        console.warn(`[extractVideoFrames] seek ${seekMs}ms failed:`, e);
+      }
     }
 
-    // Fallback: try 1s if nothing worked
+    // Fallback: try 500ms if nothing worked
     if (frames.length === 0) {
       try {
-        const { uri } = await VideoThumbnails.getThumbnailAsync(resolvedUri, { time: 1000, quality: 0.35, maxWidth: 480 });
+        const { uri } = await VideoThumbnails.getThumbnailAsync(resolvedUri, { time: 500, quality: 0.8, maxWidth: 720 });
         if (uri) {
           const base64 = await FileSystem.readAsStringAsync(uri, { encoding: FileSystem.EncodingType.Base64 });
           frames.push({ base64, mime: 'image/jpeg' });
         }
       } catch { /* ignore */ }
     }
+    console.log(`[extractVideoFrames] extracted ${frames.length} frames`);
 
     return frames;
   } catch (e) {

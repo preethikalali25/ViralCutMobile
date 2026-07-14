@@ -63,7 +63,7 @@ async function callAnthropic(
   const apiKey = Deno.env.get('ANTHROPIC_API_KEY')!;
   const res = await fetch(ANTHROPIC_API_URL, {
     method: 'POST',
-    signal: AbortSignal.timeout(28000),
+    signal: AbortSignal.timeout(50000),
     headers: {
       'Content-Type': 'application/json',
       'x-api-key': apiKey,
@@ -130,9 +130,7 @@ Deno.serve(async (req) => {
     console.log(`[ai-content-generator] type=${type} hasFrame=${hasFrame} frames=${rawFrames.length} title="${videoTitle}"`);
 
     const visualContext = hasFrame
-      ? rawFrames.length > 1
-        ? `You are given ${rawFrames.length} frames captured at different points in the video (beginning, quarter, middle, three-quarters, near end). Analyse ALL frames — who is in the video, what they are doing, the exact setting, actions, emotions, objects, colours, and mood across the timeline — and use this as the PRIMARY source of truth about the video content.`
-        : 'You are given a screenshot/frame captured directly from the video. Analyse the visual scene — who is present, what they are doing, exact setting, action, emotion, colours, mood — and use this as the PRIMARY source of truth.'
+      ? `You are given ${rawFrames.length} frame${rawFrames.length > 1 ? 's' : ''} captured from the FIRST FEW SECONDS of the video — the exact opening moment the viewer sees. Analyse the frame${rawFrames.length > 1 ? 's' : ''} carefully: who is in it, what they are doing, the exact setting, actions, emotions, objects, colours, and mood. Use this as the PRIMARY source of truth about the video content.`
       : videoTitle
       ? 'No video frame is available. Base your response on the video title and general short-form video best practices.'
       : 'No video frame or title is available. Write based on general short-form video best practices for lifestyle, creativity, and everyday moments.';
@@ -175,7 +173,7 @@ HOOK3: [vivid sensory description]`;
 
       // Single call: one prompt that chains observation → 3 hooks
       const uPrompt = hasFrame
-        ? `${rawFrames.length > 1 ? `You are looking at ${rawFrames.length} frames from different moments in the video.` : 'You are looking at a frame from the video.'}
+        ? `${rawFrames.length > 1 ? `You are looking at ${rawFrames.length} frames from the OPENING SECONDS of the video — this is what the viewer sees first.` : 'You are looking at a frame from the opening of the video — this is what the viewer sees first.'}
 
 STEP 1 — Inventory what you actually see (be brutally specific):
 - SUBJECT: Who/what exactly? (e.g. "a ~10-month-old baby girl in a yellow onesie", "a golden retriever puppy", "a woman in her 30s making pasta")
