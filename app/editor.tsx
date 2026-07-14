@@ -91,12 +91,15 @@ async function extractVideoFrames(
     if (seekPoints.length === 0) seekPoints.push(500);
 
     const tryThumbnail = async (sourceUri: string, seekMs: number) => {
+      // quality 0.5 + maxWidth 512 keeps JPEG under ~100KB (130K base64 chars),
+      // well within Anthropic's image limit and avoids the 600KB silent-drop.
       const { uri } = await VideoThumbnails.getThumbnailAsync(sourceUri, {
-        time: seekMs, quality: 0.8, maxWidth: 720,
+        time: seekMs, quality: 0.5, maxWidth: 512,
       });
       if (!uri) return null;
       const base64 = await FileSystem.readAsStringAsync(uri, { encoding: FileSystem.EncodingType.Base64 });
-      return base64.length > 100 && base64.length < 600_000 ? base64 : null;
+      console.log(`[extractVideoFrames] thumbnail seekMs=${seekMs} base64Len=${base64.length}`);
+      return base64.length > 100 ? base64 : null; // only reject obviously broken frames
     };
 
     const frames: Array<{ base64: string; mime: string }> = [];
@@ -319,7 +322,7 @@ export default function EditorScreen() {
         try {
           const thumbUri = video.thumbnail.startsWith('/') ? `file://${video.thumbnail}` : video.thumbnail;
           const base64 = await FileSystem.readAsStringAsync(thumbUri, { encoding: FileSystem.EncodingType.Base64 });
-          if (base64.length > 100 && base64.length < 600_000) {
+          if (base64.length > 100) {
             frames = [{ base64, mime: 'image/jpeg' }];
             console.log(`[autoGen] using thumbnail as AI frame len=${base64.length}`);
           }
@@ -416,7 +419,7 @@ export default function EditorScreen() {
         try {
           const thumbUri = video.thumbnail.startsWith('/') ? `file://${video.thumbnail}` : video.thumbnail;
           const base64 = await FileSystem.readAsStringAsync(thumbUri, { encoding: FileSystem.EncodingType.Base64 });
-          if (base64.length > 100 && base64.length < 600_000) frames = [{ base64, mime: 'image/jpeg' }];
+          if (base64.length > 100) frames = [{ base64, mime: 'image/jpeg' }];
         } catch { /* ignore */ }
       }
       frameCache.current = frames;

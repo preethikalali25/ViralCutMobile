@@ -117,10 +117,10 @@ Deno.serve(async (req) => {
     const rawFrames: Array<{ base64: string; mime: string }> = (() => {
       if (Array.isArray(videoFrames) && videoFrames.length > 0) {
         return (videoFrames as Array<{ base64: string; mime: string }>)
-          .filter(f => typeof f.base64 === 'string' && f.base64.length > 100 && f.base64.length < 600_000)
+          .filter(f => typeof f.base64 === 'string' && f.base64.length > 100)
           .slice(0, 5);
       }
-      if (typeof videoFrameBase64 === 'string' && videoFrameBase64.length > 100 && videoFrameBase64.length < 600_000) {
+      if (typeof videoFrameBase64 === 'string' && videoFrameBase64.length > 100) {
         return [{ base64: videoFrameBase64, mime: videoFrameMime ?? 'image/jpeg' }];
       }
       return [];

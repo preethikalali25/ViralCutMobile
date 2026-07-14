@@ -54,11 +54,11 @@ async function prefetchVideoFrames(uri: string, durationSec: number): Promise<{ 
     for (const seekMs of seekPoints) {
       try {
         const { uri: thumbUri } = await VideoThumbnails.getThumbnailAsync(uri, {
-          time: seekMs, quality: 0.8, maxWidth: 720,
+          time: seekMs, quality: 0.5, maxWidth: 512,
         });
         if (!thumbUri) continue;
         const base64 = await FileSystem.readAsStringAsync(thumbUri, { encoding: FileSystem.EncodingType.Base64 });
-        if (base64.length > 100 && base64.length < 600_000) frames.push({ base64, mime: 'image/jpeg' });
+        if (base64.length > 100) frames.push({ base64, mime: 'image/jpeg' });
       } catch { /* skip this seek */ }
     }
     console.log(`[upload] prefetched ${frames.length} frames for AI`);
