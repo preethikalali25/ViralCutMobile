@@ -104,26 +104,31 @@ async def process_mix(req: MixRequest):
         print(f"[mix] {req.jobId} ffmpeg returncode={result.returncode}")
         if result.returncode != 0:
             raise Exception(f"FFmpeg error: {result.stderr[-500:]}")
-        print(f"[mix] {req.jobId} output size={os.path.getsize(output_path)} bytes")
+        file_size = os.path.getsize(output_path)
+        print(f"[mix] {req.jobId} output size={file_size} bytes")
 
-        # Free input file from disk before reading output into memory
+        # Free input file before upload to reduce memory pressure
         if os.path.exists(input_path):
             os.unlink(input_path)
 
-        # Read output bytes then upload (sync file → bytes avoids AsyncClient/sync conflict)
-        with open(output_path, "rb") as f:
-            video_bytes = f.read()
-        os.unlink(output_path)
+        # Stream upload in 1MB chunks — never loads full file into memory
+        async def file_chunks():
+            with open(output_path, "rb") as f:
+                while True:
+                    chunk = f.read(1024 * 1024)
+                    if not chunk:
+                        break
+                    yield chunk
 
         upload_url = f"{req.supabaseUrl}/storage/v1/object/{req.outputBucket}/{req.outputPath}"
         async with httpx.AsyncClient(timeout=180) as client:
             up = await client.post(
                 upload_url,
-                content=video_bytes,
+                content=file_chunks(),
                 headers={
                     "Authorization": f"Bearer {req.supabaseKey}",
                     "Content-Type": "video/mp4",
-                    "Content-Length": str(len(video_bytes)),
+                    "Content-Length": str(file_size),
                 },
             )
         print(f"[mix] {req.jobId} upload status={up.status_code}")
