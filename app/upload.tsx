@@ -13,6 +13,7 @@ import { useAlert } from '@/template';
 import { Platform as PlatformType, Video } from '@/types';
 import { combineMediaToVideo, type MediaItem } from '@/services/videoOverlayService';
 import { consumePendingReelItems } from '@/stores/pendingReel';
+import { setCachedFrames } from '@/services/frameCache';
 
 async function requestPermission(): Promise<boolean> {
   const { status } = await ImagePicker.requestMediaLibraryPermissionsAsync();
@@ -38,6 +39,33 @@ async function resolveUri(uri: string): Promise<string> {
     if (asset?.localUri) return asset.localUri;
   } catch { /* fall through */ }
   return uri;
+}
+
+// Extract frames from the first few seconds for AI hook generation.
+// Runs in parallel with video processing so the editor gets frames immediately.
+async function prefetchVideoFrames(uri: string, durationSec: number): Promise<{ base64: string; mime: string }[]> {
+  try {
+    const VideoThumbnails = await import('expo-video-thumbnails');
+    const FileSystem = await import('expo-file-system');
+    const durMs = durationSec > 0 ? durationSec * 1000 : 10000;
+    const seekPoints = [1000, 3000].filter(t => t <= durMs);
+    if (seekPoints.length === 0) seekPoints.push(500);
+    const frames: { base64: string; mime: string }[] = [];
+    for (const seekMs of seekPoints) {
+      try {
+        const { uri: thumbUri } = await VideoThumbnails.getThumbnailAsync(uri, {
+          time: seekMs, quality: 0.8, maxWidth: 720,
+        });
+        if (!thumbUri) continue;
+        const base64 = await FileSystem.readAsStringAsync(thumbUri, { encoding: FileSystem.EncodingType.Base64 });
+        if (base64.length > 100 && base64.length < 600_000) frames.push({ base64, mime: 'image/jpeg' });
+      } catch { /* skip this seek */ }
+    }
+    console.log(`[upload] prefetched ${frames.length} frames for AI`);
+    return frames;
+  } catch {
+    return [];
+  }
 }
 
 // '' means "no thumbnail yet" (still loading or failed) — never the raw video
@@ -175,6 +203,12 @@ export default function UploadScreen() {
 
       const totalDur = items.reduce((s, m) => s + (m.type === 'photo' ? 3 : Math.min(m.durationSec ?? 15, 15)), 0);
 
+      // Start frame extraction in parallel — so AI frames are ready when editor opens
+      const firstVideo = items.find(m => m.type === 'video');
+      const framePrefetchPromise = firstVideo
+        ? prefetchVideoFrames(firstVideo.uri, firstVideo.durationSec ?? 15)
+        : Promise.resolve([]);
+
       if (items.length === 1 && items[0].type === 'video') {
         // Single video — pass through directly, no conversion needed
         videoUri = items[0].uri;
@@ -203,6 +237,10 @@ export default function UploadScreen() {
           videoUri,
         } as Video);
       }
+
+      // Store pre-extracted frames so editor can use them immediately
+      const prefetchedFrames = await framePrefetchPromise;
+      if (prefetchedFrames.length > 0) setCachedFrames(id, prefetchedFrames);
     } catch (e: any) {
       console.warn('[upload] error:', e);
       showAlert('Error', e?.message ?? 'Could not process media. Try again.');

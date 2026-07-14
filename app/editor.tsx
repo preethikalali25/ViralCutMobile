@@ -30,6 +30,7 @@ import * as FileSystem from 'expo-file-system';
 import * as Clipboard from 'expo-clipboard';
 import Slider from '@react-native-community/slider';
 import VoiceTab from '@/components/voice/VoiceTab';
+import { getCachedFrames, clearCachedFrames } from '@/services/frameCache';
 
 type Tab = 'hook' | 'caption' | 'audio' | 'voice' | 'platforms';
 
@@ -81,46 +82,56 @@ async function extractVideoFrames(
   try {
     const VideoThumbnails = await import('expo-video-thumbnails');
     const FileSystem = await import('expo-file-system');
-    const resolvedUri = await resolveVideoUri(videoUri);
 
-    // Two high-quality frames from the opening seconds.
-    // 1s captures the subject before they start moving; 3s captures the key action/expression.
-    // Higher quality + resolution gives the model enough detail to write specific hooks.
+    // expo-video-thumbnails handles ph:// natively on iOS — do NOT copy the full
+    // video file first (resolveVideoUri would copy 100MB+ and block for 10-30s).
+    // Only resolve if native thumbnail fails.
     const durMs = durationSec > 0 ? durationSec * 1000 : 10000;
     const seekPoints = [1000, 3000].filter(t => t <= durMs);
-    if (seekPoints.length === 0) seekPoints.push(500); // very short video
+    if (seekPoints.length === 0) seekPoints.push(500);
+
+    const tryThumbnail = async (sourceUri: string, seekMs: number) => {
+      const { uri } = await VideoThumbnails.getThumbnailAsync(sourceUri, {
+        time: seekMs, quality: 0.8, maxWidth: 720,
+      });
+      if (!uri) return null;
+      const base64 = await FileSystem.readAsStringAsync(uri, { encoding: FileSystem.EncodingType.Base64 });
+      return base64.length > 100 && base64.length < 600_000 ? base64 : null;
+    };
 
     const frames: Array<{ base64: string; mime: string }> = [];
+    let resolvedUri: string | null = null;
+
     for (const seekMs of seekPoints) {
       try {
-        const { uri } = await VideoThumbnails.getThumbnailAsync(resolvedUri, {
-          time: seekMs, quality: 0.8, maxWidth: 720,
-        });
-        if (uri) {
-          const base64 = await FileSystem.readAsStringAsync(uri, { encoding: FileSystem.EncodingType.Base64 });
-          console.log(`[extractVideoFrames] seekMs=${seekMs} base64Len=${base64.length}`);
-          if (base64.length > 100 && base64.length < 600_000) frames.push({ base64, mime: 'image/jpeg' });
+        const base64 = await tryThumbnail(videoUri, seekMs);
+        if (base64) {
+          frames.push({ base64, mime: 'image/jpeg' });
+          console.log(`[extractVideoFrames] seekMs=${seekMs} ok len=${base64.length}`);
+          continue;
+        }
+      } catch { /* ph:// didn't work, try resolved path */ }
+
+      // Fall back to file-copy resolve only on first failure
+      if (!resolvedUri) {
+        resolvedUri = await resolveVideoUri(videoUri);
+        console.log(`[extractVideoFrames] resolved to ${resolvedUri.slice(0, 60)}`);
+      }
+      try {
+        const base64 = await tryThumbnail(resolvedUri, seekMs);
+        if (base64) {
+          frames.push({ base64, mime: 'image/jpeg' });
+          console.log(`[extractVideoFrames] seekMs=${seekMs} (resolved) ok len=${base64.length}`);
         }
       } catch (e) {
-        console.warn(`[extractVideoFrames] seek ${seekMs}ms failed:`, e);
+        console.warn(`[extractVideoFrames] seekMs=${seekMs} both attempts failed:`, e);
       }
     }
 
-    // Fallback: try 500ms if nothing worked
-    if (frames.length === 0) {
-      try {
-        const { uri } = await VideoThumbnails.getThumbnailAsync(resolvedUri, { time: 500, quality: 0.8, maxWidth: 720 });
-        if (uri) {
-          const base64 = await FileSystem.readAsStringAsync(uri, { encoding: FileSystem.EncodingType.Base64 });
-          frames.push({ base64, mime: 'image/jpeg' });
-        }
-      } catch { /* ignore */ }
-    }
-    console.log(`[extractVideoFrames] extracted ${frames.length} frames`);
-
+    console.log(`[extractVideoFrames] done — ${frames.length} frames extracted`);
     return frames;
   } catch (e) {
-    console.warn('Frame extraction failed:', e);
+    console.warn('[extractVideoFrames] failed:', e);
     return [];
   }
 }
@@ -294,7 +305,13 @@ export default function EditorScreen() {
     setAutoGenDone(true);
 
     const runAll = async () => {
-      const frames = video.videoUri ? await extractVideoFrames(video.videoUri, video.duration ?? 0) : [];
+      // Use pre-extracted frames from upload screen if available (avoids re-resolving ph:// URI)
+      const cached = getCachedFrames(video.id);
+      const frames = cached ?? (video.videoUri ? await extractVideoFrames(video.videoUri, video.duration ?? 0) : []);
+      if (cached) {
+        console.log(`[autoGen] using ${cached.length} pre-extracted frames from upload`);
+        clearCachedFrames(video.id);
+      }
       frameCache.current = frames;
       const framePayload = frames.length > 0 ? { videoFrames: frames } : {};
 
