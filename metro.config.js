@@ -37,6 +37,9 @@ function findExpoModulesCore() {
 
 const expoModulesCorePath = findExpoModulesCore();
 
+// Stub path for hermes-parser-plugin used by babel-plugin-syntax-hermes-parser in SSR
+const hermesParserStub = path.resolve(__dirname, 'stubs/hermes-parser-plugin.js');
+
 const originalResolveRequest = config.resolver.resolveRequest;
 config.resolver.resolveRequest = (context, moduleName, platform) => {
   if (platform === 'web' && webStubs[moduleName]) {
@@ -47,6 +50,10 @@ config.resolver.resolveRequest = (context, moduleName, platform) => {
     if (fs.existsSync(indexFile)) {
       return { filePath: indexFile, type: 'sourceFile' };
     }
+  }
+  // Intercept hermes-parser plugin stub requests from babel-plugin-syntax-hermes-parser
+  if (moduleName.includes('hermes-parser-plugin') || moduleName.endsWith('stubs/hermes-parser-plugin.js')) {
+    return { filePath: hermesParserStub, type: 'sourceFile' };
   }
   if (originalResolveRequest) {
     return originalResolveRequest(context, moduleName, platform);
