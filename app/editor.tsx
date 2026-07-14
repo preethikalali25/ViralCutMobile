@@ -407,9 +407,19 @@ export default function EditorScreen() {
 
   const ensureFrame = async () => {
     if (frameCache.current === 'pending') {
-      frameCache.current = video.videoUri
-        ? await extractVideoFrames(video.videoUri, video.duration ?? 0)
-        : [];
+      let frames: Array<{ base64: string; mime: string }> = [];
+      if (video.videoUri) {
+        frames = await extractVideoFrames(video.videoUri, video.duration ?? 0);
+      }
+      // Fallback to thumbnail already on disk (works even when VideoToolbox can't decode)
+      if (frames.length === 0 && video.thumbnail && (video.thumbnail.startsWith('file://') || video.thumbnail.startsWith('/'))) {
+        try {
+          const thumbUri = video.thumbnail.startsWith('/') ? `file://${video.thumbnail}` : video.thumbnail;
+          const base64 = await FileSystem.readAsStringAsync(thumbUri, { encoding: FileSystem.EncodingType.Base64 });
+          if (base64.length > 100 && base64.length < 600_000) frames = [{ base64, mime: 'image/jpeg' }];
+        } catch { /* ignore */ }
+      }
+      frameCache.current = frames;
     }
     const frames = frameCache.current !== 'pending' ? frameCache.current : [];
     return frames.length > 0 ? { videoFrames: frames } : {};
