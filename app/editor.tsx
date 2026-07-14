@@ -305,13 +305,33 @@ export default function EditorScreen() {
     setAutoGenDone(true);
 
     const runAll = async () => {
-      // Use pre-extracted frames from upload screen if available (avoids re-resolving ph:// URI)
+      // Priority 1: frames pre-extracted during upload (fastest, avoids re-resolving ph://)
+      // Priority 2: video.thumbnail already on disk (upload screen generates it at seekMs=0 which works even on simulator/HEVC)
+      // Priority 3: fresh extraction from video URI
       const cached = getCachedFrames(video.id);
-      const frames = cached ?? (video.videoUri ? await extractVideoFrames(video.videoUri, video.duration ?? 0) : []);
-      if (cached) {
-        console.log(`[autoGen] using ${cached.length} pre-extracted frames from upload`);
+      let frames: Array<{ base64: string; mime: string }> = [];
+
+      if (cached && cached.length > 0) {
+        frames = cached;
         clearCachedFrames(video.id);
+        console.log(`[autoGen] using ${frames.length} pre-extracted frames from upload`);
+      } else if (video.thumbnail && (video.thumbnail.startsWith('file://') || video.thumbnail.startsWith('/'))) {
+        try {
+          const thumbUri = video.thumbnail.startsWith('/') ? `file://${video.thumbnail}` : video.thumbnail;
+          const base64 = await FileSystem.readAsStringAsync(thumbUri, { encoding: FileSystem.EncodingType.Base64 });
+          if (base64.length > 100 && base64.length < 600_000) {
+            frames = [{ base64, mime: 'image/jpeg' }];
+            console.log(`[autoGen] using thumbnail as AI frame len=${base64.length}`);
+          }
+        } catch (e) {
+          console.warn('[autoGen] thumbnail read failed:', e);
+        }
       }
+
+      if (frames.length === 0 && video.videoUri) {
+        frames = await extractVideoFrames(video.videoUri, video.duration ?? 0);
+      }
+
       frameCache.current = frames;
       const framePayload = frames.length > 0 ? { videoFrames: frames } : {};
 

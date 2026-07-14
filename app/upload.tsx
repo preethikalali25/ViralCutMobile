@@ -48,8 +48,8 @@ async function prefetchVideoFrames(uri: string, durationSec: number): Promise<{ 
     const VideoThumbnails = await import('expo-video-thumbnails');
     const FileSystem = await import('expo-file-system');
     const durMs = durationSec > 0 ? durationSec * 1000 : 10000;
-    const seekPoints = [1000, 3000].filter(t => t <= durMs);
-    if (seekPoints.length === 0) seekPoints.push(500);
+    // Include 0ms first — keyframe at t=0 works even when HEVC hw-decode unavailable (simulator)
+    const seekPoints = [0, 1000, 3000].filter(t => t <= durMs);
     const frames: { base64: string; mime: string }[] = [];
     for (const seekMs of seekPoints) {
       try {
