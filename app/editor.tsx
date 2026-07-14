@@ -83,11 +83,10 @@ async function extractVideoFrames(
     const FileSystem = await import('expo-file-system');
     const resolvedUri = await resolveVideoUri(videoUri);
 
-    // Sample at 2s, 6s, 11s — capped to first 13s so longer videos still get relevant frames
-    const cap = Math.min(durationSec > 0 ? durationSec * 1000 : 13000, 13000);
-    const seekPoints = [2000, Math.round(cap * 0.45), Math.round(cap * 0.85)].filter(
-      (t, i, arr) => t <= cap && arr.indexOf(t) === i,
-    );
+    // Sample the first 5 seconds — the hook should reflect the opening moment the viewer sees.
+    // Three frames: 0.5s (very first look), 2s (main subject established), 4s (action/reaction peak).
+    const durMs = durationSec > 0 ? durationSec * 1000 : 10000;
+    const seekPoints = [500, 2000, 4000].filter(t => t <= durMs);
 
     const frames: Array<{ base64: string; mime: string }> = [];
     for (const seekMs of seekPoints) {
