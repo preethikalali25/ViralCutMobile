@@ -32,14 +32,15 @@ async def update_job(supabase_url: str, supabase_key: str, job_id: str, payload:
     url = f"{supabase_url}/rest/v1/voice_mix_jobs?id=eq.{job_id}"
     try:
         async with httpx.AsyncClient(timeout=10) as client:
-            await client.patch(url, json=payload, headers={
+            r = await client.patch(url, json=payload, headers={
                 "apikey": supabase_key,
                 "Authorization": f"Bearer {supabase_key}",
                 "Content-Type": "application/json",
                 "Prefer": "return=minimal",
             })
-    except Exception:
-        pass
+        print(f"[mix] update_job {job_id} status={r.status_code} body={r.text[:200]}")
+    except Exception as e:
+        print(f"[mix] update_job {job_id} EXCEPTION: {e}")
 
 
 def build_audio_filter(segments: list[SpeakerSegment], volumes: dict[str, float]) -> str:
