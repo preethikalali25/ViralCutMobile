@@ -68,10 +68,11 @@ Deno.serve(async (req) => {
         return new Response(JSON.stringify({ error: `Render service error: ${errText.slice(0, 200)}` }), { status: 500, headers: corsHeaders });
       }
 
+      // Render processes synchronously — job status is already 'completed' or 'failed' in DB.
+      // Only update render_job_id; do NOT touch status.
       const renderData = await renderRes.json();
       await supabase.from('voice_mix_jobs').update({
         render_job_id: renderData.jobId ?? job.id,
-        status: 'processing',
         updated_at: new Date().toISOString(),
       }).eq('id', job.id);
 
