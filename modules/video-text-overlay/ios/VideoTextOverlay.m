@@ -548,6 +548,21 @@ RCT_EXPORT_MODULE();
                   resolve:(RCTPromiseResolveBlock)resolve {
     AVURLAsset *asset = [AVURLAsset URLAssetWithURL:inputUrl options:nil];
     if (!asset) { resolve(originalUri); return; }
+    // iOS 16+ requires async track loading before synchronous tracksWithMediaType: works.
+    dispatch_semaphore_t loadSema = dispatch_semaphore_create(0);
+    [asset loadValuesAsynchronouslyForKeys:@[@"tracks", @"duration"] completionHandler:^{
+        dispatch_semaphore_signal(loadSema);
+    }];
+    dispatch_semaphore_wait(loadSema,
+        dispatch_time(DISPATCH_TIME_NOW, (int64_t)(15 * NSEC_PER_SEC)));
+    NSError *trackErr = nil;
+    AVKeyValueStatus status = [asset statusOfValueForKey:@"tracks" error:&trackErr];
+    if (status != AVKeyValueStatusLoaded) {
+        NSLog(@"[VideoTextOverlay] tracks not loaded for file URI (status=%ld err=%@)",
+              (long)status, trackErr.localizedDescription);
+        resolve(originalUri);
+        return;
+    }
     [self processAsset:asset text:text backgroundAudioUri:backgroundAudioUri
         originalVolume:originalVolume bgVolume:bgVolume
            originalUri:originalUri resolve:resolve];
