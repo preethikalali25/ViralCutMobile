@@ -17,7 +17,8 @@ import { setCachedFrames } from '@/services/frameCache';
 
 async function requestPermission(): Promise<boolean> {
   const { status } = await ImagePicker.requestMediaLibraryPermissionsAsync();
-  return status === 'granted';
+  // 'limited' = iOS "Select Photos" access; PHPicker still works with it.
+  return status === 'granted' || status === 'limited';
 }
 
 type MediaPreviewItem = MediaItem & { previewUri: string; durationSec?: number };
