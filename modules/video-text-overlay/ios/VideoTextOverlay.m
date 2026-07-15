@@ -257,6 +257,20 @@ RCT_EXPORT_MODULE();
 
     dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
         @try {
+            // iOS 16+: tracksWithMediaType: is deprecated and may return empty
+            // without a prior async load. Load tracks+duration before any access.
+            dispatch_semaphore_t assetSema = dispatch_semaphore_create(0);
+            [asset loadValuesAsynchronouslyForKeys:@[@"tracks", @"duration"]
+                                completionHandler:^{ dispatch_semaphore_signal(assetSema); }];
+            dispatch_semaphore_wait(assetSema,
+                dispatch_time(DISPATCH_TIME_NOW, (int64_t)(15 * NSEC_PER_SEC)));
+
+            NSError *tracksErr = nil;
+            if ([asset statusOfValueForKey:@"tracks" error:&tracksErr] != AVKeyValueStatusLoaded) {
+                NSLog(@"[VideoTextOverlay] asset tracks not loaded: %@", tracksErr.localizedDescription);
+                resolve(originalUri); return;
+            }
+
 #pragma clang diagnostic push
 #pragma clang diagnostic ignored "-Wdeprecated-declarations"
             NSArray *videoTracks = [asset tracksWithMediaType:AVMediaTypeVideo];
