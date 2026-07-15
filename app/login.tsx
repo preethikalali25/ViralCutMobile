@@ -1,8 +1,7 @@
-import React, { useState, useEffect, Component } from 'react';
+import React, { useState, useEffect } from 'react';
 import {
   View, Text, StyleSheet, Pressable, TextInput,
   KeyboardAvoidingView, Platform, ScrollView, ActivityIndicator,
-  LogBox,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Image } from 'expo-image';
@@ -12,17 +11,6 @@ import { useAuth, useAlert } from '@/template';
 import { getSharedSupabaseClient } from '@/template/core/client';
 import { Colors, Spacing, Radius, FontSize, FontWeight } from '@/constants/theme';
 import { useRouter } from 'expo-router';
-
-LogBox.ignoreLogs(['Unimplemented component: <ViewManagerAdapter_ExpoAppleAuthentication']);
-
-class AppleButtonBoundary extends Component<
-  { children: React.ReactNode },
-  { failed: boolean }
-> {
-  state = { failed: false };
-  static getDerivedStateFromError() { return { failed: true }; }
-  render() { return this.state.failed ? null : this.props.children; }
-}
 
 type Mode = 'landing' | 'email' | 'otp';
 
@@ -145,15 +133,14 @@ export default function LoginScreen() {
                 <Text style={styles.cardSub}>Sign in or create an account</Text>
 
                 {Platform.OS === 'ios' && (
-                  <AppleButtonBoundary>
-                    <AppleAuthentication.AppleAuthenticationButton
-                      buttonType={AppleAuthentication.AppleAuthenticationButtonType.SIGN_IN}
-                      buttonStyle={AppleAuthentication.AppleAuthenticationButtonStyle.WHITE}
-                      cornerRadius={50}
-                      style={styles.appleBtn}
-                      onPress={handleApple}
-                    />
-                  </AppleButtonBoundary>
+                  <Pressable
+                    style={({ pressed }) => [styles.appleBtn, pressed && { opacity: 0.85 }]}
+                    onPress={handleApple}
+                    disabled={isBusy}
+                  >
+                    <MaterialCommunityIcons name="apple" size={22} color="#000000" />
+                    <Text style={styles.appleBtnText}>Sign in with Apple</Text>
+                  </Pressable>
                 )}
 
                 {/* Google */}
@@ -357,21 +344,16 @@ const styles = StyleSheet.create({
     marginTop: -Spacing.sm,
   },
   appleBtn: {
-    width: '100%',
-    height: 50,
-    borderRadius: 50,
-  },
-  appleFallbackBtn: {
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'center',
     gap: 8,
     backgroundColor: '#ffffff',
-    borderRadius: 50,
+    borderRadius: Radius.full,
     height: 50,
     width: '100%',
   },
-  appleFallbackText: {
+  appleBtnText: {
     fontSize: FontSize.md,
     fontWeight: FontWeight.semibold,
     color: '#000000',
