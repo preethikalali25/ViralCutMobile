@@ -158,9 +158,20 @@ export async function uploadVideoToStorage(
     const { data: { session } } = await client.auth.getSession();
     const token = session?.access_token ?? process.env.EXPO_PUBLIC_SUPABASE_ANON_KEY!;
 
-    onProgress?.(10);
+    onProgress?.(5);
 
     const FileSystem = await import('expo-file-system');
+
+    // uploadAsync only accepts file:// URIs — if we received a remote URL
+    // (e.g. video was previously uploaded to Supabase), download it first.
+    if (localUri.startsWith('http')) {
+      const tmpPath = FileSystem.cacheDirectory + `tmp_upload_${Date.now()}.mp4`;
+      await FileSystem.downloadAsync(localUri, tmpPath);
+      localUri = tmpPath;
+    }
+
+    onProgress?.(10);
+
     const uploadUrl = `${supabaseUrl}/storage/v1/object/videos/${fileName}`;
 
     const result = await (FileSystem as any).uploadAsync(uploadUrl, localUri, {
