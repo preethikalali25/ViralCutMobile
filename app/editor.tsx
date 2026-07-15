@@ -55,6 +55,18 @@ const HOOK_TYPES: { type: HookType; label: string; desc: string; icon: string }[
 const ALL_PLATFORMS: PlatformType[] = ['tiktok', 'reels', 'youtube'];
 
 async function resolveVideoUri(uri: string): Promise<string> {
+  if (uri.startsWith('http://') || uri.startsWith('https://')) {
+    try {
+      const FS = await import('expo-file-system');
+      const dest = FS.cacheDirectory + `vid_remote_${Date.now()}.mp4`;
+      const { uri: localUri } = await FS.downloadAsync(uri, dest);
+      console.log('[resolveVideoUri] downloaded remote video to', localUri);
+      return localUri;
+    } catch (e) {
+      console.warn('[resolveVideoUri] https download failed:', e);
+    }
+    return uri;
+  }
   if (!uri.startsWith('ph://')) return uri;
   try {
     const FS = await import('expo-file-system');
