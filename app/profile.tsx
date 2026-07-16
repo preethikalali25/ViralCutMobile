@@ -94,46 +94,6 @@ export default function ProfileScreen() {
     load();
   }, [load]);
 
-  const handleDeleteAccount = () => {
-    showAlert(
-      'Delete Account',
-      'This permanently deletes your account and all associated data. This cannot be undone.',
-      [
-        { text: 'Cancel', style: 'cancel' },
-        {
-          text: 'Delete My Account',
-          style: 'destructive',
-          onPress: () => {
-            showAlert(
-              'Are you absolutely sure?',
-              'Your videos, connected platforms, and account data will be permanently deleted.',
-              [
-                { text: 'Cancel', style: 'cancel' },
-                {
-                  text: 'Yes, Delete Everything',
-                  style: 'destructive',
-                  onPress: async () => {
-                    setDeletingAccount(true);
-                    try {
-                      const { error } = await getSupabaseClient().functions.invoke('delete-account');
-                      if (error) {
-                        showAlert('Error', 'Could not delete account. Please try again or contact support.');
-                      }
-                    } catch {
-                      showAlert('Error', 'Could not delete account. Please try again or contact support.');
-                    } finally {
-                      setDeletingAccount(false);
-                    }
-                  },
-                },
-              ],
-            );
-          },
-        },
-      ],
-    );
-  };
-
   const handleLogout = async () => {
     showAlert('Sign Out', 'Are you sure you want to sign out?', [
       { text: 'Cancel', style: 'cancel' },
