@@ -457,6 +457,56 @@ Deno.serve(async (req) => {
       );
     }
 
+    // ── 9. Get Analytics ────────────────────────────────────────────────────
+    if (action === 'get_analytics') {
+      const { userId } = body as { userId: string };
+
+      const { data: row } = await supabase
+        .from('instagram_tokens')
+        .select('access_token, expires_at, instagram_user_id, username, followers_count')
+        .eq('user_id', userId)
+        .maybeSingle();
+
+      if (!row) return new Response(JSON.stringify({ error: 'Instagram not connected' }), { status: 401, headers: { ...corsHeaders, 'Content-Type': 'application/json' } });
+      if (row.expires_at && new Date(row.expires_at as string) < new Date()) return new Response(JSON.stringify({ error: 'Instagram token expired. Please reconnect.' }), { status: 401, headers: { ...corsHeaders, 'Content-Type': 'application/json' } });
+
+      const { access_token, instagram_user_id, username, followers_count } = row as {
+        access_token: string; instagram_user_id: string; username: string; followers_count: number;
+      };
+
+      // Fetch recent media with insights
+      const mediaRes = await fetch(
+        `${IG_GRAPH_URL}/${instagram_user_id}/media?fields=id,media_type,thumbnail_url,media_url,timestamp,caption,like_count,comments_count&limit=50&access_token=${access_token}`,
+        { signal: AbortSignal.timeout(10000) },
+      );
+      const mediaData = await mediaRes.json();
+
+      if (mediaData.error) {
+        return new Response(JSON.stringify({ error: `Instagram API: ${mediaData.error.message}` }), { status: 502, headers: { ...corsHeaders, 'Content-Type': 'application/json' } });
+      }
+
+      const videos = ((mediaData.data ?? []) as Record<string, unknown>[])
+        .filter(m => m.media_type === 'VIDEO' || m.media_type === 'REELS')
+        .map(m => ({
+          id: m.id as string,
+          title: ((m.caption as string | undefined) ?? '').slice(0, 80) || 'Reel',
+          thumbnail: (m.thumbnail_url ?? m.media_url ?? '') as string,
+          publishedAt: m.timestamp as string,
+          views: 0,
+          likes: (m.like_count ?? 0) as number,
+          shares: 0,
+          comments: (m.comments_count ?? 0) as number,
+        }));
+
+      return new Response(JSON.stringify({
+        username,
+        followersCount: followers_count,
+        posts: videos.length,
+        totalLikes: videos.reduce((s, v) => s + v.likes, 0),
+        videos,
+      }), { headers: { ...corsHeaders, 'Content-Type': 'application/json' } });
+    }
+
     return new Response(
       JSON.stringify({ error: `Unknown action: ${action}` }),
       { status: 400, headers: { ...corsHeaders, 'Content-Type': 'application/json' } },

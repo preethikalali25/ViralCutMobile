@@ -1,4 +1,3 @@
-
 import React, { useState, useEffect, useRef } from 'react';
 import {
   View, Text, ScrollView, StyleSheet, Pressable, ActivityIndicator, FlatList,
@@ -12,32 +11,82 @@ import { Colors, Spacing, Radius, FontSize, FontWeight } from '@/constants/theme
 import { useVideos } from '@/hooks/useVideos';
 import { useAlert } from '@/template';
 import { Platform as PlatformType, Video } from '@/types';
-import PlatformBadge from '@/components/ui/PlatformBadge';
 import { combineMediaToVideo, type MediaItem } from '@/services/videoOverlayService';
 import { consumePendingReelItems } from '@/stores/pendingReel';
-
-const ALL_PLATFORMS: PlatformType[] = ['tiktok', 'reels', 'youtube'];
+import { setCachedFrames } from '@/services/frameCache';
 
 async function requestPermission(): Promise<boolean> {
   const { status } = await ImagePicker.requestMediaLibraryPermissionsAsync();
-  return status === 'granted';
+  // 'limited' = iOS "Select Photos" access; PHPicker still works with it.
+  return status === 'granted' || status === 'limited';
 }
 
 type MediaPreviewItem = MediaItem & { previewUri: string; durationSec?: number };
 
 const THUMBNAIL_TIMEOUT_MS = 8000;
 
+async function resolveUri(uri: string): Promise<string> {
+  if (!uri.startsWith('ph://')) return uri;
+  try {
+    const FS = await import('expo-file-system');
+    const dest = FS.cacheDirectory + `thumb_src_${Date.now()}.mp4`;
+    await FS.copyAsync({ from: uri, to: dest });
+    return dest;
+  } catch { /* fall through */ }
+  try {
+    const MediaLibrary = await import('expo-media-library');
+    const assetId = uri.replace('ph://', '').split('/')[0];
+    const asset = await MediaLibrary.getAssetInfoAsync(assetId);
+    if (asset?.localUri) return asset.localUri;
+  } catch { /* fall through */ }
+  return uri;
+}
+
+// Extract frames from the first few seconds for AI hook generation.
+// Runs in parallel with video processing so the editor gets frames immediately.
+async function prefetchVideoFrames(uri: string, durationSec: number): Promise<{ base64: string; mime: string }[]> {
+  try {
+    const VideoThumbnails = await import('expo-video-thumbnails');
+    const FileSystem = await import('expo-file-system');
+    const durMs = durationSec > 0 ? durationSec * 1000 : 10000;
+    // Include 0ms first — keyframe at t=0 works even when HEVC hw-decode unavailable (simulator)
+    const seekPoints = [0, 1000, 3000].filter(t => t <= durMs);
+    const frames: { base64: string; mime: string }[] = [];
+    for (const seekMs of seekPoints) {
+      try {
+        const { uri: thumbUri } = await VideoThumbnails.getThumbnailAsync(uri, {
+          time: seekMs, quality: 0.5, maxWidth: 512,
+        });
+        if (!thumbUri) continue;
+        const base64 = await FileSystem.readAsStringAsync(thumbUri, { encoding: FileSystem.EncodingType.Base64 });
+        if (base64.length > 100) frames.push({ base64, mime: 'image/jpeg' });
+      } catch { /* skip this seek */ }
+    }
+    console.log(`[upload] prefetched ${frames.length} frames for AI`);
+    return frames;
+  } catch {
+    return [];
+  }
+}
+
 // '' means "no thumbnail yet" (still loading or failed) — never the raw video
 // URI, since <Image> can't render a video file and would show a broken tile.
 async function getVideoPreviewUri(uri: string): Promise<string> {
   try {
     const VideoThumbnails = await import('expo-video-thumbnails');
-    const result = await Promise.race([
-      VideoThumbnails.getThumbnailAsync(uri, { time: 0, quality: 0.7 }),
-      new Promise<never>((_, reject) =>
-        setTimeout(() => reject(new Error('thumbnail timed out')), THUMBNAIL_TIMEOUT_MS)),
-    ]);
-    return result.uri;
+    const resolved = await resolveUri(uri);
+    // Try multiple seek points in case the first frame is blank/black
+    for (const seekMs of [1000, 500, 2000, 0]) {
+      try {
+        const result = await Promise.race([
+          VideoThumbnails.getThumbnailAsync(resolved, { time: seekMs, quality: 0.7 }),
+          new Promise<never>((_, reject) =>
+            setTimeout(() => reject(new Error('thumbnail timed out')), THUMBNAIL_TIMEOUT_MS)),
+        ]);
+        if (result.uri) return result.uri;
+      } catch { /* try next seek */ }
+    }
+    return '';
   } catch (e) {
     console.warn('[upload] thumbnail generation failed:', e);
     return '';
@@ -49,18 +98,11 @@ export default function UploadScreen() {
   const { addVideo, updateVideo } = useVideos();
   const { showAlert } = useAlert();
 
-  const [platforms, setPlatforms] = useState<PlatformType[]>(['tiktok']);
   const [mediaItems, setMediaItems] = useState<MediaPreviewItem[]>([]);
   const [isProcessing, setIsProcessing] = useState(false);
   const [processingLabel, setProcessingLabel] = useState('');
   const didConsumeRef = useRef(false);
   const pendingMetaRef = useRef<{ title?: string; hook?: string }>({});
-
-  const togglePlatform = (p: PlatformType) => {
-    setPlatforms(prev =>
-      prev.includes(p) ? (prev.length > 1 ? prev.filter(x => x !== p) : prev) : [...prev, p]
-    );
-  };
 
   const handleBrowse = async () => {
     if (!(await requestPermission())) {
@@ -124,22 +166,24 @@ export default function UploadScreen() {
       previewUri: item.previewUri ?? '', durationSec: item.durationSec,
     }));
     setMediaItems(loaded);
-    // The original comment to disable eslint is removed, as it indicates a linting
-    // issue rather than a TypeScript syntax error. The core problem is that `handleEdit`
-    // is called inside `useEffect` without being in its dependency array (if it were
-    // a dependency, the effect would re-run unexpectedly).
-    // The most common solution is to wrap `handleEdit` in a `useCallback` or move
-    // its logic directly into the `useEffect` if it's only used there, or ensure
-    // `handleEdit` itself has stable identity or its dependencies are stable.
-    // However, since the request is only to fix syntax errors, and the reported
-    // error is about a missing eslint rule definition, the syntax itself is valid.
-    // I will not alter the logic or add `useCallback` as that goes beyond "minimal,
-    // targeted changes only to fix the specific syntax errors" and "preserving as
-    // much of the original code as possible". The reported error is a *linting* error,
-    // not a *TypeScript syntax* error. If the user wishes to fix the linting,
-    // they should update their ESLint configuration or modify the `handleEdit` call.
+
+    // Fetch thumbnails for any video items that don't have one yet
+    loaded.filter(item => item.type === 'video' && !item.previewUri).forEach(item => {
+      getVideoPreviewUri(item.uri).then(previewUri => {
+        if (!previewUri) return;
+        setMediaItems(prev => {
+          const idx = prev.findIndex(m => m.uri === item.uri && !m.previewUri);
+          if (idx === -1) return prev;
+          const next = [...prev];
+          next[idx] = { ...next[idx], previewUri };
+          return next;
+        });
+      });
+    });
+
     if (autoOpen) handleEdit(loaded);
-  }, []); // Empty dependency array means this effect runs once on mount
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   const handleEdit = async (overrideItems?: MediaPreviewItem[]) => {
     const items = overrideItems ?? mediaItems;
@@ -160,6 +204,12 @@ export default function UploadScreen() {
 
       const totalDur = items.reduce((s, m) => s + (m.type === 'photo' ? 3 : Math.min(m.durationSec ?? 15, 15)), 0);
 
+      // Start frame extraction in parallel — so AI frames are ready when editor opens
+      const firstVideo = items.find(m => m.type === 'video');
+      const framePrefetchPromise = firstVideo
+        ? prefetchVideoFrames(firstVideo.uri, firstVideo.durationSec ?? 15)
+        : Promise.resolve([]);
+
       if (items.length === 1 && items[0].type === 'video') {
         // Single video — pass through directly, no conversion needed
         videoUri = items[0].uri;
@@ -170,7 +220,7 @@ export default function UploadScreen() {
         addVideo({
           id, title: '', thumbnail,
           duration: items[0].durationSec ?? 15,
-          status: 'ready', platforms,
+          status: 'ready', platforms: ['tiktok', 'reels'] as PlatformType[],
           createdAt: new Date().toISOString(),
           videoUri,
           ...(assetId ? { videoAssetId: assetId } : {}),
@@ -183,11 +233,15 @@ export default function UploadScreen() {
 
         addVideo({
           id, title: '', thumbnail,
-          duration: totalDur, status: 'ready', platforms,
+          duration: totalDur, status: 'ready', platforms: ['tiktok', 'reels'] as PlatformType[],
           createdAt: new Date().toISOString(),
           videoUri,
         } as Video);
       }
+
+      // Store pre-extracted frames so editor can use them immediately
+      const prefetchedFrames = await framePrefetchPromise;
+      if (prefetchedFrames.length > 0) setCachedFrames(id, prefetchedFrames);
     } catch (e: any) {
       console.warn('[upload] error:', e);
       showAlert('Error', e?.message ?? 'Could not process media. Try again.');
@@ -297,28 +351,6 @@ export default function UploadScreen() {
           <Text style={styles.tipText}>• Tap × on any item to remove it from the reel</Text>
         </View>
 
-        {/* Platforms */}
-        <View style={styles.field}>
-          <Text style={styles.fieldLabel}>Target Platforms</Text>
-          <View style={styles.platformsList}>
-            {ALL_PLATFORMS.map(p => (
-              <Pressable
-                key={p}
-                style={[styles.platformCard, platforms.includes(p) && styles.platformCardActive]}
-                onPress={() => togglePlatform(p)}
-              >
-                <PlatformBadge platform={p} size="md" />
-                <Text style={[styles.platformName, platforms.includes(p) && styles.platformNameActive]}>
-                  {p === 'tiktok' ? 'TikTok' : p === 'reels' ? 'Instagram Reels' : 'YouTube Shorts'}
-                </Text>
-                {platforms.includes(p)
-                  ? <MaterialIcons name="check-circle" size={18} color={Colors.primary} />
-                  : <MaterialIcons name="radio-button-unchecked" size={18} color={Colors.textMuted} />}
-              </Pressable>
-            ))}
-          </View>
-        </View>
-
         {/* Edit Button */}
         <View style={styles.actionRow}>
           <Pressable
@@ -388,7 +420,7 @@ const styles = StyleSheet.create({
   strip: { gap: 8, paddingHorizontal: 4 },
   stripItem: {
     width: 80, height: 106, borderRadius: Radius.md,
-    overflow: 'hidden', position: 'absolute',
+    overflow: 'hidden',
   },
   stripThumb: { width: '100%', height: '100%' },
   stripThumbPlaceholder: { alignItems: 'center', justifyContent: 'center', backgroundColor: Colors.surfaceElevated },
@@ -434,23 +466,6 @@ const styles = StyleSheet.create({
     color: Colors.amber, includeFontPadding: false,
   },
   tipText: { fontSize: FontSize.sm, color: Colors.textSecondary, includeFontPadding: false },
-  field: { paddingHorizontal: Spacing.md, marginBottom: Spacing.lg, gap: Spacing.sm },
-  fieldLabel: {
-    fontSize: FontSize.sm, fontWeight: FontWeight.semibold,
-    color: Colors.textSecondary, includeFontPadding: false,
-  },
-  platformsList: { gap: Spacing.sm },
-  platformCard: {
-    flexDirection: 'row', alignItems: 'center', gap: Spacing.sm,
-    backgroundColor: Colors.surfaceElevated, borderRadius: Radius.md,
-    padding: Spacing.sm + 4, borderWidth: 1.5, borderColor: Colors.surfaceBorder,
-  },
-  platformCardActive: { borderColor: Colors.primary, backgroundColor: Colors.primaryGlow },
-  platformName: {
-    flex: 1, fontSize: FontSize.md, fontWeight: FontWeight.semibold,
-    color: Colors.textSecondary, includeFontPadding: false,
-  },
-  platformNameActive: { color: Colors.textPrimary },
   actionRow: { marginHorizontal: Spacing.md },
   editBtn: {
     flexDirection: 'row', alignItems: 'center', justifyContent: 'center',

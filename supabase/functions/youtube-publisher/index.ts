@@ -294,7 +294,79 @@ Deno.serve(async (req) => {
       );
     }
 
-    // ── 4. Disconnect ─────────────────────────────────────────────────────
+    // ── 4. Get Analytics ─────────────────────────────────────────────────
+    if (action === 'get_analytics') {
+      const { userId } = body as { userId: string };
+
+      const tokenResult = await getValidAccessToken(supabase, userId, clientId);
+      if ('error' in tokenResult) {
+        return new Response(JSON.stringify({ error: tokenResult.error }), { status: 401, headers: { ...corsHeaders, 'Content-Type': 'application/json' } });
+      }
+
+      const { accessToken } = tokenResult;
+
+      // Fetch channel stats + recent uploads
+      const [channelRes, searchRes] = await Promise.all([
+        fetch(`${YOUTUBE_CHANNELS_URL}?part=snippet,statistics&mine=true`, {
+          headers: { Authorization: `Bearer ${accessToken}` },
+          signal: AbortSignal.timeout(10000),
+        }),
+        fetch(`https://www.googleapis.com/youtube/v3/search?part=snippet&forMine=true&type=video&maxResults=50&order=date`, {
+          headers: { Authorization: `Bearer ${accessToken}` },
+          signal: AbortSignal.timeout(10000),
+        }),
+      ]);
+
+      const channelData = await channelRes.json();
+      const searchData = await searchRes.json();
+
+      if (channelData.error) {
+        return new Response(JSON.stringify({ error: `YouTube API: ${channelData.error.message}` }), { status: 502, headers: { ...corsHeaders, 'Content-Type': 'application/json' } });
+      }
+
+      const channel = channelData.items?.[0];
+      const stats = channel?.statistics ?? {};
+      const subscribers = parseInt(stats.subscriberCount ?? '0', 10);
+      const totalViews = parseInt(stats.viewCount ?? '0', 10);
+
+      // Fetch video stats for the returned videos
+      const videoIds: string[] = ((searchData.items ?? []) as Record<string, unknown>[])
+        .map(i => ((i.id as Record<string, unknown>)?.videoId as string))
+        .filter(Boolean);
+
+      let videos: Record<string, unknown>[] = [];
+      if (videoIds.length > 0) {
+        const statsRes = await fetch(
+          `https://www.googleapis.com/youtube/v3/videos?part=snippet,statistics&id=${videoIds.join(',')}&maxResults=50`,
+          { headers: { Authorization: `Bearer ${accessToken}` }, signal: AbortSignal.timeout(10000) },
+        );
+        const statsData = await statsRes.json();
+        videos = ((statsData.items ?? []) as Record<string, unknown>[]).map(v => {
+          const s = (v as any).statistics ?? {};
+          const sn = (v as any).snippet ?? {};
+          return {
+            id: v.id as string,
+            title: sn.title ?? '',
+            thumbnail: sn.thumbnails?.medium?.url ?? sn.thumbnails?.default?.url ?? '',
+            publishedAt: sn.publishedAt ?? '',
+            views: parseInt(s.viewCount ?? '0', 10),
+            likes: parseInt(s.likeCount ?? '0', 10),
+            shares: 0,
+            comments: parseInt(s.commentCount ?? '0', 10),
+          };
+        });
+      }
+
+      return new Response(JSON.stringify({
+        channelTitle: channel?.snippet?.title ?? '',
+        subscribers,
+        totalViews,
+        videoCount: videos.length,
+        videos,
+      }), { headers: { ...corsHeaders, 'Content-Type': 'application/json' } });
+    }
+
+    // ── 5. Disconnect ─────────────────────────────────────────────────────
     if (action === 'disconnect') {
       const { userId } = body as { userId: string };
       await supabase.from('youtube_tokens').delete().eq('user_id', userId);

@@ -20,6 +20,8 @@ import { formatDuration } from '@/services/formatters';
 import { FunctionsHttpError } from '@supabase/supabase-js';
 import { useTikTok } from '@/hooks/useTikTok';
 import { useInstagram } from '@/hooks/useInstagram';
+import { useYouTube } from '@/hooks/useYouTube';
+import { initYouTubeUpload, uploadVideoToYouTube } from '@/services/youtubeService';
 import { uploadVideoToStorage } from '@/services/tiktokService';
 import { burnHookOverlay, shareToInstagramReels } from '@/services/videoOverlayService';
 import { INSTAGRAM_APP_ID } from '@/constants/instagram';
@@ -27,8 +29,10 @@ import { searchViralAudio, AudioSearchResult } from '@/services/audioSearchServi
 import * as FileSystem from 'expo-file-system';
 import * as Clipboard from 'expo-clipboard';
 import Slider from '@react-native-community/slider';
+import VoiceTab from '@/components/voice/VoiceTab';
+import { getCachedFrames, clearCachedFrames } from '@/services/frameCache';
 
-type Tab = 'hook' | 'caption' | 'audio' | 'platforms';
+type Tab = 'hook' | 'caption' | 'audio' | 'voice' | 'platforms';
 
 interface AISuggestedAudio {
   id: string;
@@ -51,6 +55,18 @@ const HOOK_TYPES: { type: HookType; label: string; desc: string; icon: string }[
 const ALL_PLATFORMS: PlatformType[] = ['tiktok', 'reels', 'youtube'];
 
 async function resolveVideoUri(uri: string): Promise<string> {
+  if (uri.startsWith('http://') || uri.startsWith('https://')) {
+    try {
+      const FS = await import('expo-file-system');
+      const dest = FS.cacheDirectory + `vid_remote_${Date.now()}.mp4`;
+      const { uri: localUri } = await FS.downloadAsync(uri, dest);
+      console.log('[resolveVideoUri] downloaded remote video to', localUri);
+      return localUri;
+    } catch (e) {
+      console.warn('[resolveVideoUri] https download failed:', e);
+    }
+    return uri;
+  }
   if (!uri.startsWith('ph://')) return uri;
   try {
     const FS = await import('expo-file-system');
@@ -71,24 +87,67 @@ async function resolveVideoUri(uri: string): Promise<string> {
   return uri;
 }
 
-async function extractVideoFrame(videoUri: string): Promise<{ base64: string; mime: string } | null> {
+async function extractVideoFrames(
+  videoUri: string,
+  durationSec = 0,
+): Promise<Array<{ base64: string; mime: string }>> {
   try {
     const VideoThumbnails = await import('expo-video-thumbnails');
     const FileSystem = await import('expo-file-system');
-    const resolvedUri = await resolveVideoUri(videoUri);
-    let frameUri: string | null = null;
-    for (const seekMs of [2000, 1000, 500, 0]) {
+
+    // expo-video-thumbnails handles ph:// natively on iOS — do NOT copy the full
+    // video file first (resolveVideoUri would copy 100MB+ and block for 10-30s).
+    // Only resolve if native thumbnail fails.
+    const durMs = durationSec > 0 ? durationSec * 1000 : 10000;
+    const seekPoints = [1000, 3000].filter(t => t <= durMs);
+    if (seekPoints.length === 0) seekPoints.push(500);
+
+    const tryThumbnail = async (sourceUri: string, seekMs: number) => {
+      // quality 0.5 + maxWidth 512 keeps JPEG under ~100KB (130K base64 chars),
+      // well within Anthropic's image limit and avoids the 600KB silent-drop.
+      const { uri } = await VideoThumbnails.getThumbnailAsync(sourceUri, {
+        time: seekMs, quality: 0.5, maxWidth: 512,
+      });
+      if (!uri) return null;
+      const base64 = await FileSystem.readAsStringAsync(uri, { encoding: FileSystem.EncodingType.Base64 });
+      console.log(`[extractVideoFrames] thumbnail seekMs=${seekMs} base64Len=${base64.length}`);
+      return base64.length > 100 ? base64 : null; // only reject obviously broken frames
+    };
+
+    const frames: Array<{ base64: string; mime: string }> = [];
+    let resolvedUri: string | null = null;
+
+    for (const seekMs of seekPoints) {
       try {
-        const { uri } = await VideoThumbnails.getThumbnailAsync(resolvedUri, { time: seekMs, quality: 0.4, maxWidth: 512 });
-        if (uri) { frameUri = uri; break; }
-      } catch { /* try next */ }
+        const base64 = await tryThumbnail(videoUri, seekMs);
+        if (base64) {
+          frames.push({ base64, mime: 'image/jpeg' });
+          console.log(`[extractVideoFrames] seekMs=${seekMs} ok len=${base64.length}`);
+          continue;
+        }
+      } catch { /* ph:// didn't work, try resolved path */ }
+
+      // Fall back to file-copy resolve only on first failure
+      if (!resolvedUri) {
+        resolvedUri = await resolveVideoUri(videoUri);
+        console.log(`[extractVideoFrames] resolved to ${resolvedUri.slice(0, 60)}`);
+      }
+      try {
+        const base64 = await tryThumbnail(resolvedUri, seekMs);
+        if (base64) {
+          frames.push({ base64, mime: 'image/jpeg' });
+          console.log(`[extractVideoFrames] seekMs=${seekMs} (resolved) ok len=${base64.length}`);
+        }
+      } catch (e) {
+        console.warn(`[extractVideoFrames] seekMs=${seekMs} both attempts failed:`, e);
+      }
     }
-    if (!frameUri) return null;
-    const base64 = await FileSystem.readAsStringAsync(frameUri, { encoding: FileSystem.EncodingType.Base64 });
-    return { base64, mime: 'image/jpeg' };
+
+    console.log(`[extractVideoFrames] done — ${frames.length} frames extracted`);
+    return frames;
   } catch (e) {
-    console.warn('Frame extraction failed:', e);
-    return null;
+    console.warn('[extractVideoFrames] failed:', e);
+    return [];
   }
 }
 
@@ -179,6 +238,7 @@ export default function EditorScreen() {
   const [savingToPhotos, setSavingToPhotos] = useState(false);
   const [generatingThumbnail, setGeneratingThumbnail] = useState(false);
   const [thumbnailUri, setThumbnailUri] = useState<string | null>(video?.thumbnail ?? null);
+  const [voiceMixUrl, setVoiceMixUrl] = useState<string | null>(null);
 
   // ── Edge Function Test Panel ──
   const [showTestModal, setShowTestModal] = useState(false);
@@ -223,9 +283,12 @@ export default function EditorScreen() {
     setTestLoading(prev => ({ ...prev, [fn]: false }));
   };
 
-  const frameCache = useRef<{ base64: string; mime: string } | null | 'pending'>('pending');
+  const frameCache = useRef<Array<{ base64: string; mime: string }> | 'pending'>('pending');
   const tiktok = useTikTok();
   const instagram = useInstagram();
+  const youtube = useYouTube();
+  const [showYouTubeSheet, setShowYouTubeSheet] = useState(false);
+  const [youtubePrivacy, setYoutubePrivacy] = useState('private');
 
   const videoPlayer = useVideoPlayer(
     { uri: video?.videoUri ?? '' },
@@ -257,9 +320,35 @@ export default function EditorScreen() {
     setAutoGenDone(true);
 
     const runAll = async () => {
-      const frame = video.videoUri ? await extractVideoFrame(video.videoUri) : null;
-      frameCache.current = frame;
-      const framePayload = frame ? { videoFrameBase64: frame.base64, videoFrameMime: frame.mime } : {};
+      // Priority 1: frames pre-extracted during upload (fastest, avoids re-resolving ph://)
+      // Priority 2: video.thumbnail already on disk (upload screen generates it at seekMs=0 which works even on simulator/HEVC)
+      // Priority 3: fresh extraction from video URI
+      const cached = getCachedFrames(video.id);
+      let frames: Array<{ base64: string; mime: string }> = [];
+
+      if (cached && cached.length > 0) {
+        frames = cached;
+        clearCachedFrames(video.id);
+        console.log(`[autoGen] using ${frames.length} pre-extracted frames from upload`);
+      } else if (video.thumbnail && (video.thumbnail.startsWith('file://') || video.thumbnail.startsWith('/'))) {
+        try {
+          const thumbUri = video.thumbnail.startsWith('/') ? `file://${video.thumbnail}` : video.thumbnail;
+          const base64 = await FileSystem.readAsStringAsync(thumbUri, { encoding: FileSystem.EncodingType.Base64 });
+          if (base64.length > 100) {
+            frames = [{ base64, mime: 'image/jpeg' }];
+            console.log(`[autoGen] using thumbnail as AI frame len=${base64.length}`);
+          }
+        } catch (e) {
+          console.warn('[autoGen] thumbnail read failed:', e);
+        }
+      }
+
+      if (frames.length === 0 && video.videoUri) {
+        frames = await extractVideoFrames(video.videoUri, video.duration ?? 0);
+      }
+
+      frameCache.current = frames;
+      const framePayload = frames.length > 0 ? { videoFrames: frames } : {};
 
       if (needsHook) {
         const { data, error } = await callAIGenerator('hook', {
@@ -333,10 +422,22 @@ export default function EditorScreen() {
 
   const ensureFrame = async () => {
     if (frameCache.current === 'pending') {
-      frameCache.current = video.videoUri ? await extractVideoFrame(video.videoUri) : null;
+      let frames: Array<{ base64: string; mime: string }> = [];
+      if (video.videoUri) {
+        frames = await extractVideoFrames(video.videoUri, video.duration ?? 0);
+      }
+      // Fallback to thumbnail already on disk (works even when VideoToolbox can't decode)
+      if (frames.length === 0 && video.thumbnail && (video.thumbnail.startsWith('file://') || video.thumbnail.startsWith('/'))) {
+        try {
+          const thumbUri = video.thumbnail.startsWith('/') ? `file://${video.thumbnail}` : video.thumbnail;
+          const base64 = await FileSystem.readAsStringAsync(thumbUri, { encoding: FileSystem.EncodingType.Base64 });
+          if (base64.length > 100) frames = [{ base64, mime: 'image/jpeg' }];
+        } catch { /* ignore */ }
+      }
+      frameCache.current = frames;
     }
-    const frame = frameCache.current !== 'pending' ? frameCache.current : null;
-    return frame ? { videoFrameBase64: frame.base64, videoFrameMime: frame.mime } : {};
+    const frames = frameCache.current !== 'pending' ? frameCache.current : [];
+    return frames.length > 0 ? { videoFrames: frames } : {};
   };
 
   // The background-audio `useEffect` resolves the preview clip lazily and may
@@ -483,10 +584,13 @@ export default function EditorScreen() {
         return;
       }
 
+      // Use voice-mixed video if available, otherwise raw video
+      const sourceUri = voiceMixUrl ?? videoUri;
+
       // Burn hook overlay + audio into the video before uploading
-      let burnedUri = videoUri;
+      let burnedUri = sourceUri;
       try {
-        const burned = await burnOverlayLocally(videoUri, hookText);
+        const burned = await burnOverlayLocally(sourceUri, hookText);
         burnedUri = burned.outputUri;
       } catch (e) {
         console.warn('[confirmSchedule] burn failed, uploading raw video:', e);
@@ -641,7 +745,7 @@ export default function EditorScreen() {
     if (!video?.videoUri) { showAlert('No Video File', 'Select a video before publishing to TikTok.'); return; }
 
     // Step 1: burn hook overlay locally
-    const { outputUri } = await burnOverlayLocally(video.videoUri, snap.hook?.text ?? '');
+    const { outputUri } = await burnOverlayLocally(voiceMixUrl ?? video.videoUri, snap.hook?.text ?? '');
 
     // Step 2: get file size
     const FileSystem = await import('expo-file-system');
@@ -675,7 +779,7 @@ export default function EditorScreen() {
     const snap = snapshotEditorState();
     if (!video?.videoUri) { showAlert('No Video File', 'Select a video before publishing to Instagram.'); return; }
 
-    const { videoUrl, error: prepError } = await prepareVideoForPublish(video.videoUri, snap.hook?.text ?? '');
+    const { videoUrl, error: prepError } = await prepareVideoForPublish(voiceMixUrl ?? video.videoUri, snap.hook?.text ?? '');
     if (prepError || !videoUrl) { showAlert('Upload Failed', prepError ?? 'Could not upload video.'); return; }
 
     const captionText = [snap.hook?.text, snap.caption, snap.hashtags.join(' ')].filter(Boolean).join('\n\n');
@@ -693,7 +797,7 @@ export default function EditorScreen() {
     youtube.setPublishState({ phase: 'burning' });
     let outputUri: string;
     try {
-      const burned = await burnOverlayLocally(video.videoUri, snap.hook?.text ?? '');
+      const burned = await burnOverlayLocally(voiceMixUrl ?? video.videoUri, snap.hook?.text ?? '');
       outputUri = burned.outputUri;
     } catch (err) {
       youtube.setPublishState({ phase: 'error', errorMessage: `Burn failed: ${String(err)}` });
@@ -735,7 +839,7 @@ export default function EditorScreen() {
     const snap = snapshotEditorState();
     if (!video?.videoUri) { showAlert('No Video File', 'Select a video first.'); return; }
 
-    const { outputUri, audioMixed } = await burnOverlayLocally(video.videoUri, snap.hook?.text ?? '');
+    const { outputUri, audioMixed } = await burnOverlayLocally(voiceMixUrl ?? video.videoUri, snap.hook?.text ?? '');
     updateVideo(video.id, { ...snap, title: videoTitle });
 
     // Instagram's Reels sharing-to-stories pasteboard handoff has no field
@@ -792,6 +896,7 @@ export default function EditorScreen() {
     { id: 'hook', label: 'Hook' },
     { id: 'caption', label: 'Caption' },
     { id: 'audio', label: 'Audio' },
+    { id: 'voice', label: 'Voice' },
     { id: 'platforms', label: 'Platforms' },
   ];
 
@@ -1195,6 +1300,16 @@ export default function EditorScreen() {
               </View>
             ) : null}
 
+            {/* ── Voice Tab ── */}
+            {tab === 'voice' ? (
+              <VoiceTab
+                videoId={video.id}
+                videoPublicUrl={video.videoUri}
+                videoDurationMs={(video.duration ?? 0) * 1000}
+                onMixReady={url => setVoiceMixUrl(url)}
+              />
+            ) : null}
+
             {/* ── Platforms Tab ── */}
             {tab === 'platforms' ? (
               <View style={styles.section}>
@@ -1268,15 +1383,22 @@ export default function EditorScreen() {
             </Pressable>
 
             <Pressable
-              style={({ pressed }) => [styles.platformPublishBtn, styles.platformPublishBtnDisabled, pressed && { opacity: 0.8 }]}
-              onPress={() => showAlert('YouTube Shorts', 'YouTube Shorts publishing is coming soon!')}
+              style={({ pressed }) => [
+                styles.platformPublishBtn,
+                { borderColor: '#ff0000', backgroundColor: youtube.status.connected ? '#ff0000' : Colors.surfaceElevated },
+                pressed && { opacity: 0.8 },
+                !youtube.status.connected && styles.platformPublishBtnDisabled,
+              ]}
+              onPress={() => youtube.status.connected ? setShowYouTubeSheet(true) : showAlert('YouTube Not Connected', 'Connect your YouTube account in Settings to publish here.')}
             >
-              <MaterialCommunityIcons name="youtube" size={20} color={Colors.textMuted} />
+              <MaterialCommunityIcons name="youtube" size={20} color={youtube.status.connected ? '#fff' : Colors.textMuted} />
               <View style={{ flex: 1 }}>
-                <Text style={[styles.platformPublishName, { color: Colors.textMuted }]}>YouTube Shorts</Text>
-                <Text style={[styles.platformPublishSub, { color: Colors.textMuted }]}>Coming soon</Text>
+                <Text style={[styles.platformPublishName, { color: youtube.status.connected ? '#fff' : Colors.textMuted }]}>YouTube Shorts</Text>
+                <Text style={[styles.platformPublishSub, { color: youtube.status.connected ? 'rgba(255,255,255,0.6)' : Colors.textMuted }]}>
+                  {youtube.status.connected ? `@${youtube.status.channelTitle || 'your channel'}` : 'Not connected'}
+                </Text>
               </View>
-              <MaterialIcons name="lock-outline" size={16} color={Colors.textMuted} />
+              <MaterialIcons name={youtube.status.connected ? 'arrow-forward-ios' : 'lock-outline'} size={16} color={youtube.status.connected ? 'rgba(255,255,255,0.6)' : Colors.textMuted} />
             </Pressable>
           </View>
 
@@ -1541,6 +1663,125 @@ export default function EditorScreen() {
                 <Pressable
                   style={[styles.tiktokPublishBtn, { marginTop: Spacing.md, backgroundColor: Colors.error }]}
                   onPress={() => tiktok.resetPublish()}
+                >
+                  <Text style={styles.tiktokPublishBtnText}>Try Again</Text>
+                </Pressable>
+              </View>
+            ) : null}
+          </View>
+        </View>
+      </Modal>
+
+      {/* ── YouTube Publish Sheet ── */}
+      <Modal
+        visible={showYouTubeSheet}
+        animationType="slide"
+        transparent
+        onRequestClose={() => { setShowYouTubeSheet(false); youtube.resetPublish(); }}
+      >
+        <View style={styles.sheetOverlay}>
+          <Pressable
+            style={StyleSheet.absoluteFillObject}
+            onPress={() => { if (youtube.publishState.phase === 'idle') setShowYouTubeSheet(false); }}
+          />
+          <View style={styles.tiktokSheet}>
+            <View style={styles.sheetHandle} />
+
+            <View style={styles.sheetHeader}>
+              <View style={[styles.sheetIcon, { backgroundColor: '#ff0000' }]}>
+                <MaterialCommunityIcons name="youtube" size={22} color="#fff" />
+              </View>
+              <View style={{ flex: 1 }}>
+                <Text style={styles.sheetTitle}>Publish to YouTube</Text>
+                <Text style={styles.sheetSub}>{youtube.status.channelTitle ? `@${youtube.status.channelTitle}` : 'your channel'}</Text>
+              </View>
+              {youtube.publishState.phase === 'idle' ? (
+                <Pressable onPress={() => setShowYouTubeSheet(false)} hitSlop={8}>
+                  <MaterialIcons name="close" size={20} color={Colors.textMuted} />
+                </Pressable>
+              ) : null}
+            </View>
+
+            {youtube.publishState.phase === 'idle' ? (
+              <>
+                <Text style={styles.sheetSectionLabel}>Privacy</Text>
+                {[
+                  { value: 'private', label: 'Private', icon: 'lock' },
+                  { value: 'unlisted', label: 'Unlisted', icon: 'link' },
+                  { value: 'public', label: 'Public', icon: 'public' },
+                ].map(opt => (
+                  <Pressable
+                    key={opt.value}
+                    style={[styles.privacyRow, youtubePrivacy === opt.value && styles.privacyRowActive]}
+                    onPress={() => setYoutubePrivacy(opt.value)}
+                  >
+                    <MaterialIcons name={opt.icon as any} size={18} color={youtubePrivacy === opt.value ? Colors.primaryLight : Colors.textSecondary} />
+                    <Text style={[styles.privacyLabel, youtubePrivacy === opt.value && styles.privacyLabelActive]}>{opt.label}</Text>
+                    {youtubePrivacy === opt.value ? <MaterialIcons name="check-circle" size={18} color={Colors.primary} /> : null}
+                  </Pressable>
+                ))}
+                <View style={styles.sheetNote}>
+                  <MaterialIcons name="info-outline" size={13} color={Colors.textMuted} />
+                  <Text style={styles.sheetNoteText}>Start with "Private" to review before making it public.</Text>
+                </View>
+                <Pressable
+                  style={({ pressed }) => [styles.tiktokPublishBtn, { backgroundColor: '#ff0000' }, pressed && { opacity: 0.85 }]}
+                  onPress={handleYouTubePublish}
+                >
+                  <MaterialCommunityIcons name="youtube" size={18} color="#fff" />
+                  <Text style={styles.tiktokPublishBtnText}>Post to YouTube</Text>
+                </Pressable>
+              </>
+            ) : null}
+
+            {youtube.publishState.phase === 'burning' ? (
+              <View style={styles.sheetPhase}>
+                <ActivityIndicator size="large" color="#ff0000" />
+                <Text style={styles.sheetPhaseTitle}>Burning hook overlay...</Text>
+                <Text style={styles.sheetPhaseSub}>Adding your hook text to the video.</Text>
+              </View>
+            ) : null}
+
+            {youtube.publishState.phase === 'uploading' ? (
+              <View style={styles.sheetPhase}>
+                <ActivityIndicator size="large" color="#ff0000" />
+                <Text style={styles.sheetPhaseTitle}>Uploading to YouTube...</Text>
+                <Text style={styles.sheetPhaseSub}>This may take a minute.</Text>
+                {(youtube.publishState.progress ?? 0) > 0 ? (
+                  <View style={styles.progressBarBg}>
+                    <View style={[styles.progressBarFill, { width: `${youtube.publishState.progress}%` as any, backgroundColor: '#ff0000' }]} />
+                  </View>
+                ) : null}
+              </View>
+            ) : null}
+
+            {youtube.publishState.phase === 'success' ? (
+              <View style={styles.sheetPhase}>
+                <MaterialIcons name="check-circle" size={56} color={Colors.emerald} />
+                <Text style={styles.sheetPhaseTitle}>Posted to YouTube!</Text>
+                <Text style={styles.sheetPhaseSub}>Your Short is live. It may take a few minutes to appear.</Text>
+                <Pressable
+                  style={[styles.tiktokPublishBtn, { marginTop: Spacing.md, backgroundColor: '#ff0000' }]}
+                  onPress={() => {
+                    youtube.resetPublish();
+                    setShowYouTubeSheet(false);
+                    updateVideo(video.id, { status: 'published', publishedAt: new Date().toISOString() });
+                    router.push('/(tabs)/library');
+                  }}
+                >
+                  <Text style={styles.tiktokPublishBtnText}>Done</Text>
+                </Pressable>
+              </View>
+            ) : null}
+
+            {youtube.publishState.phase === 'error' ? (
+              <View style={styles.sheetPhase}>
+                <MaterialIcons name="error-outline" size={52} color={Colors.error} />
+                <Text style={styles.sheetPhaseTitle}>Publish Failed</Text>
+                <Text style={styles.sheetPhaseSub}>{youtube.publishState.errorMessage}</Text>
+                <Pressable
+                  style={[styles.tiktokPublishBtn, { marginTop: Spacing.md, backgroundColor: Colors.error }]}
+                  onPress={() => youtube.resetPublish()}
                 >
                   <Text style={styles.tiktokPublishBtnText}>Try Again</Text>
                 </Pressable>

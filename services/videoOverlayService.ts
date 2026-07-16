@@ -31,21 +31,30 @@ export async function burnHookOverlay(
   originalVolume?: number,
   bgVolume?: number,
 ): Promise<{ outputUri: string; error?: string }> {
-  if (!hookText.trim() && !backgroundAudioUri) return { outputUri: videoUri };
+  console.log('[burnHookOverlay] hookText=', JSON.stringify(hookText), 'hasBgAudio=', !!backgroundAudioUri);
+  if (!hookText.trim() && !backgroundAudioUri) {
+    console.log('[burnHookOverlay] skipping — no text and no bg audio');
+    return { outputUri: videoUri };
+  }
 
   if (!VideoTextOverlay?.burnText) {
-    console.warn('[burnHookOverlay] Native module not available');
+    console.warn('[burnHookOverlay] Native module not available — hook text will not appear in video');
     return { outputUri: videoUri };
   }
 
   try {
-    const outputUri: string = await VideoTextOverlay.burnText(
+    const burnPromise = VideoTextOverlay.burnText(
       videoUri,
       hookText.trim(),
       backgroundAudioUri ?? '',
       originalVolume ?? 0.6,
       bgVolume ?? 0.8,
+    ) as Promise<string>;
+    const timeoutPromise = new Promise<string>((_, reject) =>
+      setTimeout(() => reject(new Error('burn timeout after 90s')), 90_000),
     );
+    const outputUri = await Promise.race([burnPromise, timeoutPromise]);
+    console.log('[burnHookOverlay] done, outputUri differs from input:', outputUri !== videoUri);
     return { outputUri };
   } catch (e: any) {
     console.warn('[burnHookOverlay] Native overlay failed, using original:', e?.message);
