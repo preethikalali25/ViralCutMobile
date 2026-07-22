@@ -24,6 +24,27 @@ export async function photosToVideo(
   return await VideoTextOverlay.photosToVideo(photoUris, durationPerPhoto);
 }
 
+/**
+ * Save a local video to the camera roll so the user can pick it in Instagram,
+ * then the caller opens instagram-reels://share to launch the Reels composer.
+ */
+export async function shareToInstagramReels(
+  localUri: string,
+  _appId: string,
+): Promise<{ error?: string }> {
+  try {
+    const MediaLibrary = await import('expo-media-library');
+    const { status } = await MediaLibrary.requestPermissionsAsync();
+    if (status !== 'granted') {
+      return { error: 'Camera roll access is required to send the video to Instagram. Please allow it in Settings.' };
+    }
+    await MediaLibrary.saveToLibraryAsync(localUri);
+    return {};
+  } catch (e: any) {
+    return { error: String(e?.message ?? e) };
+  }
+}
+
 export async function burnHookOverlay(
   videoUri: string,
   hookText: string,

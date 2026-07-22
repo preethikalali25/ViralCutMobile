@@ -61,7 +61,7 @@ Deno.serve(async (req) => {
       const params = new URLSearchParams({
         client_id: appId,
         redirect_uri: redirectUri,
-        scope: 'instagram_basic,instagram_content_publish',
+        scope: 'instagram_business_basic,instagram_content_publish',
         response_type: 'code',
         state,
       });
