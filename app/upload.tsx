@@ -340,6 +340,23 @@ export default function UploadScreen() {
           </Pressable>
         </View>
 
+        {/* Use as Template shortcut */}
+        <Pressable
+          style={({ pressed }) => [styles.templateCard, pressed && { opacity: 0.8 }]}
+          onPress={() => router.push('/template-picker')}
+        >
+          <View style={styles.templateIcon}>
+            <MaterialIcons name="auto-fix-high" size={20} color={Colors.violet} />
+          </View>
+          <View style={{ flex: 1 }}>
+            <Text style={styles.templateTitle}>Use a Reel as Template</Text>
+            <Text style={styles.templateSub}>
+              Pick any saved Reel — AI detects its clips so you can swap in your own media
+            </Text>
+          </View>
+          <MaterialIcons name="chevron-right" size={20} color={Colors.textMuted} />
+        </Pressable>
+
         {/* Tips */}
         <View style={styles.tipsCard}>
           <View style={styles.tipsHeader}>
@@ -478,6 +495,22 @@ const styles = StyleSheet.create({
     color: Colors.primaryLight, includeFontPadding: false,
   },
   actionBtnDisabled: { opacity: 0.45 },
+  templateCard: {
+    marginHorizontal: Spacing.md, backgroundColor: Colors.violet + '11',
+    borderRadius: Radius.lg, padding: Spacing.md,
+    borderWidth: 1, borderColor: Colors.violet + '33',
+    flexDirection: 'row', alignItems: 'center', gap: Spacing.sm,
+    marginBottom: Spacing.md,
+  },
+  templateIcon: {
+    width: 40, height: 40, borderRadius: Radius.full,
+    backgroundColor: Colors.violet + '22', alignItems: 'center', justifyContent: 'center',
+  },
+  templateTitle: {
+    fontSize: FontSize.sm, fontWeight: FontWeight.bold,
+    color: Colors.textPrimary, includeFontPadding: false, marginBottom: 2,
+  },
+  templateSub: { fontSize: FontSize.xs, color: Colors.textSecondary, includeFontPadding: false, lineHeight: 16 },
   loadingRow: { flexDirection: 'row', alignItems: 'center', gap: 10 },
   processingText: {
     fontSize: FontSize.md, fontWeight: FontWeight.semibold,
