@@ -1,4 +1,4 @@
-import { supabase } from '@/lib/supabase';
+import { getSupabaseClient } from '@/template';
 import type { ReelTemplate, TemplateClip } from '@/types/template';
 
 const MAX_FRAMES = 20;
@@ -44,6 +44,7 @@ export async function analyzeReelTemplate(
   const frames = await extractKeyFrames(videoUri, totalDurationSec);
   if (frames.length === 0) throw new Error('Could not extract frames from video');
 
+  const supabase = getSupabaseClient();
   const { data, error } = await supabase.functions.invoke('analyze-template', {
     body: { frames, totalDurationSec },
   });
@@ -63,6 +64,7 @@ export async function analyzeReelTemplate(
 export async function generateSlotImage(
   prompt: string,
 ): Promise<string> {
+  const supabase = getSupabaseClient();
   const { data, error } = await supabase.functions.invoke('generate-slot-image', {
     body: { prompt },
   });
