@@ -22,7 +22,17 @@ async function tryDownloadApis(
   const encoded = encodeURIComponent(url);
 
   const candidates = [
-    // Social Media Video Downloader
+    // Facebook Reel and Video Downloader (subscribed API)
+    {
+      fetchUrl: `https://facebook-reel-and-video-downloader.p.rapidapi.com/?url=${encoded}`,
+      host: 'facebook-reel-and-video-downloader.p.rapidapi.com',
+      extract: (d: Record<string, unknown>) => {
+        const links = d.links as { link: string; quality?: string }[] | undefined;
+        const video = links?.find((l) => l.quality === 'HD') ?? links?.[0];
+        return video?.link ? { videoUrl: video.link, durationSec: (d.duration as number) ?? null, thumbnail: (d.thumbnail as string) ?? null } : null;
+      },
+    },
+    // Social Media Video Downloader (fallback)
     {
       fetchUrl: `https://social-media-video-downloader.p.rapidapi.com/smvd/get/all?url=${encoded}`,
       host: 'social-media-video-downloader.p.rapidapi.com',
@@ -32,17 +42,7 @@ async function tryDownloadApis(
         return video?.link ? { videoUrl: video.link, durationSec: (d.duration as number) ?? null, thumbnail: (d.thumbnail as string) ?? null } : null;
       },
     },
-    // All Video Downloader
-    {
-      fetchUrl: `https://all-video-downloader1.p.rapidapi.com/?url=${encoded}`,
-      host: 'all-video-downloader1.p.rapidapi.com',
-      extract: (d: Record<string, unknown>) => {
-        const links = d.links as { link: string }[] | undefined;
-        const video = links?.[0];
-        return video?.link ? { videoUrl: video.link, durationSec: null, thumbnail: null } : null;
-      },
-    },
-    // Instagram Downloader
+    // Instagram Downloader (fallback)
     {
       fetchUrl: `https://instagram-downloader-download-instagram-videos-stories.p.rapidapi.com/index?url=${encoded}`,
       host: 'instagram-downloader-download-instagram-videos-stories.p.rapidapi.com',
