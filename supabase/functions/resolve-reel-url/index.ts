@@ -23,13 +23,22 @@ async function tryDownloadApis(
 
   const candidates = [
     // Facebook Reel and Video Downloader (subscribed API)
+    // Response: { links: { "Download High Quality": url, "Download Low Quality": url }, media: [{hd_url, sd_url}] }
     {
       fetchUrl: `https://facebook-reel-and-video-downloader.p.rapidapi.com/?url=${encoded}`,
       host: 'facebook-reel-and-video-downloader.p.rapidapi.com',
       extract: (d: Record<string, unknown>) => {
-        const links = d.links as { link: string; quality?: string }[] | undefined;
-        const video = links?.find((l) => l.quality === 'HD') ?? links?.[0];
-        return video?.link ? { videoUrl: video.link, durationSec: (d.duration as number) ?? null, thumbnail: (d.thumbnail as string) ?? null } : null;
+        // Try links object first (primary response shape)
+        const linksObj = d.links as Record<string, string> | undefined;
+        const hdUrl = linksObj?.['Download High Quality'] ?? linksObj?.['Download Low Quality'];
+        if (hdUrl) {
+          const media = (d.media as { image?: string }[] | undefined)?.[0];
+          return { videoUrl: hdUrl, durationSec: null, thumbnail: (d.thumbnail as string) ?? media?.image ?? null };
+        }
+        // Fallback: media array
+        const mediaItem = (d.media as { hd_url?: string; sd_url?: string; image?: string }[] | undefined)?.[0];
+        const videoUrl = mediaItem?.hd_url ?? mediaItem?.sd_url;
+        return videoUrl ? { videoUrl, durationSec: null, thumbnail: (d.thumbnail as string) ?? mediaItem?.image ?? null } : null;
       },
     },
     // Social Media Video Downloader (fallback)
