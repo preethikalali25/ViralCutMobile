@@ -1,10 +1,5 @@
 import { corsHeaders } from '../_shared/cors.ts';
 
-// Multi-platform video downloader via RapidAPI
-// Handles Instagram Reels, TikTok, YouTube Shorts
-const RAPIDAPI_HOST = 'social-media-video-downloader.p.rapidapi.com';
-const RAPIDAPI_URL = `https://${RAPIDAPI_HOST}/smvd/get/all`;
-
 type Platform = 'instagram' | 'tiktok' | 'youtube' | 'unknown';
 
 function detectPlatform(url: string): Platform {
@@ -15,14 +10,87 @@ function detectPlatform(url: string): Platform {
 }
 
 function isValidReelUrl(url: string): boolean {
-  const platform = detectPlatform(url);
-  if (platform === 'unknown') return false;
-  try {
-    new URL(url);
-    return true;
-  } catch {
-    return false;
+  if (detectPlatform(url) === 'unknown') return false;
+  try { new URL(url); return true; } catch { return false; }
+}
+
+// Try multiple RapidAPI endpoint patterns — different subscriptions have different hosts/paths
+async function tryDownloadApis(
+  url: string,
+  apiKey: string,
+): Promise<{ videoUrl: string; durationSec: number | null; thumbnail: string | null }> {
+  const encoded = encodeURIComponent(url);
+
+  const candidates = [
+    // Social Media Video Downloader
+    {
+      fetchUrl: `https://social-media-video-downloader.p.rapidapi.com/smvd/get/all?url=${encoded}`,
+      host: 'social-media-video-downloader.p.rapidapi.com',
+      extract: (d: Record<string, unknown>) => {
+        const links = d.links as { link: string; quality?: string }[] | undefined;
+        const video = links?.find((l) => l.link?.includes('.mp4') || l.quality) ?? links?.[0];
+        return video?.link ? { videoUrl: video.link, durationSec: (d.duration as number) ?? null, thumbnail: (d.thumbnail as string) ?? null } : null;
+      },
+    },
+    // All Video Downloader
+    {
+      fetchUrl: `https://all-video-downloader1.p.rapidapi.com/?url=${encoded}`,
+      host: 'all-video-downloader1.p.rapidapi.com',
+      extract: (d: Record<string, unknown>) => {
+        const links = d.links as { link: string }[] | undefined;
+        const video = links?.[0];
+        return video?.link ? { videoUrl: video.link, durationSec: null, thumbnail: null } : null;
+      },
+    },
+    // Instagram Downloader
+    {
+      fetchUrl: `https://instagram-downloader-download-instagram-videos-stories.p.rapidapi.com/index?url=${encoded}`,
+      host: 'instagram-downloader-download-instagram-videos-stories.p.rapidapi.com',
+      extract: (d: Record<string, unknown>) => {
+        const videoUrl = (d.media as string) ?? (d.url as string) ?? (d.video as string);
+        return videoUrl ? { videoUrl, durationSec: null, thumbnail: (d.thumbnail as string) ?? null } : null;
+      },
+    },
+  ];
+
+  for (const candidate of candidates) {
+    try {
+      console.log(`[resolve-reel-url] trying ${candidate.host}`);
+      const res = await fetch(candidate.fetchUrl, {
+        method: 'GET',
+        signal: AbortSignal.timeout(25000),
+        headers: {
+          'X-RapidAPI-Key': apiKey,
+          'X-RapidAPI-Host': candidate.host,
+        },
+      });
+
+      if (res.status === 404 || res.status === 422) continue; // wrong endpoint
+      if (res.status === 403) throw new Error('RapidAPI key invalid or not subscribed to this API. Check your RapidAPI subscription.');
+
+      if (!res.ok) {
+        console.warn(`[resolve-reel-url] ${candidate.host} returned ${res.status}`);
+        continue;
+      }
+
+      const data = await res.json() as Record<string, unknown>;
+      console.log(`[resolve-reel-url] ${candidate.host} response keys: ${Object.keys(data).join(', ')}`);
+
+      const extracted = candidate.extract(data);
+      if (extracted?.videoUrl) {
+        console.log(`[resolve-reel-url] success via ${candidate.host}`);
+        return extracted;
+      }
+    } catch (e: unknown) {
+      const msg = e instanceof Error ? e.message : String(e);
+      if (msg.includes('RapidAPI key')) throw new Error(msg);
+      console.warn(`[resolve-reel-url] ${candidate.host} failed: ${msg}`);
+    }
   }
+
+  throw new Error(
+    'Could not extract video from this link. Make sure the reel is public and try a different link.',
+  );
 }
 
 Deno.serve(async (req) => {
@@ -40,62 +108,22 @@ Deno.serve(async (req) => {
     }
 
     const { url } = await req.json() as { url: string };
+    const trimmed = url?.trim() ?? '';
 
-    if (!url?.trim() || !isValidReelUrl(url.trim())) {
+    if (!trimmed || !isValidReelUrl(trimmed)) {
       return new Response(
         JSON.stringify({ error: 'Paste a valid Instagram, TikTok, or YouTube Shorts link.' }),
         { status: 400, headers: { ...corsHeaders, 'Content-Type': 'application/json' } },
       );
     }
 
-    const platform = detectPlatform(url.trim());
-    console.log(`[resolve-reel-url] platform=${platform} url=${url.trim()}`);
+    const platform = detectPlatform(trimmed);
+    console.log(`[resolve-reel-url] platform=${platform} url=${trimmed}`);
 
-    const apiRes = await fetch(
-      `${RAPIDAPI_URL}?url=${encodeURIComponent(url.trim())}`,
-      {
-        method: 'GET',
-        signal: AbortSignal.timeout(15000),
-        headers: {
-          'X-RapidAPI-Key': rapidApiKey,
-          'X-RapidAPI-Host': RAPIDAPI_HOST,
-        },
-      },
-    );
-
-    if (!apiRes.ok) {
-      const errText = await apiRes.text();
-      if (apiRes.status === 403) {
-        throw new Error('RapidAPI key invalid or subscription required.');
-      }
-      throw new Error(`Download service error ${apiRes.status}: ${errText}`);
-    }
-
-    const result = await apiRes.json() as {
-      success?: boolean;
-      links?: { link: string; quality?: string }[];
-      duration?: number;
-      title?: string;
-      thumbnail?: string;
-    };
-
-    if (!result.success || !result.links?.length) {
-      throw new Error('Could not extract video from this link. Make sure the reel is public.');
-    }
-
-    // Prefer highest quality video link
-    const videoLink = result.links.find((l) =>
-      l.link.includes('.mp4') || l.quality === 'hd' || l.quality === 'sd'
-    ) ?? result.links[0];
+    const result = await tryDownloadApis(trimmed, rapidApiKey);
 
     return new Response(
-      JSON.stringify({
-        videoUrl: videoLink.link,
-        platform,
-        durationSec: result.duration ?? null,
-        thumbnail: result.thumbnail ?? null,
-        title: result.title ?? null,
-      }),
+      JSON.stringify({ ...result, platform }),
       { status: 200, headers: { ...corsHeaders, 'Content-Type': 'application/json' } },
     );
   } catch (e: unknown) {
