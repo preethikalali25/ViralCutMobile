@@ -1,5 +1,24 @@
 import { getSupabaseClient } from '@/template';
+import { FunctionsHttpError } from '@supabase/supabase-js';
 import type { ReelTemplate, TemplateClip } from '@/types/template';
+
+async function invokeFunction(name: string, body: Record<string, unknown>): Promise<Record<string, unknown>> {
+  const supabase = getSupabaseClient();
+  const { data, error } = await supabase.functions.invoke(name, { body });
+  if (error) {
+    if (error instanceof FunctionsHttpError) {
+      try {
+        const body = await error.context.json();
+        throw new Error(body?.error ?? error.message);
+      } catch (parseErr) {
+        if (parseErr instanceof Error && parseErr.message !== error.message) throw parseErr;
+      }
+    }
+    throw new Error(error.message ?? `${name} failed`);
+  }
+  if (data?.error) throw new Error(data.error);
+  return data;
+}
 
 const MAX_FRAMES = 20;
 
@@ -44,13 +63,7 @@ export async function analyzeReelTemplate(
   const frames = await extractKeyFrames(videoUri, totalDurationSec);
   if (frames.length === 0) throw new Error('Could not extract frames from video');
 
-  const supabase = getSupabaseClient();
-  const { data, error } = await supabase.functions.invoke('analyze-template', {
-    body: { frames, totalDurationSec },
-  });
-
-  if (error) throw new Error(error.message ?? 'Template analysis failed');
-  if (data.error) throw new Error(data.error);
+  const data = await invokeFunction('analyze-template', { frames, totalDurationSec });
 
   return {
     sourceVideoUri: videoUri,
@@ -67,13 +80,8 @@ export async function resolveReelUrl(url: string): Promise<{
   durationSec: number | null;
   thumbnail: string | null;
 }> {
-  const supabase = getSupabaseClient();
-  const { data, error } = await supabase.functions.invoke('resolve-reel-url', {
-    body: { url },
-  });
-  if (error) throw new Error(error.message ?? 'Could not resolve link');
-  if (data.error) throw new Error(data.error);
-  return data as { videoUrl: string; platform: string; durationSec: number | null; thumbnail: string | null };
+  const data = await invokeFunction('resolve-reel-url', { url });
+  return data as unknown as { videoUrl: string; platform: string; durationSec: number | null; thumbnail: string | null };
 }
 
 export async function downloadVideoToCache(videoUrl: string): Promise<{ localUri: string }> {
@@ -87,11 +95,6 @@ export async function downloadVideoToCache(videoUrl: string): Promise<{ localUri
 export async function generateSlotImage(
   prompt: string,
 ): Promise<string> {
-  const supabase = getSupabaseClient();
-  const { data, error } = await supabase.functions.invoke('generate-slot-image', {
-    body: { prompt },
-  });
-  if (error) throw new Error(error.message ?? 'Image generation failed');
-  if (data.error) throw new Error(data.error);
+  const data = await invokeFunction('generate-slot-image', { prompt });
   return data.imageUri as string;
 }
