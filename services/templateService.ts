@@ -61,6 +61,29 @@ export async function analyzeReelTemplate(
   };
 }
 
+export async function resolveReelUrl(url: string): Promise<{
+  videoUrl: string;
+  platform: string;
+  durationSec: number | null;
+  thumbnail: string | null;
+}> {
+  const supabase = getSupabaseClient();
+  const { data, error } = await supabase.functions.invoke('resolve-reel-url', {
+    body: { url },
+  });
+  if (error) throw new Error(error.message ?? 'Could not resolve link');
+  if (data.error) throw new Error(data.error);
+  return data as { videoUrl: string; platform: string; durationSec: number | null; thumbnail: string | null };
+}
+
+export async function downloadVideoToCache(videoUrl: string): Promise<{ localUri: string }> {
+  const FileSystem = await import('expo-file-system');
+  const dest = FileSystem.cacheDirectory + `reel_template_${Date.now()}.mp4`;
+  const result = await FileSystem.downloadAsync(videoUrl, dest);
+  if (result.status !== 200) throw new Error('Video download failed');
+  return { localUri: result.uri };
+}
+
 export async function generateSlotImage(
   prompt: string,
 ): Promise<string> {
