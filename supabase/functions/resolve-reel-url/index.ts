@@ -25,7 +25,7 @@ async function tryDownloadApis(
     // Facebook Reel and Video Downloader (subscribed API)
     // Response: { links: { "Download High Quality": url, "Download Low Quality": url }, media: [{hd_url, sd_url}] }
     {
-      fetchUrl: `https://facebook-reel-and-video-downloader.p.rapidapi.com/?url=${encoded}`,
+      fetchUrl: `https://facebook-reel-and-video-downloader.p.rapidapi.com/app/main.php?url=${encoded}`,
       host: 'facebook-reel-and-video-downloader.p.rapidapi.com',
       extract: (d: Record<string, unknown>) => {
         // Try links object first (primary response shape)
