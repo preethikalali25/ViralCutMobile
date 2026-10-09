@@ -62,6 +62,8 @@ async function tryDownloadApis(
     },
   ];
 
+  let anyAuthFailure = false;
+
   for (const candidate of candidates) {
     try {
       console.log(`[resolve-reel-url] trying ${candidate.host}`);
@@ -74,11 +76,21 @@ async function tryDownloadApis(
         },
       });
 
-      if (res.status === 404 || res.status === 422) continue; // wrong endpoint
-      if (res.status === 403) throw new Error('RapidAPI key invalid or not subscribed to this API. Check your RapidAPI subscription.');
+      if (res.status === 404 || res.status === 422) {
+        console.warn(`[resolve-reel-url] ${candidate.host} → ${res.status} (wrong endpoint, skipping)`);
+        continue;
+      }
+
+      if (res.status === 401 || res.status === 403) {
+        const body = await res.text().catch(() => '');
+        console.warn(`[resolve-reel-url] ${candidate.host} → ${res.status} auth failure. Body: ${body.slice(0, 300)}`);
+        anyAuthFailure = true;
+        continue; // try next candidate instead of hard-stopping
+      }
 
       if (!res.ok) {
-        console.warn(`[resolve-reel-url] ${candidate.host} returned ${res.status}`);
+        const body = await res.text().catch(() => '');
+        console.warn(`[resolve-reel-url] ${candidate.host} → ${res.status}. Body: ${body.slice(0, 200)}`);
         continue;
       }
 
@@ -90,11 +102,15 @@ async function tryDownloadApis(
         console.log(`[resolve-reel-url] success via ${candidate.host}`);
         return extracted;
       }
+      console.warn(`[resolve-reel-url] ${candidate.host} → extraction returned null`);
     } catch (e: unknown) {
       const msg = e instanceof Error ? e.message : String(e);
-      if (msg.includes('RapidAPI key')) throw new Error(msg);
-      console.warn(`[resolve-reel-url] ${candidate.host} failed: ${msg}`);
+      console.warn(`[resolve-reel-url] ${candidate.host} exception: ${msg}`);
     }
+  }
+
+  if (anyAuthFailure) {
+    throw new Error('RapidAPI key invalid or subscription required. Check Supabase secrets and your RapidAPI subscription.');
   }
 
   throw new Error(
@@ -109,6 +125,7 @@ Deno.serve(async (req) => {
 
   try {
     const rapidApiKey = Deno.env.get('RAPIDAPI_KEY');
+    console.log(`[resolve-reel-url] RAPIDAPI_KEY present=${!!rapidApiKey} length=${rapidApiKey?.length ?? 0}`);
     if (!rapidApiKey) {
       return new Response(
         JSON.stringify({ error: 'Video link resolution not configured. Add RAPIDAPI_KEY to Supabase secrets.' }),
