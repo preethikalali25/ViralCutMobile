@@ -74,11 +74,11 @@ Rules:
 - Describe the CONTENT CATEGORY (what they post), not personal circumstances or life story
 - Only use information that is directly stated — do NOT infer emotions, backstory, trauma, mental health, or personal history from emotional language in captions
 - Emotional words like "journey", "growth", "healing", "hard days" in captions = motivational/lifestyle content style, NOT personal trauma
-  ✗ WRONG: "creator sharing their trauma healing journey"
-  ✗ WRONG: "person overcoming difficult childhood experiences"
-  ✓ RIGHT: "motivational lifestyle creator posting personal growth content for young women"
-  ✓ RIGHT: "fitness coach sharing home workout routines for busy South Asian moms"
-  ✓ RIGHT: "travel blogger documenting solo budget trips across Southeast Asia"
+✗ WRONG: "creator sharing their trauma healing journey"
+✗ WRONG: "person overcoming difficult childhood experiences"
+✓ RIGHT: "motivational lifestyle creator posting personal growth content for young women"
+✓ RIGHT: "fitness coach sharing home workout routines for busy South Asian moms"
+✓ RIGHT: "travel blogger documenting solo budget trips across Southeast Asia"
 - If there is not enough clear content signal, return: "lifestyle content creator"
 - Return ONLY the niche sentence, nothing else`,
           }],
@@ -161,32 +161,32 @@ ${determinedNiche
   ? `CREATOR NICHE (already determined from Instagram — do NOT change it): "${determinedNiche}"
 Use this exact niche for all suggestions. Echo it back in the "niche" JSON field unchanged.`
   : `Infer the creator's niche from the gallery thumbnails. Write ONE specific niche sentence:
-  ✗ "lifestyle" ✗ "family" ✗ "travel"
-  ✓ "first-time mom documenting toddler milestones for Indian-American parents"
-  ✓ "solo budget traveller sharing hidden gems in Southeast Asia"
-  ✓ "fitness coach posting workout motivation and transformation content"`}
+✗ "lifestyle" ✗ "family" ✗ "travel"
+✓ "first-time mom documenting toddler milestones for Indian-American parents"
+✓ "solo budget traveller sharing hidden gems in Southeast Asia"
+✓ "fitness coach posting workout motivation and transformation content"`}
 
 ═══ GENERATE REEL IDEAS ═══
 Every image has been verified to contain a visible person. Generate one niche-branded Reel idea per image.
 
 Transform each event through the niche lens — the event is raw material, not the topic:
-  ✗ Event: beach trip → "Fun beach day" / "We had so much fun!"
-  ✓ Event: beach trip, niche: mom content → "Beach day survival guide with a toddler" / "POV: packing for the beach with a toddler (15 bags later) 😅"
+✗ Event: beach trip → "Fun beach day" / "We had so much fun!"
+✓ Event: beach trip, niche: mom content → "Beach day survival guide with a toddler" / "POV: packing for the beach with a toddler (15 bags later) 😅"
 
 For each suggestion:
 • TITLE (5–8 words): niche-branded, not a literal thumbnail description
 • HOOK (under 80 chars):
-    1. Read the creator's ACTUAL INSTAGRAM CAPTIONS provided in the user message
-    2. Identify their natural voice: tone (funny/serious/motivational/casual), vocabulary,
-       emoji style, how they open sentences, any recurring phrases or patterns
-    3. Write the hook IN THAT EXACT SAME VOICE — it must sound like THIS person wrote it,
-       not a generic social media template
-    4. Vary the hook type across suggestions (question, bold statement, relatable moment,
-       confession, challenge) but always in the creator's own voice
-    ✗ "POV: relatable mom moment" — generic template voice
-    ✓ Match their actual caption style: if they write "ok so i FINALLY did the thing 😭🙌"
-       then hook should sound like "ok so i actually survived this with my toddler 😭✨"
-    If no captions are available, write scroll-stopping hooks suited to the niche
+  1. Read the creator's ACTUAL INSTAGRAM CAPTIONS provided in the user message
+  2. Identify their natural voice: tone (funny/serious/motivational/casual), vocabulary,
+     emoji style, how they open sentences, any recurring phrases or patterns
+  3. Write the hook IN THAT EXACT SAME VOICE — it must sound like THIS person wrote it,
+     not a generic social media template
+  4. Vary the hook type across suggestions (question, bold statement, relatable moment,
+     confession, challenge) but always in the creator's own voice
+  ✗ "POV: relatable mom moment" — generic template voice
+  ✓ Match their actual caption style: if they write "ok so i FINALLY did the thing 😭🙌"
+    then hook should sound like "ok so i actually survived this with my toddler 😭✨"
+  If no captions are available, write scroll-stopping hooks suited to the niche
 • REASON: explain why this resonates with the niche audience
 • galleryIndices: position(s) used (0-based, max ${peopleEvents.length - 1})
 • contentType: vary across photo_montage, video_clip, mixed
