@@ -15,7 +15,7 @@ import * as WebBrowser from 'expo-web-browser';
 import { Linking } from 'react-native';
 
 // The redirect URI registered in TikTok Developer portal.
-// TikTok redirects here → backend forwards to shortreel://tiktok-callback.
+// TikTok redirects here → backend forwards to smartreel://tiktok-callback.
 // Register exactly this URL in TikTok Developer Portal → your app → Redirect URI.
 // TikTok does not allow query parameters in registered redirect URIs,
 // so we use the bare function URL and detect the callback by the presence of 'code'.
@@ -82,9 +82,9 @@ export function useTikTok() {
         }
 
         // Listen for the deep-link BEFORE opening the browser
-        // iOS/Android will fire Linking event when shortreel://tiktok-callback is hit
+        // iOS/Android will fire Linking event when smartreel://tiktok-callback is hit
         subscription = Linking.addEventListener('url', async ({ url }) => {
-          if (!url.startsWith('shortreel://tiktok-callback')) return;
+          if (!url.startsWith('smartreel://tiktok-callback')) return;
           cleanup();
 
           try {

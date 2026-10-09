@@ -97,6 +97,16 @@ async function tryDownloadApis(
       const data = await res.json() as Record<string, unknown>;
       console.log(`[resolve-reel-url] ${candidate.host} response keys: ${Object.keys(data).join(', ')}`);
 
+      // Surface API-level errors (e.g. private video)
+      if (data.success === false && data.error) {
+        const apiErr = String(data.error);
+        console.warn(`[resolve-reel-url] ${candidate.host} api error: ${apiErr}`);
+        if (apiErr.toLowerCase().includes('private')) {
+          throw new Error('This reel is private. Make sure the account and post are public, then try again.');
+        }
+        continue;
+      }
+
       const extracted = candidate.extract(data);
       if (extracted?.videoUrl) {
         console.log(`[resolve-reel-url] success via ${candidate.host}`);

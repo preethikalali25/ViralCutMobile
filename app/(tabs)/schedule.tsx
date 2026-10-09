@@ -1,20 +1,83 @@
 import React, { useState } from 'react';
 import {
-  View, Text, ScrollView, StyleSheet, Pressable,
+  View, Text, ScrollView, StyleSheet, Pressable, ActivityIndicator,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Image } from 'expo-image';
-import { MaterialIcons } from '@expo/vector-icons';
+import { MaterialIcons, MaterialCommunityIcons } from '@expo/vector-icons';
 import { useRouter } from 'expo-router';
 import { Colors, Spacing, Radius, FontSize, FontWeight } from '@/constants/theme';
-import { useVideos } from '@/hooks/useVideos';
-import PlatformBadge from '@/components/ui/PlatformBadge';
+import { deleteScheduledPost, ScheduledPost } from '@/services/scheduleService';
+import { useScheduledPosts } from '@/hooks/useScheduledPosts';
 
 const DAYS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
 const MONTHS = [
   'January', 'February', 'March', 'April', 'May', 'June',
   'July', 'August', 'September', 'October', 'November', 'December',
 ];
+
+type BestTimesPlatform = 'instagram' | 'tiktok' | 'youtube';
+
+const PLATFORM_DATA: Record<BestTimesPlatform, {
+  color: string;
+  icon: string;
+  label: string;
+  bestDays: string[];
+  avoidDays: string[];
+  topSlots: string[];
+  windows: { label: string; times: string; strength: 'peak' | 'strong' | 'good' }[];
+  tip: string;
+}> = {
+  instagram: {
+    color: '#e1306c',
+    icon: 'instagram',
+    label: 'Instagram',
+    bestDays: ['Tue', 'Wed', 'Thu'],
+    avoidDays: ['Fri', 'Sat'],
+    topSlots: ['Thu 9 a.m.', 'Wed 12 p.m.', 'Wed 6 p.m.'],
+    windows: [
+      { label: 'Wednesday', times: '12 p.m. – 9 p.m.', strength: 'peak' },
+      { label: 'Tuesday', times: '1 p.m. – 7 p.m.', strength: 'peak' },
+      { label: 'Thursday', times: '9 a.m. or 12 – 2 p.m.', strength: 'strong' },
+      { label: 'Mon – Fri', times: '7 – 11 a.m.', strength: 'good' },
+      { label: 'Mon – Thu', times: '6 – 9 p.m.', strength: 'good' },
+      { label: 'Monday', times: '2 – 4 p.m.', strength: 'good' },
+    ],
+    tip: 'Weekdays beat weekends. Reels perform best in the 6–9 p.m. window.',
+  },
+  tiktok: {
+    color: '#ee1d52',
+    icon: 'music-note',
+    label: 'TikTok',
+    bestDays: ['Sat', 'Sun', 'Tue', 'Wed', 'Thu'],
+    avoidDays: [],
+    topSlots: ['Sun 9 a.m.', 'Mon 1 p.m.', 'Sun 1 p.m.'],
+    windows: [
+      { label: 'Tue – Thu', times: '2 – 6 p.m.', strength: 'peak' },
+      { label: 'Sat – Sun', times: 'All day', strength: 'strong' },
+      { label: 'Daily', times: '6 – 9 a.m.', strength: 'strong' },
+      { label: 'Daily', times: '6 – 10 p.m.', strength: 'strong' },
+      { label: 'Weekdays', times: '12 – 1 p.m.', strength: 'good' },
+    ],
+    tip: 'Post when people scroll casually — breaks, commutes, evenings. First-hour performance drives the algorithm.',
+  },
+  youtube: {
+    color: '#ff0000',
+    icon: 'youtube',
+    label: 'YouTube Shorts',
+    bestDays: ['Fri', 'Sat', 'Thu'],
+    avoidDays: ['Tue'],
+    topSlots: ['Fri 4 p.m.', 'Fri 6 p.m.', 'Fri 7 p.m.'],
+    windows: [
+      { label: 'Friday', times: '4 – 7 p.m.', strength: 'peak' },
+      { label: 'Weekdays', times: '6 – 11 p.m.', strength: 'strong' },
+      { label: 'Weekdays', times: '12 – 3 p.m.', strength: 'strong' },
+      { label: 'Sat – Sun', times: 'Morning / afternoon', strength: 'good' },
+      { label: 'Weekdays', times: '11 a.m. – 2 p.m.', strength: 'good' },
+    ],
+    tip: 'Shorts differ from long-form — evenings and Fridays peak. Avoid early mornings (3–7 a.m.) and Tuesdays.',
+  },
+};
 
 function getDaysInMonth(year: number, month: number) {
   return new Date(year, month + 1, 0).getDate();
@@ -24,15 +87,122 @@ function getFirstDayOfMonth(year: number, month: number) {
   return new Date(year, month, 1).getDay();
 }
 
+function BestTimesSection() {
+  const [platform, setPlatform] = useState<BestTimesPlatform>('instagram');
+  const data = PLATFORM_DATA[platform];
+
+  const strengthColor = (s: 'peak' | 'strong' | 'good') => {
+    if (s === 'peak') return data.color;
+    if (s === 'strong') return data.color + 'bb';
+    return Colors.textMuted;
+  };
+
+  const strengthBg = (s: 'peak' | 'strong' | 'good') => {
+    if (s === 'peak') return data.color + '22';
+    if (s === 'strong') return data.color + '12';
+    return Colors.surface;
+  };
+
+  const strengthLabel = (s: 'peak' | 'strong' | 'good') => {
+    if (s === 'peak') return 'Peak';
+    if (s === 'strong') return 'Strong';
+    return 'Good';
+  };
+
+  return (
+    <View style={styles.bestSection}>
+      <Text style={styles.sectionTitle}>Best Times to Post</Text>
+
+      {/* Platform tabs */}
+      <View style={styles.platformTabs}>
+        {(Object.keys(PLATFORM_DATA) as BestTimesPlatform[]).map(p => {
+          const d = PLATFORM_DATA[p];
+          const active = platform === p;
+          return (
+            <Pressable
+              key={p}
+              style={[styles.platformTab, active && { borderColor: d.color, backgroundColor: d.color + '18' }]}
+              onPress={() => setPlatform(p)}
+            >
+              <MaterialCommunityIcons name={d.icon as any} size={16} color={active ? d.color : Colors.textMuted} />
+              <Text style={[styles.platformTabText, active && { color: d.color }]}>{d.label}</Text>
+            </Pressable>
+          );
+        })}
+      </View>
+
+      {/* Best days row */}
+      <View style={styles.daysRow}>
+        {DAYS.map(day => {
+          const isBest = data.bestDays.includes(day);
+          const isAvoid = data.avoidDays.includes(day);
+          return (
+            <View key={day} style={[
+              styles.dayChip,
+              isBest && { backgroundColor: data.color + '22', borderColor: data.color + '55' },
+              isAvoid && styles.dayChipAvoid,
+            ]}>
+              <Text style={[
+                styles.dayChipText,
+                isBest && { color: data.color, fontWeight: FontWeight.bold },
+                isAvoid && styles.dayChipAvoidText,
+              ]}>{day}</Text>
+            </View>
+          );
+        })}
+      </View>
+
+      {/* Top 3 slots */}
+      <View style={styles.topSlots}>
+        <MaterialIcons name="star" size={13} color={data.color} />
+        <Text style={[styles.topSlotsLabel, { color: data.color }]}>Top slots: </Text>
+        <Text style={styles.topSlotsText}>{data.topSlots.join(' · ')}</Text>
+      </View>
+
+      {/* Time windows */}
+      <View style={styles.windowsList}>
+        {data.windows.map((w, i) => (
+          <View key={i} style={[styles.windowRow, { backgroundColor: strengthBg(w.strength) }]}>
+            <View style={styles.windowLeft}>
+              <Text style={styles.windowDay}>{w.label}</Text>
+              <Text style={styles.windowTime}>{w.times}</Text>
+            </View>
+            <View style={[styles.strengthBadge, { backgroundColor: strengthColor(w.strength) + '28', borderColor: strengthColor(w.strength) + '55' }]}>
+              <Text style={[styles.strengthText, { color: strengthColor(w.strength) }]}>{strengthLabel(w.strength)}</Text>
+            </View>
+          </View>
+        ))}
+      </View>
+
+      {/* Tip */}
+      <View style={[styles.tipRow, { borderLeftColor: data.color }]}>
+        <MaterialIcons name="lightbulb-outline" size={14} color={data.color} />
+        <Text style={styles.tipText}>{data.tip}</Text>
+      </View>
+
+      {/* Avoid note */}
+      {data.avoidDays.length > 0 && (
+        <View style={styles.avoidRow}>
+          <MaterialIcons name="do-not-disturb-on" size={13} color={Colors.error} />
+          <Text style={styles.avoidText}>Avoid: {data.avoidDays.join(', ')} and early mornings</Text>
+        </View>
+      )}
+    </View>
+  );
+}
+
 export default function ScheduleScreen() {
   const router = useRouter();
-  const { videos } = useVideos();
+  const { posts, loading, refresh } = useScheduledPosts();
   const now = new Date();
   const [year, setYear] = useState(now.getFullYear());
   const [month, setMonth] = useState(now.getMonth());
   const [selectedDay, setSelectedDay] = useState<number | null>(null);
 
-  const scheduled = videos.filter(v => v.status === 'scheduled');
+  const handleDelete = async (id: string) => {
+    await deleteScheduledPost(id);
+    refresh();
+  };
 
   const daysInMonth = getDaysInMonth(year, month);
   const firstDay = getFirstDayOfMonth(year, month);
@@ -40,23 +210,19 @@ export default function ScheduleScreen() {
   const rows = Math.ceil(totalCells / 7);
 
   const scheduledDays = new Set(
-    scheduled
-      .filter(v => v.scheduledAt)
-      .map(v => {
-        const d = new Date(v.scheduledAt!);
-        if (d.getFullYear() === year && d.getMonth() === month) return d.getDate();
-        return null;
-      })
-      .filter(Boolean) as number[]
+    posts.map(p => {
+      const d = new Date(p.scheduled_at);
+      if (d.getFullYear() === year && d.getMonth() === month) return d.getDate();
+      return null;
+    }).filter(Boolean) as number[]
   );
 
   const selectedVideos = selectedDay
-    ? scheduled.filter(v => {
-        if (!v.scheduledAt) return false;
-        const d = new Date(v.scheduledAt);
+    ? posts.filter(p => {
+        const d = new Date(p.scheduled_at);
         return d.getFullYear() === year && d.getMonth() === month && d.getDate() === selectedDay;
       })
-    : scheduled;
+    : posts;
 
   const prevMonth = () => {
     if (month === 0) { setYear(y => y - 1); setMonth(11); }
@@ -140,30 +306,32 @@ export default function ScheduleScreen() {
             <Text style={styles.sectionCount}>({selectedVideos.length})</Text>
           </Text>
 
-          {selectedVideos.length > 0 ? selectedVideos.map(v => (
-            <Pressable
-              key={v.id}
-              style={({ pressed }) => [styles.videoRow, pressed && { opacity: 0.8 }]}
-              onPress={() => router.push({ pathname: '/editor', params: { id: v.id } })}
-            >
-              <Image source={{ uri: v.thumbnail }} style={styles.videoThumb} contentFit="cover" transition={200} />
-              <View style={styles.videoInfo}>
-                <Text style={styles.videoTitle} numberOfLines={1}>{v.title}</Text>
-                <View style={styles.videoMeta}>
-                  <MaterialIcons name="schedule" size={11} color={Colors.amber} />
-                  <Text style={styles.videoDate}>
-                    {v.scheduledAt ? new Date(v.scheduledAt).toLocaleDateString('en', {
-                      month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit',
-                    }) : ''}
-                  </Text>
+          {loading ? (
+            <ActivityIndicator color={Colors.primary} style={{ marginVertical: 32 }} />
+          ) : selectedVideos.length > 0 ? selectedVideos.map(p => {
+            const platformLabel = p.platform === 'reels' ? 'Instagram' : p.platform === 'tiktok' ? 'TikTok' : 'YouTube';
+            const platformColor = p.platform === 'reels' ? '#e1306c' : p.platform === 'tiktok' ? '#ee1d52' : '#ff0000';
+            const statusColor = p.status === 'published' ? Colors.success : p.status === 'failed' ? Colors.error : Colors.amber;
+            return (
+              <View key={p.id} style={styles.videoRow}>
+                <View style={[styles.platformDot, { backgroundColor: platformColor }]} />
+                <View style={styles.videoInfo}>
+                  <Text style={styles.videoTitle} numberOfLines={1}>{p.title || 'Untitled'}</Text>
+                  <View style={styles.videoMeta}>
+                    <MaterialIcons name="schedule" size={11} color={statusColor} />
+                    <Text style={[styles.videoDate, { color: statusColor }]}>
+                      {platformLabel} · {new Date(p.scheduled_at).toLocaleDateString('en', { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' })}
+                      {p.status !== 'pending' ? `  (${p.status})` : ''}
+                    </Text>
+                  </View>
+                  {p.caption ? <Text style={styles.videoCaption} numberOfLines={1}>{p.caption}</Text> : null}
                 </View>
-                <View style={styles.platforms}>
-                  {v.platforms.map(p => <PlatformBadge key={p} platform={p} size="sm" />)}
-                </View>
+                <Pressable hitSlop={12} onPress={() => handleDelete(p.id)}>
+                  <MaterialIcons name="delete-outline" size={20} color={Colors.textMuted} />
+                </Pressable>
               </View>
-              <MaterialIcons name="chevron-right" size={20} color={Colors.textMuted} />
-            </Pressable>
-          )) : (
+            );
+          }) : (
             <View style={styles.empty}>
               <MaterialIcons name="event-busy" size={44} color={Colors.textMuted} />
               <Text style={styles.emptyText}>
@@ -178,6 +346,9 @@ export default function ScheduleScreen() {
             </View>
           )}
         </View>
+
+        {/* Best Times to Post */}
+        <BestTimesSection />
 
         <View style={{ height: Spacing.xl }} />
       </ScrollView>
@@ -289,10 +460,11 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderColor: Colors.surfaceBorder,
   },
-  videoThumb: {
-    width: 56,
-    height: 56,
-    borderRadius: Radius.sm,
+  platformDot: {
+    width: 10,
+    height: 10,
+    borderRadius: 5,
+    marginTop: 4,
   },
   videoInfo: { flex: 1, gap: 4 },
   videoTitle: {
@@ -310,6 +482,11 @@ const styles = StyleSheet.create({
     fontSize: FontSize.xs,
     color: Colors.amber,
     fontWeight: FontWeight.medium,
+    includeFontPadding: false,
+  },
+  videoCaption: {
+    fontSize: FontSize.xs,
+    color: Colors.textMuted,
     includeFontPadding: false,
   },
   platforms: {
@@ -341,6 +518,146 @@ const styles = StyleSheet.create({
     color: '#fff',
     fontSize: FontSize.sm,
     fontWeight: FontWeight.bold,
+    includeFontPadding: false,
+  },
+
+  // Best Times section
+  bestSection: {
+    marginHorizontal: Spacing.md,
+    marginBottom: Spacing.lg,
+    gap: Spacing.sm,
+  },
+  platformTabs: {
+    flexDirection: 'row',
+    gap: Spacing.xs,
+  },
+  platformTab: {
+    flex: 1,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 5,
+    paddingVertical: 8,
+    borderRadius: Radius.md,
+    borderWidth: 1,
+    borderColor: Colors.surfaceBorder,
+    backgroundColor: Colors.surfaceElevated,
+  },
+  platformTabText: {
+    fontSize: FontSize.xs,
+    fontWeight: FontWeight.semibold,
+    color: Colors.textMuted,
+    includeFontPadding: false,
+  },
+  daysRow: {
+    flexDirection: 'row',
+    gap: 4,
+    marginTop: 4,
+  },
+  dayChip: {
+    flex: 1,
+    alignItems: 'center',
+    paddingVertical: 6,
+    borderRadius: Radius.sm,
+    borderWidth: 1,
+    borderColor: Colors.surfaceBorder,
+    backgroundColor: Colors.surfaceElevated,
+  },
+  dayChipText: {
+    fontSize: 10,
+    color: Colors.textMuted,
+    fontWeight: FontWeight.medium,
+    includeFontPadding: false,
+  },
+  dayChipAvoid: {
+    backgroundColor: Colors.error + '10',
+    borderColor: Colors.error + '30',
+  },
+  dayChipAvoidText: {
+    color: Colors.error,
+    textDecorationLine: 'line-through',
+  },
+  topSlots: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+    backgroundColor: Colors.surfaceElevated,
+    borderRadius: Radius.md,
+    padding: Spacing.sm,
+    borderWidth: 1,
+    borderColor: Colors.surfaceBorder,
+  },
+  topSlotsLabel: {
+    fontSize: FontSize.xs,
+    fontWeight: FontWeight.bold,
+    includeFontPadding: false,
+  },
+  topSlotsText: {
+    fontSize: FontSize.xs,
+    color: Colors.textSecondary,
+    flex: 1,
+    includeFontPadding: false,
+  },
+  windowsList: {
+    gap: 6,
+  },
+  windowRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    padding: Spacing.sm,
+    borderRadius: Radius.md,
+    borderWidth: 1,
+    borderColor: Colors.surfaceBorder,
+  },
+  windowLeft: {
+    gap: 2,
+  },
+  windowDay: {
+    fontSize: FontSize.sm,
+    fontWeight: FontWeight.semibold,
+    color: Colors.textPrimary,
+    includeFontPadding: false,
+  },
+  windowTime: {
+    fontSize: FontSize.xs,
+    color: Colors.textSecondary,
+    includeFontPadding: false,
+  },
+  strengthBadge: {
+    paddingHorizontal: 8,
+    paddingVertical: 3,
+    borderRadius: Radius.full,
+    borderWidth: 1,
+  },
+  strengthText: {
+    fontSize: 10,
+    fontWeight: FontWeight.bold,
+    includeFontPadding: false,
+  },
+  tipRow: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    gap: 6,
+    borderLeftWidth: 3,
+    paddingLeft: Spacing.sm,
+    paddingVertical: 4,
+  },
+  tipText: {
+    fontSize: FontSize.xs,
+    color: Colors.textSecondary,
+    flex: 1,
+    lineHeight: 18,
+    includeFontPadding: false,
+  },
+  avoidRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 5,
+  },
+  avoidText: {
+    fontSize: FontSize.xs,
+    color: Colors.error,
     includeFontPadding: false,
   },
 });
