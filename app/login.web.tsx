@@ -1,12 +1,11 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState } from 'react';
 import {
   View, Text, StyleSheet, Pressable, TextInput,
-  KeyboardAvoidingView, Platform, ScrollView, ActivityIndicator,
+  KeyboardAvoidingView, ScrollView, ActivityIndicator,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Image } from 'expo-image';
 import { MaterialIcons, MaterialCommunityIcons } from '@expo/vector-icons';
-import * as AppleAuthentication from 'expo-apple-authentication';
 import { useAuth, useAlert } from '@/template';
 import { getSharedSupabaseClient } from '@/template/core/client';
 import { Colors, Spacing, Radius, FontSize, FontWeight } from '@/constants/theme';
@@ -21,45 +20,12 @@ export default function LoginScreen() {
   const [email, setEmail] = useState('');
   const [otp, setOtp] = useState('');
   const [loading, setLoading] = useState(false);
-  const [appleAvailable, setAppleAvailable] = useState(false);
-
-  useEffect(() => {
-    if (Platform.OS === 'ios') {
-      AppleAuthentication.isAvailableAsync()
-        .then(setAppleAvailable)
-        .catch(() => setAppleAvailable(false));
-    }
-  }, []);
 
   const isBusy = operationLoading || loading;
 
   const handleGoogle = async () => {
     const { error } = await signInWithGoogle();
     if (error) showAlert('Google Sign-In Failed', error);
-  };
-
-  const handleApple = async () => {
-    try {
-      const credential = await AppleAuthentication.signInAsync({
-        requestedScopes: [
-          AppleAuthentication.AppleAuthenticationScope.FULL_NAME,
-          AppleAuthentication.AppleAuthenticationScope.EMAIL,
-        ],
-      });
-      setLoading(true);
-      const supabase = getSharedSupabaseClient();
-      const { error } = await supabase.auth.signInWithIdToken({
-        provider: 'apple',
-        token: credential.identityToken!,
-      });
-      if (error) showAlert('Apple Sign-In Failed', error.message);
-    } catch (e: any) {
-      if (e?.code !== 'ERR_REQUEST_CANCELED') {
-        showAlert('Apple Sign-In Failed', e?.message ?? 'Unknown error');
-      }
-    } finally {
-      setLoading(false);
-    }
   };
 
   const handleSendOTP = async () => {
@@ -106,7 +72,7 @@ export default function LoginScreen() {
 
   return (
     <SafeAreaView style={styles.safe}>
-      <KeyboardAvoidingView style={{ flex: 1 }} behavior={Platform.OS === 'ios' ? 'padding' : 'height'}>
+      <KeyboardAvoidingView style={{ flex: 1 }} behavior="padding">
         <ScrollView contentContainerStyle={styles.scrollContent} showsVerticalScrollIndicator={false} keyboardShouldPersistTaps="handled">
 
           {/* Hero */}
@@ -133,25 +99,6 @@ export default function LoginScreen() {
                 <Text style={styles.cardTitle}>Get Started</Text>
                 <Text style={styles.cardSub}>Sign in or create an account</Text>
 
-                {/* Apple — native button on real devices, styled fallback on simulator */}
-                {Platform.OS === 'ios' && (
-                  appleAvailable ? (
-                    <AppleAuthentication.AppleAuthenticationButton
-                      buttonType={AppleAuthentication.AppleAuthenticationButtonType.SIGN_IN}
-                      buttonStyle={AppleAuthentication.AppleAuthenticationButtonStyle.WHITE}
-                      cornerRadius={50}
-                      style={styles.appleBtn}
-                      onPress={handleApple}
-                    />
-                  ) : (
-                    <Pressable style={[styles.appleFallbackBtn, { opacity: 0.6 }]} disabled>
-                      <MaterialCommunityIcons name="apple" size={20} color="#000" />
-                      <Text style={styles.appleFallbackText}>Sign in with Apple</Text>
-                    </Pressable>
-                  )
-                )}
-
-                {/* Google */}
                 <Pressable
                   style={({ pressed }) => [styles.socialBtn, pressed && { opacity: 0.85 }]}
                   onPress={handleGoogle}
@@ -167,14 +114,12 @@ export default function LoginScreen() {
                   )}
                 </Pressable>
 
-                {/* Divider */}
                 <View style={styles.divider}>
                   <View style={styles.dividerLine} />
                   <Text style={styles.dividerText}>or</Text>
                   <View style={styles.dividerLine} />
                 </View>
 
-                {/* Email OTP */}
                 <Pressable
                   style={({ pressed }) => [styles.emailBtn, pressed && { opacity: 0.85 }]}
                   onPress={() => setMode('email')}
@@ -195,7 +140,7 @@ export default function LoginScreen() {
 
                 <Text style={styles.cardTitle}>Enter Your Email</Text>
                 <Text style={styles.cardSub}>
-                  We'll send a 4-digit code to sign you in or create your account — no password needed.
+                  We'll send a 4-digit code to sign you in — no password needed.
                 </Text>
 
                 <View style={styles.inputGroup}>
@@ -265,10 +210,7 @@ export default function LoginScreen() {
                   )}
                 </Pressable>
 
-                <Pressable
-                  onPress={handleSendOTP}
-                  disabled={isBusy}
-                >
+                <Pressable onPress={handleSendOTP} disabled={isBusy}>
                   <Text style={styles.switchText}>
                     Didn't get it? <Text style={styles.switchLink}>Resend code</Text>
                   </Text>
@@ -276,7 +218,7 @@ export default function LoginScreen() {
 
                 <Pressable onPress={() => setMode('email')}>
                   <Text style={styles.switchText}>
-                    <Text style={styles.switchLink}>← Change email</Text>
+                    <Text style={styles.switchLink}>Change email</Text>
                   </Text>
                 </Pressable>
               </>
@@ -296,211 +238,87 @@ export default function LoginScreen() {
 
 const styles = StyleSheet.create({
   safe: { flex: 1, backgroundColor: Colors.background },
-  scrollContent: {
-    flexGrow: 1,
-    paddingBottom: Spacing.xl,
-  },
-  heroWrapper: {
-    height: 260,
-    position: 'relative',
-    overflow: 'hidden',
-  },
-  heroImage: {
-    width: '100%',
-    height: '100%',
-  },
+  scrollContent: { flexGrow: 1, paddingBottom: Spacing.xl },
+  heroWrapper: { height: 260, position: 'relative', overflow: 'hidden' },
+  heroImage: { width: '100%', height: '100%' },
   heroOverlay: {
-    position: 'absolute',
-    top: 0, left: 0, right: 0, bottom: 0,
-    alignItems: 'center',
-    justifyContent: 'center',
-    backgroundColor: 'rgba(8,10,20,0.5)',
-    gap: 6,
+    position: 'absolute', top: 0, left: 0, right: 0, bottom: 0,
+    alignItems: 'center', justifyContent: 'center',
+    backgroundColor: 'rgba(8,10,20,0.5)', gap: 6,
   },
   heroTitle: {
-    fontSize: FontSize.xxxl,
-    fontWeight: FontWeight.extrabold,
-    color: Colors.textPrimary,
-    letterSpacing: 1.5,
-    includeFontPadding: false,
+    fontSize: FontSize.xxxl, fontWeight: FontWeight.extrabold,
+    color: Colors.textPrimary, letterSpacing: 1.5, includeFontPadding: false,
   },
-  heroSub: {
-    fontSize: FontSize.sm,
-    color: Colors.textSecondary,
-    includeFontPadding: false,
-  },
+  heroSub: { fontSize: FontSize.sm, color: Colors.textSecondary, includeFontPadding: false },
   card: {
-    margin: Spacing.md,
-    backgroundColor: Colors.surfaceElevated,
-    borderRadius: Radius.xl,
-    padding: Spacing.lg,
-    borderWidth: 1,
-    borderColor: Colors.surfaceBorder,
-    gap: Spacing.md,
+    margin: Spacing.md, backgroundColor: Colors.surfaceElevated,
+    borderRadius: Radius.xl, padding: Spacing.lg,
+    borderWidth: 1, borderColor: Colors.surfaceBorder, gap: Spacing.md,
   },
   cardTitle: {
-    fontSize: FontSize.xxl,
-    fontWeight: FontWeight.bold,
-    color: Colors.textPrimary,
-    includeFontPadding: false,
+    fontSize: FontSize.xxl, fontWeight: FontWeight.bold,
+    color: Colors.textPrimary, includeFontPadding: false,
   },
   cardSub: {
-    fontSize: FontSize.sm,
-    color: Colors.textSecondary,
-    lineHeight: 20,
-    includeFontPadding: false,
-    marginTop: -Spacing.sm,
-  },
-  appleBtn: {
-    width: '100%',
-    height: 50,
-    borderRadius: 50,
-  },
-  appleFallbackBtn: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'center',
-    gap: 8,
-    backgroundColor: '#ffffff',
-    borderRadius: 50,
-    height: 50,
-    width: '100%',
-  },
-  appleFallbackText: {
-    fontSize: FontSize.md,
-    fontWeight: FontWeight.semibold,
-    color: '#000000',
-    includeFontPadding: false,
+    fontSize: FontSize.sm, color: Colors.textSecondary,
+    lineHeight: 20, includeFontPadding: false, marginTop: -Spacing.sm,
   },
   socialBtn: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'center',
-    gap: 10,
-    backgroundColor: Colors.surface,
-    borderRadius: Radius.full,
-    paddingVertical: 14,
-    borderWidth: 1.5,
-    borderColor: Colors.surfaceBorder,
-    minHeight: 50,
+    flexDirection: 'row', alignItems: 'center', justifyContent: 'center',
+    gap: 10, backgroundColor: Colors.surface, borderRadius: Radius.full,
+    paddingVertical: 14, borderWidth: 1.5, borderColor: Colors.surfaceBorder, minHeight: 50,
   },
   socialBtnText: {
-    fontSize: FontSize.md,
-    fontWeight: FontWeight.semibold,
-    color: Colors.textPrimary,
-    includeFontPadding: false,
+    fontSize: FontSize.md, fontWeight: FontWeight.semibold,
+    color: Colors.textPrimary, includeFontPadding: false,
   },
-  divider: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: Spacing.sm,
-  },
-  dividerLine: {
-    flex: 1,
-    height: 1,
-    backgroundColor: Colors.surfaceBorder,
-  },
-  dividerText: {
-    fontSize: FontSize.sm,
-    color: Colors.textMuted,
-    includeFontPadding: false,
-  },
+  divider: { flexDirection: 'row', alignItems: 'center', gap: Spacing.sm },
+  dividerLine: { flex: 1, height: 1, backgroundColor: Colors.surfaceBorder },
+  dividerText: { fontSize: FontSize.sm, color: Colors.textMuted, includeFontPadding: false },
   emailBtn: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'center',
-    gap: 8,
-    backgroundColor: 'transparent',
-    borderRadius: Radius.full,
-    paddingVertical: 14,
-    borderWidth: 1,
-    borderColor: Colors.surfaceBorder,
-    minHeight: 50,
+    flexDirection: 'row', alignItems: 'center', justifyContent: 'center',
+    gap: 8, backgroundColor: 'transparent', borderRadius: Radius.full,
+    paddingVertical: 14, borderWidth: 1, borderColor: Colors.surfaceBorder, minHeight: 50,
   },
   emailBtnText: {
-    fontSize: FontSize.md,
-    fontWeight: FontWeight.semibold,
-    color: Colors.textSecondary,
-    includeFontPadding: false,
+    fontSize: FontSize.md, fontWeight: FontWeight.semibold,
+    color: Colors.textSecondary, includeFontPadding: false,
   },
-  backRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 4,
-    marginBottom: -4,
-  },
-  backText: {
-    fontSize: FontSize.sm,
-    color: Colors.textSecondary,
-    includeFontPadding: false,
-  },
-  inputGroup: {
-    gap: 6,
-  },
+  backRow: { flexDirection: 'row', alignItems: 'center', gap: 4, marginBottom: -4 },
+  backText: { fontSize: FontSize.sm, color: Colors.textSecondary, includeFontPadding: false },
+  inputGroup: { gap: 6 },
   inputLabel: {
-    fontSize: FontSize.sm,
-    fontWeight: FontWeight.semibold,
-    color: Colors.textSecondary,
-    includeFontPadding: false,
+    fontSize: FontSize.sm, fontWeight: FontWeight.semibold,
+    color: Colors.textSecondary, includeFontPadding: false,
   },
   input: {
-    backgroundColor: Colors.surface,
-    borderRadius: Radius.md,
-    borderWidth: 1,
-    borderColor: Colors.surfaceBorder,
-    padding: Spacing.sm + 4,
-    fontSize: FontSize.md,
-    color: Colors.textPrimary,
-    minHeight: 48,
-    includeFontPadding: false,
+    backgroundColor: Colors.surface, borderRadius: Radius.md,
+    borderWidth: 1, borderColor: Colors.surfaceBorder,
+    padding: Spacing.sm + 4, fontSize: FontSize.md,
+    color: Colors.textPrimary, minHeight: 48, includeFontPadding: false,
   },
   primaryBtn: {
-    backgroundColor: Colors.primary,
-    borderRadius: Radius.full,
-    paddingVertical: 15,
-    alignItems: 'center',
-    justifyContent: 'center',
-    minHeight: 50,
+    backgroundColor: Colors.primary, borderRadius: Radius.full,
+    paddingVertical: 15, alignItems: 'center', justifyContent: 'center', minHeight: 50,
   },
   primaryBtnText: {
-    fontSize: FontSize.md,
-    fontWeight: FontWeight.bold,
-    color: '#fff',
-    includeFontPadding: false,
+    fontSize: FontSize.md, fontWeight: FontWeight.bold,
+    color: '#fff', includeFontPadding: false,
   },
   otpIcon: {
-    alignSelf: 'center',
-    width: 64,
-    height: 64,
-    borderRadius: 32,
-    backgroundColor: Colors.primaryGlow,
-    alignItems: 'center',
-    justifyContent: 'center',
-    borderWidth: 1,
-    borderColor: Colors.primary + '44',
+    alignSelf: 'center', width: 64, height: 64, borderRadius: 32,
+    backgroundColor: Colors.primaryGlow, alignItems: 'center', justifyContent: 'center',
+    borderWidth: 1, borderColor: Colors.primary + '44',
   },
-  otpInput: {
-    textAlign: 'center',
-    fontSize: FontSize.xxl,
-    fontWeight: FontWeight.bold,
-    letterSpacing: 8,
-  },
+  otpInput: { textAlign: 'center', fontSize: FontSize.xxl, fontWeight: FontWeight.bold, letterSpacing: 8 },
   switchText: {
-    textAlign: 'center',
-    fontSize: FontSize.sm,
-    color: Colors.textSecondary,
-    includeFontPadding: false,
+    textAlign: 'center', fontSize: FontSize.sm,
+    color: Colors.textSecondary, includeFontPadding: false,
   },
-  switchLink: {
-    color: Colors.primaryLight,
-    fontWeight: FontWeight.semibold,
-  },
+  switchLink: { color: Colors.primaryLight, fontWeight: FontWeight.semibold },
   footer: {
-    textAlign: 'center',
-    fontSize: FontSize.xs,
-    color: Colors.textMuted,
-    paddingHorizontal: Spacing.xl,
-    marginTop: Spacing.sm,
-    includeFontPadding: false,
+    textAlign: 'center', fontSize: FontSize.xs, color: Colors.textMuted,
+    paddingHorizontal: Spacing.xl, marginTop: Spacing.sm, includeFontPadding: false,
   },
 });

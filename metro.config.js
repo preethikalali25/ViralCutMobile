@@ -12,7 +12,6 @@ const webStubs = {
   'expo-video': path.resolve(__dirname, 'modules/expo-video.web.ts'),
   'expo-web-browser': path.resolve(__dirname, 'modules/expo-web-browser.web.ts'),
   'expo-modules-core': path.resolve(__dirname, 'modules/expo-modules-core.web.ts'),
-  'expo-apple-authentication': path.resolve(__dirname, 'modules/expo-apple-authentication.web.ts'),
   'expo-auth-session': path.resolve(__dirname, 'modules/expo-auth-session.web.ts'),
 };
 
