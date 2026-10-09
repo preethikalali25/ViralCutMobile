@@ -6,14 +6,11 @@ import {
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useRouter } from 'expo-router';
 import { MaterialIcons, MaterialCommunityIcons } from '@expo/vector-icons';
-import { useAuth, useAlert, getSupabaseClient } from '@/template';
-import { getSharedSupabaseClient } from '@/template/core/client';
-
+import { useAuth, useAlert } from '@/template';
 import { Colors, Spacing, Radius, FontSize, FontWeight } from '@/constants/theme';
 import { useSocialAccounts } from '@/hooks/useSocialAccounts';
 import { useTikTok } from '@/hooks/useTikTok';
 import { useInstagram } from '@/hooks/useInstagram';
-import { useYouTube } from '@/hooks/useYouTube';
 
 type PlatformMeta = {
   id: 'tiktok' | 'reels' | 'youtube';
@@ -32,7 +29,7 @@ const PLATFORMS: PlatformMeta[] = [
     id: 'tiktok',
     label: 'TikTok',
     color: '#fff',
-    bgColor: '#ee1d52',
+    bgColor: '#010101',
     iconName: 'music-note',
     iconLib: 'MaterialCommunityIcons',
     handlePrefix: '@',
@@ -59,7 +56,7 @@ const PLATFORMS: PlatformMeta[] = [
     iconLib: 'MaterialCommunityIcons',
     handlePrefix: '@',
     placeholder: '@yourchannel',
-    supportsOAuth: true,
+    supportsOAuth: false,
   },
 ];
 
@@ -81,14 +78,12 @@ export default function ProfileScreen() {
   const { accounts, loading, load, connect, disconnect, getAccount } = useSocialAccounts();
   const tiktok = useTikTok();
   const instagram = useInstagram();
-  const youtube = useYouTube();
 
   const [connectModal, setConnectModal] = useState<PlatformMeta | null>(null);
   const [handle, setHandle] = useState('');
   const [followers, setFollowers] = useState('');
   const [saving, setSaving] = useState(false);
   const [loggingOut, setLoggingOut] = useState(false);
-  const [deletingAccount, setDeletingAccount] = useState(false);
 
   useEffect(() => {
     load();
@@ -106,67 +101,10 @@ export default function ProfileScreen() {
           if (error) {
             showAlert('Error', error);
             setLoggingOut(false);
-          } else {
-            router.replace('/login');
           }
         },
       },
     ]);
-  };
-
-  const handleDeleteAccount = () => {
-    showAlert(
-      'Delete Account?',
-      'This will permanently delete your SmartReel account and all associated data. This cannot be undone.',
-      [
-        { text: 'Cancel', style: 'cancel' },
-        {
-          text: 'Delete My Account',
-          style: 'destructive',
-          onPress: () => {
-            showAlert(
-              'Are you sure?',
-              'Your account, videos, and all platform connections will be permanently removed.',
-              [
-                { text: 'Cancel', style: 'cancel' },
-                {
-                  text: 'Yes, Delete',
-                  style: 'destructive',
-                  onPress: async () => {
-                    setDeletingAccount(true);
-                    try {
-                      const supabase = getSharedSupabaseClient();
-                      const { data: { user: currentUser } } = await supabase.auth.getUser();
-
-                      // Try the RPC (deletes data + auth row in one call)
-                      const { error: rpcError } = await supabase.rpc('delete_user_account');
-
-                      if (rpcError && currentUser) {
-                        // Fallback: delete all user data tables directly
-                        await Promise.allSettled([
-                          supabase.from('social_accounts').delete().eq('user_id', currentUser.id),
-                          supabase.from('videos').delete().eq('user_id', currentUser.id),
-                          supabase.from('scheduled_posts').delete().eq('user_id', currentUser.id),
-                          supabase.from('youtube_tokens').delete().eq('user_id', currentUser.id),
-                          supabase.from('tiktok_tokens').delete().eq('user_id', currentUser.id),
-                          supabase.from('instagram_tokens').delete().eq('user_id', currentUser.id),
-                        ]);
-                      }
-
-                      await logout();
-                      router.replace('/login');
-                    } catch (e: any) {
-                      setDeletingAccount(false);
-                      showAlert('Delete Failed', e?.message ?? 'Could not delete account. Please contact support.');
-                    }
-                  },
-                },
-              ],
-            );
-          },
-        },
-      ],
-    );
   };
 
   // ── TikTok OAuth Connect ────────────────────────────────────────────────
@@ -234,35 +172,7 @@ export default function ProfileScreen() {
     );
   };
 
-  // ── YouTube OAuth Connect ───────────────────────────────────────────────
-  const handleYouTubeConnect = async () => {
-    const { error } = await youtube.connect();
-    if (error) {
-      showAlert('YouTube Connect Failed', error);
-    } else {
-      showAlert('YouTube Connected!', `Channel "${youtube.status.channelTitle || 'your channel'}" is now linked. You can publish directly to YouTube Shorts.`);
-    }
-  };
-
-  const handleYouTubeDisconnect = () => {
-    showAlert(
-      'Disconnect YouTube?',
-      'Your YouTube access will be removed. You can reconnect anytime.',
-      [
-        { text: 'Cancel', style: 'cancel' },
-        {
-          text: 'Disconnect',
-          style: 'destructive',
-          onPress: async () => {
-            const { error } = await youtube.disconnect();
-            if (error) showAlert('Error', error);
-          },
-        },
-      ],
-    );
-  };
-
-  // ── Manual account connect (other platforms) ─────────────────────────────
+  // ── Manual account connect (YouTube) ────────────────────────────────────
   const openConnect = (platform: PlatformMeta) => {
     const existing = getAccount(platform.id);
     setHandle(existing?.handle ?? '');
@@ -293,7 +203,7 @@ export default function ProfileScreen() {
     if (!account) return;
     showAlert(
       `Disconnect ${platform.label}?`,
-      `Remove @${account.handle} from your SmartReel profile?`,
+      `Remove @${account.handle} from your ShortReel profile?`,
       [
         { text: 'Cancel', style: 'cancel' },
         {
@@ -363,7 +273,7 @@ export default function ProfileScreen() {
         {/* ── TikTok OAuth Card ─────────────────────────────────────────── */}
         <Text style={styles.sectionLabel}>TikTok</Text>
         <View style={styles.tiktokCard}>
-          <View style={[styles.platformIcon, { backgroundColor: '#ee1d52' }]}>
+          <View style={[styles.platformIcon, { backgroundColor: '#010101' }]}>
             <MaterialCommunityIcons name="music-note" size={20} color="#fff" />
           </View>
 
@@ -434,8 +344,7 @@ export default function ProfileScreen() {
           <View style={styles.infoNote}>
             <MaterialIcons name="info-outline" size={13} color={Colors.textMuted} />
             <Text style={styles.infoText}>
-              Connecting via OAuth lets SmartReel publish directly to your TikTok account using the official TikTok Content Posting API.
-
+              Connecting via OAuth lets ShortReel publish directly to your TikTok account using the official TikTok Content Posting API.
             </Text>
           </View>
         ) : null}
@@ -501,64 +410,6 @@ export default function ProfileScreen() {
             <MaterialIcons name="info-outline" size={13} color={Colors.textMuted} />
             <Text style={styles.infoText}>
               Connect via OAuth to publish Reels directly to Instagram using the official Graph API.
-            </Text>
-          </View>
-        ) : null}
-
-        {/* ── YouTube OAuth Card ───────────────────────────────────────── */}
-        <Text style={[styles.sectionLabel, { marginTop: Spacing.md }]}>YouTube</Text>
-        <View style={[styles.tiktokCard, { borderColor: '#ff000055' }]}>
-          <View style={[styles.platformIcon, { backgroundColor: '#ff0000' }]}>
-            <MaterialCommunityIcons name="youtube" size={20} color="#fff" />
-          </View>
-          <View style={styles.platformInfo}>
-            <Text style={styles.platformCardLabel}>YouTube Shorts</Text>
-            {youtube.loadingStatus ? (
-              <ActivityIndicator size="small" color={Colors.primaryLight} />
-            ) : youtube.status.connected ? (
-              <View style={styles.connectedMeta}>
-                <Text style={styles.platformHandle}>
-                  {youtube.status.channelTitle || 'Connected'}
-                </Text>
-                <View style={styles.connectedBadge}>
-                  <MaterialIcons name="check-circle" size={11} color={Colors.emerald} />
-                  <Text style={styles.connectedBadgeText}>Live API connected</Text>
-                </View>
-              </View>
-            ) : (
-              <Text style={styles.notConnected}>Not connected</Text>
-            )}
-          </View>
-          {youtube.status.connected ? (
-            <Pressable
-              style={({ pressed }) => [styles.disconnectBtn, pressed && { opacity: 0.7 }]}
-              onPress={handleYouTubeDisconnect}
-            >
-              <MaterialIcons name="link-off" size={14} color={Colors.error} />
-            </Pressable>
-          ) : (
-            <Pressable
-              style={({ pressed }) => [styles.oauthBtn, { backgroundColor: '#ff0000' }, youtube.connectingOAuth && styles.oauthBtnLoading, pressed && { opacity: 0.85 }]}
-              onPress={handleYouTubeConnect}
-              disabled={youtube.connectingOAuth}
-            >
-              {youtube.connectingOAuth ? (
-                <ActivityIndicator size="small" color="#fff" />
-              ) : (
-                <>
-                  <MaterialIcons name="link" size={14} color="#fff" />
-                  <Text style={styles.oauthBtnText}>Connect via Google</Text>
-                </>
-              )}
-            </Pressable>
-          )}
-        </View>
-
-        {!youtube.status.connected ? (
-          <View style={[styles.infoNote, { marginBottom: Spacing.sm }]}>
-            <MaterialIcons name="info-outline" size={13} color={Colors.textMuted} />
-            <Text style={styles.infoText}>
-              Connect via Google OAuth to publish directly to YouTube Shorts using the YouTube Data API.
             </Text>
           </View>
         ) : null}
@@ -634,7 +485,7 @@ export default function ProfileScreen() {
           <Pressable
             style={({ pressed }) => [styles.accountRow, pressed && { opacity: 0.7 }]}
             onPress={handleLogout}
-            disabled={loggingOut || deletingAccount}
+            disabled={loggingOut}
           >
             {loggingOut ? (
               <ActivityIndicator size="small" color={Colors.error} />
@@ -642,25 +493,6 @@ export default function ProfileScreen() {
               <MaterialIcons name="logout" size={18} color={Colors.error} />
             )}
             <Text style={styles.signOutText}>Sign Out</Text>
-          </Pressable>
-
-          <View style={styles.accountDivider} />
-
-          <Pressable
-            style={({ pressed }) => [styles.accountRow, pressed && { opacity: 0.7 }]}
-            onPress={handleDeleteAccount}
-            disabled={loggingOut || deletingAccount}
-          >
-            {deletingAccount ? (
-              <ActivityIndicator size="small" color={Colors.error} />
-            ) : (
-              <MaterialIcons name="delete-forever" size={18} color={Colors.error} />
-            )}
-            <View style={{ flex: 1 }}>
-              <Text style={styles.signOutText}>Delete Account</Text>
-              <Text style={styles.deleteAccountSub}>Permanently remove all data</Text>
-            </View>
-
           </Pressable>
         </View>
 
@@ -788,7 +620,7 @@ const styles = StyleSheet.create({
   tiktokCard: {
     flexDirection: 'row', alignItems: 'center', gap: Spacing.sm,
     backgroundColor: Colors.surfaceElevated, borderRadius: Radius.lg,
-    padding: Spacing.md, borderWidth: 1.5, borderColor: '#ee1d52',
+    padding: Spacing.md, borderWidth: 1.5, borderColor: '#010101',
     marginBottom: Spacing.xs,
   },
   infoNote: {
@@ -798,7 +630,7 @@ const styles = StyleSheet.create({
   infoText: { flex: 1, fontSize: FontSize.xs, color: Colors.textMuted, lineHeight: 16, includeFontPadding: false },
   oauthBtn: {
     flexDirection: 'row', alignItems: 'center', gap: 5,
-    backgroundColor: '#ee1d52', borderRadius: Radius.full,
+    backgroundColor: '#010101', borderRadius: Radius.full,
     paddingHorizontal: 12, paddingVertical: 8, minHeight: 36,
   },
   oauthBtnLoading: { opacity: 0.7 },
@@ -838,9 +670,7 @@ const styles = StyleSheet.create({
     borderWidth: 1, borderColor: Colors.surfaceBorder, overflow: 'hidden', marginBottom: Spacing.lg,
   },
   accountRow: { flexDirection: 'row', alignItems: 'center', gap: Spacing.sm, padding: Spacing.md, minHeight: 52 },
-  accountDivider: { height: 1, backgroundColor: Colors.surfaceBorder, marginHorizontal: Spacing.md },
   signOutText: { fontSize: FontSize.md, fontWeight: FontWeight.semibold, color: Colors.error, includeFontPadding: false },
-  deleteAccountSub: { fontSize: FontSize.xs, color: Colors.textMuted, marginTop: 1, includeFontPadding: false },
 
   // Modal
   modalOverlay: { flex: 1, justifyContent: 'flex-end' },

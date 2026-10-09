@@ -27,7 +27,6 @@ export interface Video {
   hook?: Hook;
   audio?: TrendingAudio;
   scheduledAt?: string;
-  platformSchedules?: { instagram?: string; tiktok?: string; youtube?: string };
   publishedAt?: string;
   metrics?: VideoMetrics;
   createdAt: string;
