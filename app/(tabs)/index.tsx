@@ -85,6 +85,21 @@ export default function DashboardScreen() {
           </View>
         </View>
 
+        {/* AI Reel Template */}
+        <Pressable
+          style={({ pressed }) => [styles.templateCard, pressed && { opacity: 0.85 }]}
+          onPress={() => router.push('/template-picker')}
+        >
+          <View style={styles.templateLeft}>
+            <MaterialCommunityIcons name="magic-staff" size={24} color={Colors.primaryLight} />
+            <View style={styles.templateText}>
+              <Text style={styles.templateTitle}>AI Reel Template</Text>
+              <Text style={styles.templateSub}>Paste any reel link → remix it with your clips</Text>
+            </View>
+          </View>
+          <MaterialIcons name="chevron-right" size={22} color={Colors.primaryLight} />
+        </Pressable>
+
         {/* Stats */}
         <Text style={styles.sectionTitle}>Overview</Text>
         <View style={styles.statsGrid}>
@@ -274,6 +289,38 @@ const styles = StyleSheet.create({
     justifyContent: 'space-between',
     paddingHorizontal: Spacing.md,
     marginBottom: Spacing.sm,
+  },
+  templateCard: {
+    marginHorizontal: Spacing.md,
+    marginBottom: Spacing.lg,
+    backgroundColor: Colors.surfaceElevated,
+    borderRadius: Radius.xl,
+    borderWidth: 1,
+    borderColor: Colors.primary + '50',
+    paddingHorizontal: Spacing.md,
+    paddingVertical: Spacing.md,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: Spacing.sm,
+  },
+  templateLeft: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: Spacing.sm,
+    flex: 1,
+  },
+  templateText: { flex: 1, gap: 2 },
+  templateTitle: {
+    fontSize: FontSize.md,
+    fontWeight: FontWeight.bold,
+    color: Colors.textPrimary,
+    includeFontPadding: false,
+  },
+  templateSub: {
+    fontSize: FontSize.xs,
+    color: Colors.textSecondary,
+    includeFontPadding: false,
   },
   sectionTitle: {
     fontSize: FontSize.md,
