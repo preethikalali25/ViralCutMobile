@@ -81,14 +81,33 @@ export default function TemplatePickerScreen() {
     setAnalyzing(true);
     try {
       setProgress('Resolving link…');
-      const { videoUrl, durationSec: dur, thumbnail } = await resolveReelUrl(reelUrl.trim());
+      let resolved: { videoUrl: string; durationSec: number | null; platform: string; thumbnail: string | null };
+      try {
+        resolved = await resolveReelUrl(reelUrl.trim());
+        console.log('[template-picker] resolved videoUrl:', resolved.videoUrl?.slice(0, 80));
+      } catch (e: any) {
+        throw new Error(`Link resolution failed: ${e?.message || String(e)}`);
+      }
 
       setProgress('Downloading reel…');
-      const { localUri } = await downloadVideoToCache(videoUrl);
+      let localUri: string;
+      try {
+        const dl = await downloadVideoToCache(resolved.videoUrl);
+        localUri = dl.localUri;
+        console.log('[template-picker] downloaded to:', localUri);
+      } catch (e: any) {
+        throw new Error(`Video download failed: ${e?.message || String(e)}`);
+      }
 
-      const totalDur = dur ?? 30;
-      setProgress('Extracting frames…');
-      const template = await analyzeReelTemplate(localUri, totalDur);
+      const totalDur = resolved.durationSec ?? 30;
+      setProgress('Analyzing reel…');
+      let template;
+      try {
+        template = await analyzeReelTemplate(localUri, totalDur);
+      } catch (e: any) {
+        throw new Error(`Analysis failed: ${e?.message || String(e)}`);
+      }
+
       setActiveTemplate(template);
       setAnalyzing(false);
       setProgress('');
@@ -96,7 +115,9 @@ export default function TemplatePickerScreen() {
     } catch (e: any) {
       setAnalyzing(false);
       setProgress('');
-      Alert.alert('Failed', e?.message ?? 'Could not analyze this reel. Try again.');
+      const msg = e?.message || String(e) || 'Could not analyze this reel. Try again.';
+      console.error('[template-picker] error:', msg);
+      Alert.alert('Failed', msg);
     }
   };
 
