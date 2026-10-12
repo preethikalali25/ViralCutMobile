@@ -221,7 +221,7 @@ export default function TemplateEditorScreen() {
         <View style={styles.stylePill}>
           <MaterialCommunityIcons name="palette" size={14} color={Colors.violet} />
           <Text style={styles.styleText}>
-            {template.style.vibe} · {template.style.pacing} pacing · {template.style.musicGenre}
+            {template.style?.vibe ?? 'Custom'} · {template.style?.pacing ?? 'medium'} pacing · {template.style?.musicGenre ?? ''}
           </Text>
         </View>
 
