@@ -1,44 +1,19 @@
-import type { ReelTemplate } from '@/types/template';
+import { ReelTemplate } from '@/types';
 
-let activeTemplate: ReelTemplate | null = null;
+/**
+ * Lightweight in-memory store for the active reel template.
+ * The template-picker sets it; template-editor (and any downstream screen) reads it.
+ */
+let _activeTemplate: ReelTemplate | null = null;
 
-export function setActiveTemplate(t: ReelTemplate): void {
-  activeTemplate = t;
+export function setActiveTemplate(template: ReelTemplate): void {
+  _activeTemplate = template;
 }
 
 export function getActiveTemplate(): ReelTemplate | null {
-  return activeTemplate;
+  return _activeTemplate;
 }
 
 export function clearActiveTemplate(): void {
-  activeTemplate = null;
-}
-
-export function updateClipReplacement(
-  clipId: string,
-  uri: string,
-  type: 'photo' | 'video' | 'ai_generated',
-  aiPrompt?: string,
-): void {
-  if (!activeTemplate) return;
-  activeTemplate = {
-    ...activeTemplate,
-    clips: activeTemplate.clips.map((c) =>
-      c.id === clipId
-        ? { ...c, replacementUri: uri, replacementType: type, aiGenerationPrompt: aiPrompt }
-        : c
-    ),
-  };
-}
-
-export function clearClipReplacement(clipId: string): void {
-  if (!activeTemplate) return;
-  activeTemplate = {
-    ...activeTemplate,
-    clips: activeTemplate.clips.map((c) =>
-      c.id === clipId
-        ? { ...c, replacementUri: undefined, replacementType: undefined, aiGenerationPrompt: undefined }
-        : c
-    ),
-  };
+  _activeTemplate = null;
 }

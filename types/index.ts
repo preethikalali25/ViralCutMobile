@@ -61,3 +61,20 @@ export interface PlatformStat {
   views: number;
   avgRetention: number;
 }
+
+export interface TemplateSegment {
+  startSec: number;
+  endSec: number;
+  label: string;
+}
+
+export interface ReelTemplate {
+  id: string;
+  sourceUri: string;
+  durationSec: number;
+  hook: string;
+  caption: string;
+  hashtags: string[];
+  segments: TemplateSegment[];
+  createdAt: string;
+}
