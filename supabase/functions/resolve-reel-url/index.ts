@@ -134,7 +134,12 @@ Deno.serve(async (req) => {
     }
 
     const { url } = await req.json() as { url: string };
-    const trimmed = url?.trim() ?? '';
+    // Strip tracking params — keep only the path (e.g. instagram.com/reel/ID/)
+    let trimmed = url?.trim() ?? '';
+    try {
+      const u = new URL(trimmed);
+      trimmed = `${u.origin}${u.pathname}`;
+    } catch { /* leave as-is if parsing fails */ }
 
     if (!trimmed || !isValidReelUrl(trimmed)) {
       return new Response(
