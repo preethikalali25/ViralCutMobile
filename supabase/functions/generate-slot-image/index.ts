@@ -41,7 +41,7 @@ Deno.serve(async (req) => {
         input: {
           prompt: prompt.trim(),
           aspect_ratio: '9:16', // vertical for reels
-          output_format: 'jpeg',
+          output_format: 'jpg',
           output_quality: 90,
           num_outputs: 1,
         },
