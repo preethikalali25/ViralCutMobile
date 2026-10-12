@@ -8,6 +8,7 @@ import { MaterialIcons, MaterialCommunityIcons } from '@expo/vector-icons';
 import { useRouter } from 'expo-router';
 import * as ImagePicker from 'expo-image-picker';
 import * as MediaLibrary from 'expo-media-library';
+import * as FileSystem from 'expo-file-system';
 import { Image } from 'expo-image';
 import { Colors, Spacing, Radius, FontSize, FontWeight } from '@/constants/theme';
 import {
@@ -18,6 +19,14 @@ import { combineMediaToVideo, type MediaItem } from '@/services/videoOverlayServ
 import { useVideos } from '@/hooks/useVideos';
 import type { TemplateClip } from '@/types/template';
 import type { Platform as PlatformType, Video } from '@/types';
+
+async function toLocalUri(uri: string, ext = 'jpg'): Promise<string> {
+  if (!uri.startsWith('http')) return uri;
+  const dest = `${FileSystem.cacheDirectory}slot_${Date.now()}.${ext}`;
+  const result = await FileSystem.downloadAsync(uri, dest);
+  if (result.status !== 200) throw new Error(`Failed to download media (${result.status})`);
+  return result.uri;
+}
 
 type SlotAction = 'idle' | 'replacing' | 'generating';
 
@@ -126,12 +135,14 @@ export default function TemplateEditorScreen() {
     }
     setBuilding(true);
     try {
-      const mediaList: MediaItem[] = clips
-        .filter((c) => c.replacementUri)
-        .map((c) => ({
-          uri: c.replacementUri!,
-          type: c.replacementType === 'video' ? 'video' : 'photo',
-        }));
+      const mediaList: MediaItem[] = await Promise.all(
+        clips
+          .filter((c) => c.replacementUri)
+          .map(async (c) => ({
+            uri: await toLocalUri(c.replacementUri!),
+            type: c.replacementType === 'video' ? 'video' : 'photo' as const,
+          })),
+      );
 
       const id = `v${Date.now()}`;
       const thumbnail = clips[0]?.replacementUri ?? '';
@@ -168,12 +179,14 @@ export default function TemplateEditorScreen() {
     }
     setSaving(true);
     try {
-      const mediaList: MediaItem[] = clips
-        .filter((c) => c.replacementUri)
-        .map((c) => ({
-          uri: c.replacementUri!,
-          type: c.replacementType === 'video' ? 'video' : 'photo',
-        }));
+      const mediaList: MediaItem[] = await Promise.all(
+        clips
+          .filter((c) => c.replacementUri)
+          .map(async (c) => ({
+            uri: await toLocalUri(c.replacementUri!),
+            type: c.replacementType === 'video' ? 'video' : 'photo' as const,
+          })),
+      );
 
       const videoUri = await combineMediaToVideo(mediaList, 3.0);
       await MediaLibrary.saveToLibraryAsync(videoUri);
