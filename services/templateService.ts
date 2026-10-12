@@ -1,20 +1,15 @@
 import { getSupabaseClient } from '@/template';
 import { FunctionsHttpError } from '@supabase/supabase-js';
-import * as FileSystem from 'expo-file-system';
-import * as VideoThumbnails from 'expo-video-thumbnails';
-import { ReelTemplate, TemplateSegment } from '@/types';
+import type { ReelTemplate, TemplateClip } from '@/types/template';
 
-/** Resolve a public reel link to a direct video URL via the resolve-reel-url edge function. */
-export async function resolveReelUrl(url: string): Promise<{
-  videoUrl: string;
-  durationSec: number | null;
-  platform: string;
-  thumbnail: string | null;
-}> {
+// ─── Edge function helper ────────────────────────────────────────────────────
+
+async function invokeFunction(
+  name: string,
+  body: Record<string, unknown>,
+): Promise<Record<string, unknown>> {
   const client = getSupabaseClient();
-  const { data, error } = await client.functions.invoke('resolve-reel-url', {
-    body: { url },
-  });
+  const { data, error } = await client.functions.invoke(name, { body });
   if (error) {
     let msg = error.message;
     if (error instanceof FunctionsHttpError) {
@@ -24,8 +19,21 @@ export async function resolveReelUrl(url: string): Promise<{
         msg = parsed?.error ?? text ?? msg;
       } catch { /* ignore */ }
     }
-    throw new Error(msg);
+    throw new Error(msg ?? `${name} failed`);
   }
+  if (data?.error) throw new Error(data.error as string);
+  return data as Record<string, unknown>;
+}
+
+// ─── Public API ──────────────────────────────────────────────────────────────
+
+export async function resolveReelUrl(url: string): Promise<{
+  videoUrl: string;
+  durationSec: number | null;
+  platform: string;
+  thumbnail: string | null;
+}> {
+  const data = await invokeFunction('resolve-reel-url', { url });
   if (!data?.videoUrl) throw new Error('No video URL returned from resolver.');
   return {
     videoUrl: data.videoUrl as string,
@@ -35,112 +43,84 @@ export async function resolveReelUrl(url: string): Promise<{
   };
 }
 
-/** Download a remote video URL to a local cache file. Returns the local file URI. */
 export async function downloadVideoToCache(remoteUrl: string): Promise<{ localUri: string }> {
+  const FileSystem = await import('expo-file-system');
   const cacheDir = FileSystem.cacheDirectory;
   if (!cacheDir) throw new Error('No cache directory available.');
-
-  const filename = `template_${Date.now()}.mp4`;
-  const localUri = `${cacheDir}${filename}`;
-
-  const downloadResult = await FileSystem.downloadAsync(remoteUrl, localUri);
-  if (downloadResult.status !== 200) {
-    throw new Error(`Download failed with status ${downloadResult.status}.`);
-  }
+  const localUri = `${cacheDir}template_${Date.now()}.mp4`;
+  const result = await FileSystem.downloadAsync(remoteUrl, localUri);
+  if (result.status !== 200) throw new Error(`Download failed with status ${result.status}.`);
   return { localUri };
 }
 
-/**
- * Sample frames from a local video and call the AI to extract a ReelTemplate
- * (hook text, caption, suggested cuts, hashtags, etc.).
- * Falls back to a minimal template if AI analysis fails.
- */
 export async function analyzeReelTemplate(
   localUri: string,
-  durationSec: number,
+  totalDurationSec: number,
 ): Promise<ReelTemplate> {
-  // Sample up to 5 frames at 10%, 25%, 50%, 75%, 90% of the video
-  const positions = [0.1, 0.25, 0.5, 0.75, 0.9];
-  const frames: string[] = [];
+  const frames = await extractKeyFrames(localUri, totalDurationSec);
+  if (frames.length === 0) throw new Error('Could not extract frames from video.');
 
-  for (const pct of positions) {
-    const timeMs = Math.max(500, Math.round(pct * durationSec * 1000));
+  console.log(`[templateService] sending ${frames.length} frames to analyze-template`);
+  const data = await invokeFunction('analyze-template', { frames, totalDurationSec });
+  console.log('[templateService] analyze-template response keys:', Object.keys(data ?? {}).join(', '));
+
+  const clips = (data.clips as TemplateClip[] | undefined) ?? [];
+  if (clips.length === 0) throw new Error('AI returned no clip segments. Try a different reel.');
+
+  return {
+    sourceVideoUri: localUri,
+    totalDuration: (data.totalDuration as number) ?? totalDurationSec,
+    clipCount: clips.length,
+    style: (data.style as ReelTemplate['style']) ?? {
+      vibe: 'Custom',
+      pacing: 'medium',
+      colorGrade: 'vibrant',
+      musicGenre: 'pop',
+      musicQuery: 'viral trending audio',
+    },
+    clips,
+  };
+}
+
+export async function generateSlotImage(prompt: string): Promise<string> {
+  const data = await invokeFunction('generate-slot-image', { prompt });
+  return data.imageUri as string;
+}
+
+// ─── Frame extraction ────────────────────────────────────────────────────────
+
+const MAX_FRAMES = 20;
+
+async function extractKeyFrames(
+  videoUri: string,
+  totalDurationSec: number,
+): Promise<{ timestampSec: number; base64: string }[]> {
+  const VideoThumbnails = await import('expo-video-thumbnails');
+  const FileSystem = await import('expo-file-system');
+
+  const step = Math.max(0.5, totalDurationSec / MAX_FRAMES);
+  const timestamps: number[] = [];
+  for (let t = 0; t < totalDurationSec; t += step) {
+    timestamps.push(parseFloat(t.toFixed(1)));
+    if (timestamps.length >= MAX_FRAMES) break;
+  }
+
+  const frames: { timestampSec: number; base64: string }[] = [];
+  for (const sec of timestamps) {
     try {
-      const { uri } = await VideoThumbnails.getThumbnailAsync(localUri, {
-        time: timeMs,
-        quality: 0.7,
+      const { uri: thumbUri } = await VideoThumbnails.getThumbnailAsync(videoUri, {
+        time: Math.round(sec * 1000),
+        quality: 0.6,
+        maxWidth: 512,
       });
-      // Read as base64
-      const b64 = await FileSystem.readAsStringAsync(uri, {
+      if (!thumbUri) continue;
+      const base64 = await FileSystem.readAsStringAsync(thumbUri, {
         encoding: FileSystem.EncodingType.Base64,
       });
-      if (b64.length > 100) frames.push(b64);
+      if (base64.length > 100) frames.push({ timestampSec: sec, base64 });
     } catch {
-      // skip failed frames
+      // skip failed frame
     }
   }
-
-  const client = getSupabaseClient();
-  const { data, error } = await client.functions.invoke('ai-content-generator', {
-    body: {
-      action: 'analyze_template',
-      frames,
-      durationSec,
-    },
-  });
-
-  if (error) {
-    let msg = error.message;
-    if (error instanceof FunctionsHttpError) {
-      try {
-        const text = await error.context?.text();
-        const parsed = text ? JSON.parse(text) : null;
-        msg = parsed?.error ?? text ?? msg;
-      } catch { /* ignore */ }
-    }
-    // Fall back to a minimal template rather than crashing
-    console.warn('[templateService] AI analysis failed, using fallback template:', msg);
-    return buildFallbackTemplate(localUri, durationSec);
-  }
-
-  if (!data) return buildFallbackTemplate(localUri, durationSec);
-
-  // Normalise the response shape from ai-content-generator
-  const template: ReelTemplate = {
-    id: `tpl_${Date.now()}`,
-    sourceUri: localUri,
-    durationSec,
-    hook: (data.hook as string) ?? '',
-    caption: (data.caption as string) ?? '',
-    hashtags: (data.hashtags as string[]) ?? [],
-    segments: (data.segments as TemplateSegment[]) ?? buildDefaultSegments(durationSec),
-    createdAt: new Date().toISOString(),
-  };
-
-  return template;
-}
-
-// ─── Helpers ─────────────────────────────────────────────────────────────────
-
-function buildFallbackTemplate(sourceUri: string, durationSec: number): ReelTemplate {
-  return {
-    id: `tpl_${Date.now()}`,
-    sourceUri,
-    durationSec,
-    hook: '',
-    caption: '',
-    hashtags: [],
-    segments: buildDefaultSegments(durationSec),
-    createdAt: new Date().toISOString(),
-  };
-}
-
-function buildDefaultSegments(durationSec: number): TemplateSegment[] {
-  // Split into 3 equal segments
-  const segDur = durationSec / 3;
-  return [
-    { startSec: 0, endSec: segDur, label: 'Hook' },
-    { startSec: segDur, endSec: segDur * 2, label: 'Body' },
-    { startSec: segDur * 2, endSec: durationSec, label: 'CTA' },
-  ];
+  return frames;
 }
