@@ -29,21 +29,25 @@ Deno.serve(async (req) => {
       );
     }
 
+    // Enhance prompt for high-quality vertical reel visuals
+    const enhancedPrompt = `${prompt.trim()}, vertical 9:16 short-form video frame, cinematic lighting, sharp focus, vibrant colors, social media aesthetic, professional photography, Instagram Reels style`;
+
     // Start prediction
     const startRes = await fetch(REPLICATE_API, {
       method: 'POST',
       headers: {
         'Authorization': `Bearer ${replicateKey}`,
         'Content-Type': 'application/json',
-        'Prefer': 'wait', // wait up to 60s for completion in one request
+        'Prefer': 'wait',
       },
       body: JSON.stringify({
         input: {
-          prompt: prompt.trim(),
-          aspect_ratio: '9:16', // vertical for reels
+          prompt: enhancedPrompt,
+          aspect_ratio: '9:16',
           output_format: 'jpg',
-          output_quality: 90,
+          output_quality: 95,
           num_outputs: 1,
+          num_inference_steps: 4,
         },
       }),
     });

@@ -87,7 +87,9 @@ export default function TemplateEditorScreen() {
 
   const openAiGenerator = (clipId: string) => {
     setActiveSlotId(clipId);
-    setAiPrompt('');
+    // Pre-fill with clip description so user has a useful starting point
+    const clip = clips.find((c) => c.id === clipId);
+    setAiPrompt(clip?.description ?? '');
     setShowAiModal(true);
   };
 
