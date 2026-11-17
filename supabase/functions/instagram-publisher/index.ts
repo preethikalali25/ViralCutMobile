@@ -1,3 +1,4 @@
+// Deployment refresh; existing OAuth, publishing, and analytics behavior is unchanged.
 import { corsHeaders } from '../_shared/cors.ts';
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
 
