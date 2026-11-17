@@ -31,11 +31,11 @@ Deno.serve(async (req) => {
 
     if (error) {
       const redirect = `${APP_DEEP_LINK}?error=${encodeURIComponent(error)}&error_reason=${encodeURIComponent(errorReason)}`;
-      return new Response(null, { status: 302, headers: { Location: redirect } });
+      return new Response(null, { status: 302, headers: { ...corsHeaders, Location: redirect } });
     }
 
     const redirect = `${APP_DEEP_LINK}?code=${encodeURIComponent(code)}&state=${encodeURIComponent(state)}`;
-    return new Response(null, { status: 302, headers: { Location: redirect } });
+    return new Response(null, { status: 302, headers: { ...corsHeaders, Location: redirect } });
   }
 
   // ─── All other actions as POST JSON ────────────────────────────────────────
@@ -61,7 +61,7 @@ Deno.serve(async (req) => {
       const params = new URLSearchParams({
         client_id: appId,
         redirect_uri: redirectUri,
-        scope: 'instagram_basic,instagram_content_publish',
+        scope: 'instagram_business_basic,instagram_business_content_publish',
         response_type: 'code',
         state,
       });
@@ -88,7 +88,7 @@ Deno.serve(async (req) => {
 
       const shortRes = await fetch(IG_TOKEN_URL, { method: 'POST', body: shortForm });
       const shortData = await shortRes.json();
-      console.log('[instagram] short token response:', JSON.stringify(shortData).slice(0, 300));
+      console.log('[instagram] short token exchange status:', shortRes.status);
 
       if (shortData.error_type || shortData.error) {
         return new Response(
@@ -109,7 +109,7 @@ Deno.serve(async (req) => {
 
       const longRes = await fetch(`${IG_LONG_TOKEN_URL}?${longParams}`);
       const longData = await longRes.json();
-      console.log('[instagram] long token response:', JSON.stringify(longData).slice(0, 200));
+      console.log('[instagram] long token exchange status:', longRes.status);
 
       const accessToken = longData.access_token ?? shortToken;
       const expiresInSec = longData.expires_in ?? 5183944; // ~60 days
@@ -352,12 +352,12 @@ Deno.serve(async (req) => {
       const containerParams: Record<string, string> = {
         media_type: 'REELS',
         video_url: videoUrl,
-        caption: (caption as string).slice(0, 2200),
+        caption: caption.slice(0, 2200),
         share_to_feed: 'true',
         access_token,
       };
-      if (coverUrl) containerParams.cover_url = coverUrl as string;
-      if (audioName) containerParams.audio_name = (audioName as string).slice(0, 100);
+      if (coverUrl) containerParams.cover_url = coverUrl;
+      if (audioName) containerParams.audio_name = audioName.slice(0, 100);
 
       const containerRes = await fetch(`${IG_GRAPH_URL}/${instagram_user_id}/media`, {
         method: 'POST',
@@ -453,6 +453,83 @@ Deno.serve(async (req) => {
 
       return new Response(
         JSON.stringify({ success: true, mediaId: publishData.id }),
+        { headers: { ...corsHeaders, 'Content-Type': 'application/json' } },
+      );
+    }
+
+    // ── 9. Get Analytics ────────────────────────────────────────────────────
+    if (action === 'get_analytics') {
+      const { userId } = body as { userId: string };
+
+      const { data: row, error: tokenError } = await supabase
+        .from('instagram_tokens')
+        .select('access_token, expires_at, instagram_user_id, username, followers_count')
+        .eq('user_id', userId)
+        .maybeSingle();
+
+      if (tokenError) {
+        return new Response(
+          JSON.stringify({ error: `DB error: ${tokenError.message}` }),
+          { status: 500, headers: { ...corsHeaders, 'Content-Type': 'application/json' } },
+        );
+      }
+
+      if (!row) {
+        return new Response(
+          JSON.stringify({ error: 'Instagram not connected' }),
+          { status: 401, headers: { ...corsHeaders, 'Content-Type': 'application/json' } },
+        );
+      }
+
+      if (row.expires_at && new Date(row.expires_at as string) < new Date()) {
+        return new Response(
+          JSON.stringify({ error: 'Instagram token expired. Please reconnect.' }),
+          { status: 401, headers: { ...corsHeaders, 'Content-Type': 'application/json' } },
+        );
+      }
+
+      const { access_token, instagram_user_id, username, followers_count } = row as {
+        access_token: string;
+        instagram_user_id: string;
+        username: string;
+        followers_count: number;
+      };
+
+      // Fetch recent media; views and shares remain zero until insights are fetched.
+      const mediaRes = await fetch(
+        `${IG_GRAPH_URL}/${instagram_user_id}/media?fields=id,media_type,thumbnail_url,media_url,timestamp,caption,like_count,comments_count&limit=50&access_token=${access_token}`,
+        { signal: AbortSignal.timeout(10000) },
+      );
+      const mediaData = await mediaRes.json();
+
+      if (!mediaRes.ok || mediaData.error) {
+        return new Response(
+          JSON.stringify({ error: `Instagram API: ${mediaData.error?.message ?? `Request failed (${mediaRes.status})`}` }),
+          { status: 502, headers: { ...corsHeaders, 'Content-Type': 'application/json' } },
+        );
+      }
+
+      const videos = ((mediaData.data ?? []) as Record<string, unknown>[])
+        .filter((m) => m.media_type === 'VIDEO' || m.media_type === 'REELS')
+        .map((m) => ({
+          id: m.id as string,
+          title: ((m.caption as string | undefined) ?? '').slice(0, 80) || 'Reel',
+          thumbnail: (m.thumbnail_url ?? m.media_url ?? '') as string,
+          publishedAt: m.timestamp as string,
+          views: 0,
+          likes: (m.like_count ?? 0) as number,
+          shares: 0,
+          comments: (m.comments_count ?? 0) as number,
+        }));
+
+      return new Response(
+        JSON.stringify({
+          username,
+          followersCount: followers_count,
+          posts: videos.length,
+          totalLikes: videos.reduce((s, v) => s + v.likes, 0),
+          videos,
+        }),
         { headers: { ...corsHeaders, 'Content-Type': 'application/json' } },
       );
     }
